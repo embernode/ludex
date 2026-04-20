@@ -1,0 +1,13 @@
+[package]
+name = "ludex-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+description = "Shared types, schema, and storage layer for ludex"
+
+[lints]
+workspace = true

@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ludex-core",
+    "crates/ludex-daemon",
+    "crates/ludex-cli",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/embernode/ludex"
+authors = ["embernode and contributors"]
+readme = "README.md"
+
+[workspace.dependencies]
+# Core async
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "signal", "fs", "time", "sync"] }
+
+# D-Bus (tokio runtime; no async-io)
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
+
+# Errors
+anyhow = "1"
+thiserror = "2"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Linux syscall wrappers (pidfd, process, fs)
+rustix = { version = "1", default-features = false, features = ["std", "process", "fs"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pragmatic allows — each paired with a justification.
+# These pedantic lints are frequently wrong or noisy in application code.
+module-name-repetitions = "allow"     # triggers on perfectly-named submodules
+must-use-candidate = "allow"          # noisy for internal APIs
+missing-errors-doc = "allow"          # documented separately where it matters
+missing-panics-doc = "allow"          # same
+cast-sign-loss = "allow"              # intentional where clock math / byte sizes meet
+cast-possible-truncation = "allow"    # same
+cast-possible-wrap = "allow"          # same
+future-not-send = "allow"             # zbus futures are !Send; fine in single-threaded runtimes
+option-if-let-else = "allow"          # stylistic; often less readable rewritten
+doc-markdown = "allow"                # over-aggressive on brand names (KWin, Lutris); backticks also render as literal in clap --help output
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

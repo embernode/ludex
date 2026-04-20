@@ -1,0 +1,25 @@
+[package]
+name = "ludex-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+description = "Playtime-tracking daemon for ludex"
+
+[[bin]]
+name = "ludex-daemon"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+ludex-core = { path = "../ludex-core" }
+
+[lints]
+workspace = true
