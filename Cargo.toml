@@ -36,6 +36,22 @@ clap = { version = "4", features = ["derive"] }
 # Linux syscall wrappers (pidfd, process, fs)
 rustix = { version = "1", default-features = false, features = ["std", "process", "fs"] }
 
+# Storage
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "time", "macros", "migrate"] }
+
+# Time
+time = { version = "0.3", default-features = false, features = ["std", "serde", "formatting", "parsing", "macros"] }
+
+# Enum ergonomics
+strum = { version = "0.27", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+
+# Test-only helpers
+proptest = "1"
+tempfile = "3"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 rust_2018_idioms = { level = "warn", priority = -1 }
@@ -56,6 +72,7 @@ cast-possible-wrap = "allow"          # same
 future-not-send = "allow"             # zbus futures are !Send; fine in single-threaded runtimes
 option-if-let-else = "allow"          # stylistic; often less readable rewritten
 doc-markdown = "allow"                # over-aggressive on brand names (KWin, Lutris); backticks also render as literal in clap --help output
+struct-field-names = "allow"          # fires on category structs (Icons { icon_16, icon_32, ... }) where the prefix is the intent
 
 [profile.release]
 lto = "thin"

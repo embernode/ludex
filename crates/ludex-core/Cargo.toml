@@ -9,5 +9,18 @@ authors.workspace = true
 readme.workspace = true
 description = "Shared types, schema, and storage layer for ludex"
 
+[dependencies]
+serde = { workspace = true }
+sqlx = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
 [lints]
 workspace = true
