@@ -1,0 +1,64 @@
+# ludex
+
+A launcher-agnostic playtime tracker for Linux.
+
+**Status: pre-alpha, design phase.** No working binary yet. The repository currently holds the architecture document and roadmap; implementation begins with milestone M0 (workspace scaffold).
+
+## What it does
+
+ludex records time spent playing games on Linux without requiring per-game configuration. The daemon observes game launches from:
+
+- **Steam** via inotify on the Steam content log
+- **Lutris** via its `net.lutris.Lutris` D-Bus service
+- **Heroic Games Launcher** via inotify on its running-game state file
+- **Anything else** via a Wayland foreground-window fallback gated on DRM fdinfo GPU-usage metrics
+
+Each recognised game has its sessions persisted to SQLite with two runtime figures: **full runtime** (wall-clock session duration) and **interactive runtime** (full runtime minus system-reported idle intervals via `logind.IdleHint`).
+
+The primary target is KDE Plasma 6 on Wayland; X11 is supported where the mechanisms collapse to `_NET_ACTIVE_WINDOW` and friends.
+
+## Design principles
+
+- **No telemetry.** No network I/O at runtime, full stop.
+- **Minimal required permissions.** Unprivileged user account, session D-Bus only, no `input`/`video` group, no `sudo`.
+- **Event-driven by preference.** Filesystem watches, D-Bus signals, `pidfd` waits. Polling is reserved for GPU-usage sampling of a single foreground process.
+- **Separation of detection from identification.** The detector answers "is this a game?" with a small, fast gate; identification is a separate metadata cascade that can be wrong without breaking session tracking.
+- **Structured logs, migration-backed storage, property-tested parsers** from the first commit.
+
+## Architecture
+
+- Rust daemon (`ludex-daemon`) runs as a systemd user service. Tokio for async, zbus for D-Bus, sqlx for SQLite, tracing for structured logs.
+- Tauri + Svelte + ECharts GUI (`ludex-gui`) for dashboards and configuration (post-M5 milestone).
+- D-Bus IPC (`net.ludex.Tracker1`) between daemon and GUI.
+
+Full architecture in [docs/architecture.md](docs/architecture.md). Phased plan in [docs/roadmap.md](docs/roadmap.md).
+
+## Repository layout (target)
+
+```
+Cargo.toml            # Rust workspace manifest
+crates/
+  ludex-core/         # shared types, schema, SQL, errors
+  ludex-daemon/       # the tracker (binary)
+  ludex-cli/          # CLI client (binary)
+app/                  # Tauri + SvelteKit frontend (post-M5)
+packaging/            # systemd service, PKGBUILD
+docs/                 # architecture, roadmap
+```
+
+## Building
+
+Nothing to build yet. Milestones are tracked in [`docs/roadmap.md`](docs/roadmap.md).
+
+## License
+
+Dual-licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option. Both require attribution via preservation of the copyright notice. Rust-community convention.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

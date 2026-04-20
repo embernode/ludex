@@ -1,0 +1,33 @@
+# Private notes and research — never committed.
+/.research/
+/.notes/
+
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / Tauri frontend
+/app/node_modules/
+/app/dist/
+/app/.svelte-kit/
+/app/build/
+/src-tauri/target/
+
+# Editors / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# Local environment
+.env
+.env.local
+*.local
+
+# Generated / runtime
+*.log
+/tmp/
