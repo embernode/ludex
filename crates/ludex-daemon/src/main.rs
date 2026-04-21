@@ -1,17 +1,9 @@
-//! ludex-daemon entry point.
-//!
-//! Milestone M0: scaffold only. Real detection work lands in M2.
+//! ludex-daemon binary entry point.
 
-use tracing_subscriber::EnvFilter;
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_env("LUDEX_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
-}
+use anyhow::Result;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    init_tracing();
-    tracing::info!("ludex-daemon starting (M0 placeholder — no detection yet)");
-    Ok(())
+async fn main() -> Result<()> {
+    ludex_daemon::init_tracing();
+    ludex_daemon::run().await
 }

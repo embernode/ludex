@@ -9,17 +9,27 @@ authors.workspace = true
 readme.workspace = true
 description = "Playtime-tracking daemon for ludex"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "ludex-daemon"
 path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+notify = { workspace = true }
+time = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 ludex-core = { path = "../ludex-core" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
