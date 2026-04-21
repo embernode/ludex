@@ -22,6 +22,7 @@ mod application;
 mod db;
 pub mod error;
 mod key;
+mod paths;
 pub mod repo;
 mod session;
 mod types;
@@ -30,5 +31,6 @@ pub use application::{Application, Icons, IdentityUpdate, NewApplication, Playba
 pub use db::Database;
 pub use error::{Error, Result};
 pub use key::GameKey;
-pub use session::{RuntimeSnapshot, Session};
+pub use paths::default_database_path;
+pub use session::{RecentSession, RuntimeSnapshot, Session};
 pub use types::{ExitReason, GraphicsPlatform, LauncherType, ProcessArchitecture};

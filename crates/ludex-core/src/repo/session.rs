@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 use time::{Duration, OffsetDateTime};
 
 use crate::error::Result;
-use crate::session::{RuntimeSnapshot, Session};
+use crate::session::{RecentSession, RuntimeSnapshot, Session};
 use crate::types::ExitReason;
 
 const SELECT_COLS: &str = "id, application_id, started_at, ended_at, heartbeat_at, \
@@ -105,6 +105,24 @@ impl<'a> SessionRepo<'a> {
         );
         sqlx::query_as::<_, Session>(&sql)
             .bind(application_id)
+            .bind(i64::from(limit))
+            .fetch_all(self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// List the `limit` most recent sessions across all applications,
+    /// joined to the owning application's display identity.
+    pub async fn list_recent_with_app(&self, limit: u32) -> Result<Vec<RecentSession>> {
+        let sql = "SELECT \
+                s.id, s.application_id, a.product_name, a.launcher_type, a.launcher_id, \
+                s.started_at, s.ended_at, \
+                s.full_runtime_seconds, s.interactive_runtime_seconds, \
+                s.exit_reason \
+             FROM sessions s \
+             INNER JOIN applications a ON a.id = s.application_id \
+             ORDER BY s.started_at DESC LIMIT ?";
+        sqlx::query_as::<_, RecentSession>(sql)
             .bind(i64::from(limit))
             .fetch_all(self.pool)
             .await

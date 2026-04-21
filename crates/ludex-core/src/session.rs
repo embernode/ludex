@@ -52,3 +52,32 @@ pub struct RuntimeSnapshot {
     /// Timestamp at which this snapshot was taken.
     pub at: OffsetDateTime,
 }
+
+/// A session row joined against its owning application.
+///
+/// Produced by
+/// [`SessionRepo::list_recent_with_app`](crate::repo::SessionRepo::list_recent_with_app);
+/// the shape is tuned for display rather than persistence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
+pub struct RecentSession {
+    /// Session primary key.
+    pub id: i64,
+    /// Owning application id.
+    pub application_id: i64,
+    /// Product name of the owning application.
+    pub product_name: String,
+    /// Launcher type of the owning application.
+    pub launcher_type: crate::types::LauncherType,
+    /// Launcher id of the owning application.
+    pub launcher_id: String,
+    /// When the session was observed to begin.
+    pub started_at: OffsetDateTime,
+    /// When the session ended (`None` while still open).
+    pub ended_at: Option<OffsetDateTime>,
+    /// Accumulated full-runtime seconds.
+    pub full_runtime_seconds: i64,
+    /// Accumulated interactive-runtime seconds.
+    pub interactive_runtime_seconds: i64,
+    /// How the session ended (`None` while still open).
+    pub exit_reason: Option<ExitReason>,
+}

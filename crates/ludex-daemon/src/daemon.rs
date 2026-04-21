@@ -1,10 +1,8 @@
 //! Top-level daemon wiring: open the database, spawn sources, spawn the
 //! session manager, run until a shutdown signal arrives.
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
-use ludex_core::Database;
+use ludex_core::{default_database_path, Database};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
@@ -22,19 +20,9 @@ pub fn init_tracing() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-/// Locate the per-user database path at `$XDG_DATA_HOME/ludex/ludex.sqlite`,
-/// falling back to `$HOME/.local/share/ludex/ludex.sqlite`.
-fn default_database_path() -> Result<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .context("neither XDG_DATA_HOME nor HOME is set")?;
-    Ok(base.join("ludex").join("ludex.sqlite"))
-}
-
 /// Run the daemon until a termination signal is received.
 pub async fn run() -> Result<()> {
-    let db_path = default_database_path()?;
+    let db_path = default_database_path().context("neither XDG_DATA_HOME nor HOME is set")?;
     if let Some(parent) = db_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
