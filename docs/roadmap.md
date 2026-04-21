@@ -81,15 +81,26 @@ This milestone is intentionally a no-op for end users. Its purpose is to prove t
 
 ### M2 — Launcher sources (the MVP)
 
-The user-visible value of this milestone: launch a Steam game, stop it, and see a session row in the DB. Same for Lutris, same for Heroic.
+The user-visible value of this milestone: launch a Steam game, stop it, and see a session row in the DB.
 
-- `Source` trait and `GameEvent` enum.
-- `SteamSource`: inotify on `~/.local/share/Steam/logs/content_log.txt`; rotated-log handling; appmanifest correlation for names.
-- `LutrisSource`: `zbus` subscription on `net.lutris.Lutris`.
-- `HeroicSource`: inotify on `~/.config/heroic/running_game.json` with `games.json` correlation for names.
-- Cold-start scan executes **after** subscriptions are active.
-- `SessionManager` opens sessions on `Started`, closes on `Stopped`, writes heartbeats every 60 seconds.
-- `ludex sessions [--since T]` CLI command lists recent sessions over D-Bus.
+Delivered in tranches because the three launchers are in different cold reality:
+
+**M2.1 — Steam + session manager + daemon wiring (primary MVP)**
+
+- [`GameEvent`] enum passed on a `tokio::sync::mpsc` channel from sources to the [`SessionManager`].
+- [`SteamSource`]: filesystem watcher on `~/.local/share/Steam/logs/content_log.txt` parsing `state changed : ..., App Running, ...` transitions; appmanifest `name` correlation; cold-start scan of `appmanifest_*.acf` `StateFlags` bit 64 so already-running games are picked up at daemon start.
+- [`SessionManager`]: opens sessions on `Started`, closes on `Stopped`, heartbeats every 60 s, closes dangling open sessions both at graceful shutdown (with `Terminated`) and at cold start (with `Recovered`, via `recover_orphans`).
+
+**M2.2 — Heroic + Lutris (deferred until their detection shape is settled)**
+
+- Modern Heroic (2.x) removed the single `running_game.json` file; the remaining options are log-tailing or process-tree inspection. Deferred until we have a stable story.
+- Lutris exposes `net.lutris.Lutris` on the session bus but does not emit game start/stop signals there. Detection requires either `lutris-wrapper` process-tree scanning (belongs in M4) or a Lutris upstream change.
+
+**M2.3 — CLI query surface**
+
+- `ludex sessions [--since T]` lists recent sessions. Reads the database directly; no D-Bus service is required until the GUI lands in M6.
+
+**Cold-start ordering** is preserved across tranches: the daemon installs every live subscription *before* it performs any enumeration of already-running games, so transitions that occur during the enumeration are queued in the subscription, not lost.
 
 ### M3 — Metadata enrichment cascade
 
