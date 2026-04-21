@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 mod doctor;
+mod sessions;
 
 #[derive(Parser)]
 #[command(
@@ -26,6 +27,13 @@ enum Command {
     /// Steam/Heroic/Lutris state, DRM subsystem, `input` group membership,
     /// and `pidfd` syscall support. Runs without contacting the daemon.
     Doctor,
+
+    /// List recent sessions recorded by the daemon.
+    Sessions {
+        /// Maximum number of sessions to print.
+        #[arg(long, short = 'n', default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        limit: u32,
+    },
 }
 
 fn init_tracing() {
@@ -42,5 +50,6 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Doctor => doctor::run().await,
+        Command::Sessions { limit } => sessions::run(limit).await,
     }
 }
