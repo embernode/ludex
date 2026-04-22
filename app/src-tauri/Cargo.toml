@@ -26,5 +26,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tracing = { workspace = true }
 zbus = { workspace = true }
 
+ludex-dbus-types = { path = "../../crates/ludex-dbus-types" }
+
 [lints]
 workspace = true

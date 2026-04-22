@@ -2469,6 +2469,7 @@ dependencies = [
  "anyhow",
  "futures-util",
  "ludex-core",
+ "ludex-dbus-types",
  "ludex-enrich",
  "notify",
  "proptest",
@@ -2479,6 +2480,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "ludex-dbus-types"
+version = "0.0.0"
+dependencies = [
+ "serde",
  "zbus",
 ]
 
@@ -2504,6 +2513,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures-util",
+ "ludex-dbus-types",
  "serde",
  "tauri",
  "tauri-build",

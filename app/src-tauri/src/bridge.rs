@@ -27,15 +27,10 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+pub(crate) use ludex_dbus_types::{ApplicationSummary, SessionSummary, SERVICE_NAME};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::OnceCell;
-use zbus::zvariant::Type;
-
-/// Well-known D-Bus service name the daemon registers. Kept in
-/// sync with `ludex_daemon::dbus::SERVICE_NAME`; duplicated on the
-/// GUI side so this crate does not need to link the daemon.
-const SERVICE_NAME: &str = "net.ludex.Tracker1";
 
 /// Tauri event name emitted on every `ApplicationAdded` signal.
 pub(crate) const EVENT_APPLICATION_ADDED: &str = "ludex:application-added";
@@ -43,39 +38,6 @@ pub(crate) const EVENT_APPLICATION_ADDED: &str = "ludex:application-added";
 pub(crate) const EVENT_SESSION_STARTED: &str = "ludex:session-started";
 /// Tauri event name emitted on every `SessionEnded` signal.
 pub(crate) const EVENT_SESSION_ENDED: &str = "ludex:session-ended";
-
-/// GUI-shaped application row. Shape must stay byte-identical to
-/// `ludex_daemon::dbus::ApplicationSummary` or the zbus decoder
-/// will reject replies. They are duplicated rather than shared
-/// through a crate because pulling `ludex-daemon` into the Tauri
-/// host would drag the entire detection/sqlite/KWin stack into the
-/// GUI binary for nothing.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub(crate) struct ApplicationSummary {
-    pub(crate) id: i64,
-    pub(crate) launcher_type: String,
-    pub(crate) launcher_id: String,
-    pub(crate) product_name: String,
-    pub(crate) publisher: String,
-    pub(crate) total_full_seconds: i64,
-    pub(crate) total_interactive_seconds: i64,
-    pub(crate) run_count: i64,
-    pub(crate) last_played_at: String,
-}
-
-/// GUI-shaped session row; mirrors
-/// `ludex_daemon::dbus::SessionSummary`.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub(crate) struct SessionSummary {
-    pub(crate) id: i64,
-    pub(crate) application_id: i64,
-    pub(crate) product_name: String,
-    pub(crate) started_at: String,
-    pub(crate) ended_at: String,
-    pub(crate) full_runtime_seconds: i64,
-    pub(crate) interactive_runtime_seconds: i64,
-    pub(crate) exit_reason: String,
-}
 
 /// Payload for the `ludex:session-ended` Tauri event.
 #[derive(Debug, Clone, Serialize)]

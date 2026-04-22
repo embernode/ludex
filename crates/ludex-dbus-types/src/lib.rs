@@ -1,0 +1,86 @@
+//! Wire types for the `net.ludex.Tracker1` D-Bus API.
+//!
+//! This crate exists to DRY the DTOs and well-known names across the
+//! daemon (which serves the interface) and the Tauri GUI (which
+//! consumes it through a `#[zbus::proxy]`). Both sides must agree
+//! byte-for-byte on struct field order and D-Bus signatures, so
+//! defining them in one place eliminates a whole category of drift.
+//!
+//! Deliberately free of any runtime — no tokio, no sqlx, no
+//! detection code. Linking this crate into the GUI binary is almost
+//! free; linking [`ludex_daemon`] would drag the entire database and
+//! KWin stack along with it, which is why the duplication existed in
+//! the first place.
+//!
+//! # API shape
+//!
+//! ```text
+//! bus   : net.ludex.Tracker1   (session bus)
+//! path  : /net/ludex/Tracker1
+//! iface : net.ludex.Tracker1
+//! ```
+//!
+//! See the daemon's `dbus` module for methods and signals; the
+//! structs here describe the payloads they exchange.
+
+#![warn(missing_docs)]
+
+use serde::{Deserialize, Serialize};
+use zbus::zvariant::Type;
+
+/// Well-known service name ludex claims on the user session bus.
+pub const SERVICE_NAME: &str = "net.ludex.Tracker1";
+/// Object path the tracker interface is exposed at.
+pub const OBJECT_PATH: &str = "/net/ludex/Tracker1";
+/// Interface name served at [`OBJECT_PATH`].
+pub const INTERFACE: &str = "net.ludex.Tracker1";
+
+/// Application row shaped for the GUI. Time fields are RFC 3339
+/// strings; an empty string means "never" (e.g. `last_played_at`
+/// for a never-played app).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ApplicationSummary {
+    /// Primary-key id.
+    pub id: i64,
+    /// Origin of `launcher_id` (`"steam"`, `"lutris"`, `"heroic"`,
+    /// `"flatpak"`, `"native"`).
+    pub launcher_type: String,
+    /// Identifier within the launcher.
+    pub launcher_id: String,
+    /// Human-readable product name.
+    pub product_name: String,
+    /// Publisher / developer (empty if unknown).
+    pub publisher: String,
+    /// Cumulative full-runtime seconds across every session.
+    pub total_full_seconds: i64,
+    /// Cumulative interactive-runtime seconds across every session.
+    pub total_interactive_seconds: i64,
+    /// Total session count.
+    pub run_count: i64,
+    /// RFC 3339 timestamp of the most recent session end, or empty
+    /// when the app has never been played to completion.
+    pub last_played_at: String,
+}
+
+/// Session row shaped for the GUI.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SessionSummary {
+    /// Primary-key id.
+    pub id: i64,
+    /// Owning application id.
+    pub application_id: i64,
+    /// Product name of the owning application (joined for
+    /// convenience).
+    pub product_name: String,
+    /// RFC 3339 start timestamp.
+    pub started_at: String,
+    /// RFC 3339 end timestamp, or empty for an open session.
+    pub ended_at: String,
+    /// Full-runtime seconds.
+    pub full_runtime_seconds: i64,
+    /// Interactive-runtime seconds.
+    pub interactive_runtime_seconds: i64,
+    /// Reason for closure (`"terminated"`, `"foreground_changed"`,
+    /// `"recovered"`, `"sleep_split"`); empty for open sessions.
+    pub exit_reason: String,
+}

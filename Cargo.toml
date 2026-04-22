@@ -4,6 +4,7 @@ members = [
     "crates/ludex-core",
     "crates/ludex-daemon",
     "crates/ludex-cli",
+    "crates/ludex-dbus-types",
     "crates/ludex-enrich",
     "app/src-tauri",
 ]

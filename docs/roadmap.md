@@ -158,17 +158,6 @@ heatmap, genre donut, sessions-this-week bar.
 threshold, GPU threshold. Minimise-to-tray with current-session
 badge.
 
-### GUI backlog (deferred from M6 tranches)
-
-Technical debt surfaced during M6 implementation, to be addressed
-after M6.6 or when it becomes user-visible:
-
-- **Duplicated DTOs between `ludex-daemon::dbus` and
-  `app/src-tauri/src/bridge.rs`.** Keeps the GUI binary free of
-  the detector/sqlite stack but risks drift on wire-format
-  changes. A small `ludex-dbus-types` crate would DRY them if the
-  API grows.
-
 ### Post-M6 (unscheduled)
 
 - Save-file backup scoped to Proton prefixes, opt-in per game.

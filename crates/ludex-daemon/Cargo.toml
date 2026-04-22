@@ -29,6 +29,7 @@ tracing-subscriber = { workspace = true }
 zbus = { workspace = true }
 
 ludex-core = { path = "../ludex-core" }
+ludex-dbus-types = { path = "../ludex-dbus-types" }
 ludex-enrich = { path = "../ludex-enrich" }
 
 [dev-dependencies]
