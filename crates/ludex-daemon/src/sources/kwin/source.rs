@@ -22,6 +22,7 @@ use zbus::Connection;
 
 use crate::event::GameEvent;
 use crate::gate::{Gate, GateInput};
+use crate::proc::pidfd;
 
 use super::transition::{transition_for, AcceptedForeground, ForegroundMeta, Transition};
 
@@ -167,11 +168,28 @@ impl KWinForegroundSource {
         info!(plugin = PLUGIN_NAME, "KWin foreground script installed");
 
         let mut current: Option<AcceptedForeground> = None;
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<u32>();
 
         loop {
             tokio::select! {
+                biased;
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() { break; }
+                }
+                Some(exited_pid) = exit_rx.recv() => {
+                    if current.as_ref().is_some_and(|c| c.pid == exited_pid) {
+                        let Some(prev) = current.take() else { continue };
+                        info!(pid = exited_pid, "tracked process exited; closing session");
+                        let _ = event_tx
+                            .send(GameEvent::Stopped {
+                                key: prev.key,
+                                at: OffsetDateTime::now_utc(),
+                            })
+                            .await;
+                    }
+                    // Else: a stale pidfd fired for a previously-tracked
+                    // process. The foreground is different now, so nothing
+                    // to do.
                 }
                 maybe = activation_rx.recv() => {
                     let Some(activation) = maybe else { break; };
@@ -200,6 +218,7 @@ impl KWinForegroundSource {
                         activation.pid,
                         &mut current,
                         &event_tx,
+                        &exit_tx,
                     )
                     .await;
                 }
@@ -278,12 +297,16 @@ fn script_path() -> Result<PathBuf> {
     Ok(dir.join("kwin-foreground.js"))
 }
 
-/// Issue whatever events a computed transition calls for.
+/// Issue whatever events a computed transition calls for, and set up
+/// a pidfd-based exit watcher for any newly-tracked PID so the
+/// session closes promptly if the process exits without the
+/// foreground ever changing.
 async fn apply_transition(
     transition: Transition,
     new_pid: u32,
     current: &mut Option<AcceptedForeground>,
     events: &mpsc::Sender<GameEvent>,
+    exit_tx: &mpsc::UnboundedSender<u32>,
 ) {
     let now = OffsetDateTime::now_utc();
     match transition {
@@ -304,6 +327,7 @@ async fn apply_transition(
                     at: now,
                 })
                 .await;
+            let _ = pidfd::watch(new_pid, exit_tx.clone());
             *current = Some(AcceptedForeground {
                 pid: new_pid,
                 key,
@@ -324,6 +348,7 @@ async fn apply_transition(
                     at: now,
                 })
                 .await;
+            let _ = pidfd::watch(new_pid, exit_tx.clone());
             *current = Some(AcceptedForeground {
                 pid: new_pid,
                 key: start,

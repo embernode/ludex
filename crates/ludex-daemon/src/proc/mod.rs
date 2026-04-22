@@ -15,4 +15,5 @@ pub mod exe;
 pub mod fdinfo;
 pub mod fds;
 pub mod maps;
+pub mod pidfd;
 pub mod tree;
