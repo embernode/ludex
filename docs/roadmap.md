@@ -132,12 +132,52 @@ Delivered in tranches because the three launchers are in different cold reality:
 
 ### M6 — GUI
 
-- Tauri 2 + SvelteKit app (`app/`).
-- D-Bus client (`zbus` via Tauri command bridge).
-- ECharts dashboards: per-game daily playtime line, calendar-heatmap, genre donut, sessions-this-week bar.
-- Per-game detail view with all session rows and interactive/full split.
-- Settings: idle threshold, GPU usage thresholds, block/force lists editor.
-- System tray with current-session badge.
+Delivered in tranches because each slice adds user-visible value and
+the surface is large:
+
+**M6.1 — Public D-Bus API (daemon side).** `net.ludex.Tracker1`:
+List / Get / Recent sessions methods, Application-added / Session-
+started / Session-ended signals. The contract every later tranche
+builds on.
+
+**M6.2 — Tauri 2 + SvelteKit scaffold.** Workspace member, config,
+placeholder icon, CI. No data yet; just prove the toolchain.
+
+**M6.3 — First reactive view.** zbus proxy in `src-tauri/`, Tauri
+commands, signal forwarder, Svelte home page showing every tracked
+application with live updates.
+
+**M6.4 — Multi-page navigation.** Layout shell with top nav;
+`/recent` all-sessions view; `/app/:id` per-application detail with
+session history.
+
+**M6.5 — ECharts dashboards.** Daily-playtime line, calendar
+heatmap, genre donut, sessions-this-week bar.
+
+**M6.6 — Settings + system tray.** Block/force list editor, idle
+threshold, GPU threshold. Minimise-to-tray with current-session
+badge.
+
+### GUI backlog (deferred from M6 tranches)
+
+Technical debt surfaced during M6 implementation, to be addressed
+after M6.6 or when it becomes user-visible:
+
+- **Daemon-restart resilience in `src-tauri/bridge.rs`.** If
+  `ludex-daemon` restarts while the GUI is open, the zbus match
+  rules follow the old well-known-name owner and stop firing.
+  Refresh recovers manually. Fix: subscribe to `NameOwnerChanged`
+  on `net.ludex.Tracker1` and rebuild the three signal streams on
+  owner change.
+- **Duplicated DTOs between `ludex-daemon::dbus` and
+  `app/src-tauri/src/bridge.rs`.** Keeps the GUI binary free of
+  the detector/sqlite stack but risks drift on wire-format
+  changes. A small `ludex-dbus-types` crate would DRY them if the
+  API grows.
+- **Friendlier error UX.** `friendly()` in the bridge currently
+  returns `to_string()` on every zbus error. Special-case
+  `ServiceUnknown` → "ludex-daemon is not running" and similar,
+  so the empty state is more explainable.
 
 ### Post-M6 (unscheduled)
 
