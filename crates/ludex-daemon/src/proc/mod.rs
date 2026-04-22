@@ -10,6 +10,7 @@
 //! The parsers are pure `&str`/`&[u8]` functions so they stay testable
 //! without a live process backing them.
 
+pub mod environ;
 pub mod exe;
 pub mod fdinfo;
 pub mod fds;

@@ -24,10 +24,10 @@
 //!
 //! Anything else is rejected with a typed reason suitable for logs.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::proc::{exe, fdinfo, maps};
+use crate::proc::{environ, exe, fdinfo, maps};
 
 /// Knobs the daemon supplies to the gate.
 #[derive(Debug, Clone)]
@@ -42,6 +42,15 @@ pub struct GateConfig {
     /// non-fullscreen window. Games use gigabytes; desktop apps use
     /// kilobytes. 50 MiB is a conservative separator.
     pub gpu_memory_threshold_bytes: u64,
+
+    /// Environment-variable names that mark a process as launched by a
+    /// known launcher. A process whose `/proc/<pid>/environ` contains
+    /// any of these is handled by the corresponding launcher source
+    /// (Steam / Lutris / Heroic), not by the foreground fallback.
+    /// Without this list the daemon double-counts every Proton game:
+    /// once via `SteamSource.content_log`, once via
+    /// `KWinForegroundSource` on the Wine process's foreground window.
+    pub launcher_env_vars: HashSet<String>,
 }
 
 impl Default for GateConfig {
@@ -49,8 +58,35 @@ impl Default for GateConfig {
         Self {
             blocklist: default_blocklist(),
             gpu_memory_threshold_bytes: 50 * 1024 * 1024,
+            launcher_env_vars: default_launcher_env_vars(),
         }
     }
+}
+
+/// Environment variables that mean "a launcher started this process,
+/// so don't count it again from the foreground source".
+///
+/// Kept to vars that are only set on the *game's* own process
+/// (not inherited by unrelated children of the user shell): Steam's
+/// `SteamGameId` / `SteamAppId`, Proton's `STEAM_COMPAT_APP_ID`,
+/// Lutris's `LUTRIS_GAME_UUID`, Heroic's `HEROIC_APP_NAME`.
+///
+/// Inherited-wrapper variables (`STEAM_RUNTIME`, `STEAM_BASE_FOLDER`,
+/// `PRESSURE_VESSEL_*`) are deliberately **not** included: they show
+/// up in every Steam-originating child shell too and would cause
+/// false rejections.
+#[must_use]
+pub fn default_launcher_env_vars() -> HashSet<String> {
+    [
+        "SteamGameId",
+        "SteamAppId",
+        "STEAM_COMPAT_APP_ID",
+        "LUTRIS_GAME_UUID",
+        "HEROIC_APP_NAME",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect()
 }
 
 /// Baseline never-track binaries on KDE Plasma.
@@ -130,6 +166,10 @@ pub enum RejectionReason {
     ExeUnreadable,
     /// The executable's basename is in the blocklist.
     Blocklisted,
+    /// The process's environment contains a launcher-attribution
+    /// variable; the launcher's own source (Steam/Lutris/Heroic)
+    /// handles it instead of the fallback.
+    AttributedToLauncher,
     /// `/proc/<pid>/maps` could not be read.
     MapsUnreadable,
     /// No graphics library was mapped into the process.
@@ -143,10 +183,12 @@ pub enum RejectionReason {
 ///
 /// Every input it depends on is explicit. No `/proc` reads, no async,
 /// no hidden state — which makes every decision branch straightforward
-/// to unit-test.
+/// to unit-test. Kept crate-internal; callers outside the daemon go
+/// through [`Gate::decide`].
 #[must_use]
-pub fn decide_from_inputs(
+pub(crate) fn decide_from_inputs(
     exe: Option<&Path>,
+    environ: Option<&HashMap<String, String>>,
     libs: Option<maps::GraphicsLibraries>,
     gpu: Option<&fdinfo::GpuSummary>,
     window_is_fullscreen: bool,
@@ -157,6 +199,11 @@ pub fn decide_from_inputs(
     };
     if is_blocklisted(exe_path, &config.blocklist) {
         return GateDecision::Reject(RejectionReason::Blocklisted);
+    }
+    if let Some(env) = environ {
+        if env.keys().any(|k| config.launcher_env_vars.contains(k)) {
+            return GateDecision::Reject(RejectionReason::AttributedToLauncher);
+        }
     }
     let Some(libs) = libs else {
         return GateDecision::Reject(RejectionReason::MapsUnreadable);
@@ -210,6 +257,18 @@ impl Gate {
         if is_blocklisted(&exe_path, &self.config.blocklist) {
             return GateDecision::Reject(RejectionReason::Blocklisted);
         }
+        // Launcher-attribution check. Reading environ is cheap (single
+        // file read) and short-circuits the more expensive maps/fdinfo
+        // reads when the process is already owned by a launcher.
+        let env = environ::read(input.pid).await.ok();
+        if let Some(env) = env.as_ref() {
+            if env
+                .keys()
+                .any(|k| self.config.launcher_env_vars.contains(k))
+            {
+                return GateDecision::Reject(RejectionReason::AttributedToLauncher);
+            }
+        }
         let Ok(libs) = maps::read(input.pid).await else {
             return GateDecision::Reject(RejectionReason::MapsUnreadable);
         };
@@ -225,6 +284,7 @@ impl Gate {
         };
         decide_from_inputs(
             Some(&exe_path),
+            env.as_ref(),
             Some(libs),
             gpu.as_ref(),
             input.window_is_fullscreen,
@@ -245,7 +305,15 @@ mod tests {
                 .into_iter()
                 .collect(),
             gpu_memory_threshold_bytes: 10 * 1024 * 1024,
+            launcher_env_vars: default_launcher_env_vars(),
         }
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
     }
 
     fn gl_only() -> GraphicsLibraries {
@@ -261,35 +329,35 @@ mod tests {
 
     #[test]
     fn missing_exe_rejects() {
-        let d = decide_from_inputs(None, Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(None, None, Some(gl_only()), None, true, &cfg());
         assert_eq!(d, GateDecision::Reject(RejectionReason::ExeUnreadable));
     }
 
     #[test]
     fn blocklisted_exe_rejects_even_if_fullscreen_and_gl() {
         let exe = PathBuf::from("/usr/bin/kwin_wayland");
-        let d = decide_from_inputs(Some(&exe), Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), None, true, &cfg());
         assert_eq!(d, GateDecision::Reject(RejectionReason::Blocklisted));
     }
 
     #[test]
     fn missing_maps_rejects() {
         let exe = PathBuf::from("/opt/games/foo/foo");
-        let d = decide_from_inputs(Some(&exe), None, None, true, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, None, None, true, &cfg());
         assert_eq!(d, GateDecision::Reject(RejectionReason::MapsUnreadable));
     }
 
     #[test]
     fn no_graphics_library_rejects() {
         let exe = PathBuf::from("/opt/games/foo/foo");
-        let d = decide_from_inputs(Some(&exe), Some(no_libs()), None, true, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, Some(no_libs()), None, true, &cfg());
         assert_eq!(d, GateDecision::Reject(RejectionReason::NoGraphicsLibrary));
     }
 
     #[test]
     fn fullscreen_with_graphics_library_accepts() {
         let exe = PathBuf::from("/opt/games/foo/foo");
-        let d = decide_from_inputs(Some(&exe), Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), None, true, &cfg());
         match d {
             GateDecision::Accept(a) => {
                 assert_eq!(a.executable_path, exe);
@@ -302,7 +370,7 @@ mod tests {
     #[test]
     fn non_fullscreen_without_gpu_rejects() {
         let exe = PathBuf::from("/opt/games/foo/foo");
-        let d = decide_from_inputs(Some(&exe), Some(gl_only()), None, false, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), None, false, &cfg());
         assert_eq!(
             d,
             GateDecision::Reject(RejectionReason::NotFullscreenAndLowGpu)
@@ -317,7 +385,7 @@ mod tests {
             memory_bytes: 5 * 1024 * 1024, // below 10 MiB threshold
             engine_nanoseconds: 0,
         };
-        let d = decide_from_inputs(Some(&exe), Some(gl_only()), Some(&gpu), false, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), Some(&gpu), false, &cfg());
         assert_eq!(
             d,
             GateDecision::Reject(RejectionReason::NotFullscreenAndLowGpu)
@@ -332,8 +400,86 @@ mod tests {
             memory_bytes: 500 * 1024 * 1024, // 500 MiB, well above
             engine_nanoseconds: 123,
         };
-        let d = decide_from_inputs(Some(&exe), Some(gl_only()), Some(&gpu), false, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), Some(&gpu), false, &cfg());
         assert!(matches!(d, GateDecision::Accept(_)));
+    }
+
+    #[test]
+    fn steam_env_rejects_with_launcher_attribution() {
+        let exe = PathBuf::from("/home/u/.steam/steamapps/common/foo/foo.exe");
+        let env = env_of(&[("SteamGameId", "440"), ("SteamAppId", "440")]);
+        // Fullscreen + graphics library would otherwise accept; the
+        // environ check must short-circuit first.
+        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        assert_eq!(
+            d,
+            GateDecision::Reject(RejectionReason::AttributedToLauncher)
+        );
+    }
+
+    #[test]
+    fn proton_compat_env_rejects() {
+        let exe = PathBuf::from("/home/u/game.exe");
+        let env = env_of(&[("STEAM_COMPAT_APP_ID", "730")]);
+        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        assert_eq!(
+            d,
+            GateDecision::Reject(RejectionReason::AttributedToLauncher)
+        );
+    }
+
+    #[test]
+    fn lutris_uuid_env_rejects() {
+        let exe = PathBuf::from("/home/u/games/foo");
+        let env = env_of(&[("LUTRIS_GAME_UUID", "abc-123")]);
+        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        assert_eq!(
+            d,
+            GateDecision::Reject(RejectionReason::AttributedToLauncher)
+        );
+    }
+
+    #[test]
+    fn heroic_env_rejects() {
+        let exe = PathBuf::from("/home/u/Games/legendary/foo/foo.exe");
+        let env = env_of(&[("HEROIC_APP_NAME", "com.example.foo")]);
+        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        assert_eq!(
+            d,
+            GateDecision::Reject(RejectionReason::AttributedToLauncher)
+        );
+    }
+
+    #[test]
+    fn generic_steam_runtime_env_does_not_reject() {
+        // Variables inherited by every child of a terminal that had
+        // Steam started from it must not trigger a rejection —
+        // otherwise `ludex-daemon` itself (or a user shell descendant)
+        // could be wrongly rejected.
+        let exe = PathBuf::from("/opt/games/foo/foo");
+        let env = env_of(&[
+            (
+                "STEAM_RUNTIME",
+                "/home/u/.local/share/Steam/ubuntu12_32/steam-runtime",
+            ),
+            ("STEAM_BASE_FOLDER", "/home/u/.local/share/Steam"),
+        ]);
+        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        assert!(matches!(d, GateDecision::Accept(_)), "got {d:?}");
+    }
+
+    #[test]
+    fn default_launcher_env_vars_covers_expected_names() {
+        let vars = default_launcher_env_vars();
+        for expected in [
+            "SteamGameId",
+            "SteamAppId",
+            "STEAM_COMPAT_APP_ID",
+            "LUTRIS_GAME_UUID",
+            "HEROIC_APP_NAME",
+        ] {
+            assert!(vars.contains(expected), "missing {expected}");
+        }
     }
 
     #[test]
