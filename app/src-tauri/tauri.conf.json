@@ -1,0 +1,34 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "ludex",
+    "version": "0.0.0",
+    "identifier": "net.ludex.gui",
+    "build": {
+        "beforeDevCommand": "pnpm run dev",
+        "beforeBuildCommand": "pnpm run build",
+        "devUrl": "http://localhost:1420",
+        "frontendDist": "../build"
+    },
+    "app": {
+        "windows": [
+            {
+                "title": "ludex",
+                "width": 1024,
+                "height": 720,
+                "minWidth": 640,
+                "minHeight": 480,
+                "resizable": true
+            }
+        ],
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": false,
+        "targets": "all",
+        "category": "Utility",
+        "shortDescription": "Linux playtime tracker",
+        "longDescription": "Launcher-agnostic playtime tracker for Linux, with automatic detection across Steam and native games."
+    }
+}

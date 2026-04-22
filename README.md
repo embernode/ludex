@@ -48,7 +48,24 @@ docs/                 # architecture, roadmap
 
 ## Building
 
-Nothing to build yet. Milestones are tracked in [`docs/roadmap.md`](docs/roadmap.md).
+Workspace layout:
+
+- `crates/ludex-daemon` and `crates/ludex-cli` are pure Rust and build
+  with `cargo build`.
+- `app/src-tauri` is the Tauri host for the desktop UI. Building or
+  running it needs WebKitGTK 4.1 + javascriptcoregtk 4.1 installed at
+  system level (Arch: `pacman -S webkit2gtk-4.1`).
+
+### Running the UI in dev mode
+
+```sh
+cd app
+pnpm install          # one-off; lockfile is committed
+pnpm tauri dev        # launches the webview + hot-reloads Svelte edits
+```
+
+See [`docs/roadmap.md`](docs/roadmap.md) for the phased milestone
+plan.
 
 ## License
 

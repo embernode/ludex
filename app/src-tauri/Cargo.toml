@@ -1,0 +1,28 @@
+[package]
+name = "ludex-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+description = "Tauri desktop UI for ludex"
+
+[lib]
+name = "ludex_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+tauri = { version = "2", features = [] }
+tauri-plugin-log = "2"
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

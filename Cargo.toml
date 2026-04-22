@@ -5,6 +5,7 @@ members = [
     "crates/ludex-daemon",
     "crates/ludex-cli",
     "crates/ludex-enrich",
+    "app/src-tauri",
 ]
 
 [workspace.package]

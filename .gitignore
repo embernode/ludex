@@ -9,10 +9,10 @@ Cargo.lock.bak
 
 # Node / Tauri frontend
 /app/node_modules/
-/app/dist/
 /app/.svelte-kit/
 /app/build/
-/src-tauri/target/
+/app/src-tauri/target/
+/app/src-tauri/gen/
 
 # Editors / OS
 .DS_Store
