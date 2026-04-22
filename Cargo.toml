@@ -68,7 +68,11 @@ proptest = "1"
 tempfile = "3"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` rather than `forbid` so individual call sites can opt in
+# with a #[allow(unsafe_code, reason = "...")] and a SAFETY comment.
+# Today this unblocks the WebKitGTK env-var shim in ludex-gui;
+# every other crate is unsafe-free.
+unsafe_code = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
 
