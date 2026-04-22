@@ -27,6 +27,7 @@ use tracing::{error, info, instrument, warn};
 
 use crate::event::GameEvent;
 use crate::idle::IdleTracker;
+use crate::sleep::SleepTracker;
 
 /// Heartbeat cadence in seconds. Also the upper bound on runtime lost to
 /// a daemon crash.
@@ -42,10 +43,15 @@ struct OpenSession {
     session_id: i64,
     application_id: i64,
     started_at: OffsetDateTime,
-    /// Cumulative idle seconds at session start. The delta against the
-    /// tracker's current value is subtracted from the session's full
-    /// runtime to yield the interactive runtime.
+    /// Cumulative idle seconds at session start. The delta against
+    /// the tracker's current value is subtracted from the session's
+    /// full runtime to yield the interactive runtime.
     baseline_idle_seconds: i64,
+    /// Cumulative suspended seconds at session start. The delta is
+    /// subtracted from wall-clock elapsed time before anything else;
+    /// a system that suspended for eight hours mid-session must not
+    /// count those eight hours as either full or interactive runtime.
+    baseline_suspended_seconds: i64,
 }
 
 /// Stateful session bookkeeper.
@@ -53,24 +59,28 @@ pub struct SessionManager {
     db: Database,
     enrichment_ctx: Arc<EnrichmentContext>,
     idle_tracker: Arc<IdleTracker>,
+    sleep_tracker: Arc<SleepTracker>,
     open: HashMap<GameKey, OpenSession>,
 }
 
 impl SessionManager {
     /// Construct a manager that reads/writes the given [`Database`],
     /// spawns enrichment with the given [`EnrichmentContext`] on new
-    /// applications, and queries the shared [`IdleTracker`] for the
-    /// user's idle time during each session.
+    /// applications, and queries the shared [`IdleTracker`] and
+    /// [`SleepTracker`] for the user's idle and system-suspended time
+    /// during each session.
     #[must_use]
     pub fn new(
         db: Database,
         enrichment_ctx: Arc<EnrichmentContext>,
         idle_tracker: Arc<IdleTracker>,
+        sleep_tracker: Arc<SleepTracker>,
     ) -> Self {
         Self {
             db,
             enrichment_ctx,
             idle_tracker,
+            sleep_tracker,
             open: HashMap::new(),
         }
     }
@@ -167,11 +177,13 @@ impl SessionManager {
             .await?;
         let session = self.db.sessions().begin(app.id, at).await?;
         let baseline_idle_seconds = self.idle_tracker.accumulated_idle_seconds();
+        let baseline_suspended_seconds = self.sleep_tracker.accumulated_suspended_seconds();
         info!(
             app_id = app.id,
             session_id = session.id,
             product_name = %app.product_name,
             baseline_idle_seconds,
+            baseline_suspended_seconds,
             "session opened"
         );
         self.open.insert(
@@ -181,6 +193,7 @@ impl SessionManager {
                 application_id: app.id,
                 started_at: at,
                 baseline_idle_seconds,
+                baseline_suspended_seconds,
             },
         );
         Ok(())
@@ -269,16 +282,26 @@ impl SessionManager {
     /// Compute full and interactive runtime seconds for an open
     /// session at `now`.
     ///
-    /// Interactive runtime is `full_runtime − (idle_during_session)`,
-    /// clamped into `[0, full_runtime]`. The clamp matters because
-    /// the CHECK constraint on `sessions.interactive_runtime_seconds`
-    /// is `0 <= interactive <= full`; a single buggy idle sample
-    /// (e.g. from a clock jump) must not corrupt an in-flight
-    /// heartbeat.
+    /// Wall-clock elapsed time is the upper bound. From it we
+    /// subtract system-suspend time to produce `full_runtime` — a
+    /// session that survives an eight-hour laptop-closed stretch
+    /// must not count those hours as gameplay. Interactive runtime
+    /// further subtracts user-idle time (the user stepped away but
+    /// the process kept running).
+    ///
+    /// Both outputs are clamped into `[0, full_runtime]` because the
+    /// CHECK constraints on `sessions.*_runtime_seconds` reject
+    /// negative values and require `interactive ≤ full`. A single
+    /// buggy sample (spurious clock jump, NTP step) must not corrupt
+    /// an in-flight heartbeat.
     fn runtimes_for(&self, open: &OpenSession, now: OffsetDateTime) -> (i64, i64) {
-        let full = (now - open.started_at).whole_seconds().max(0);
-        let current_idle = self.idle_tracker.accumulated_idle_seconds();
-        let idle_during = (current_idle - open.baseline_idle_seconds).max(0);
+        let wall = (now - open.started_at).whole_seconds().max(0);
+        let suspended_during = (self.sleep_tracker.accumulated_suspended_seconds()
+            - open.baseline_suspended_seconds)
+            .max(0);
+        let full = (wall - suspended_during).clamp(0, wall);
+        let idle_during =
+            (self.idle_tracker.accumulated_idle_seconds() - open.baseline_idle_seconds).max(0);
         let interactive = (full - idle_during).clamp(0, full);
         (full, interactive)
     }

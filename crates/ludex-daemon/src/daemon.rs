@@ -14,6 +14,7 @@ use tracing_subscriber::EnvFilter;
 use crate::gate::{Gate, GateConfig};
 use crate::idle::{self, IdleTracker};
 use crate::session_manager::SessionManager;
+use crate::sleep::{self, SleepTracker};
 use crate::sources::{KWinForegroundSource, SteamSource};
 
 const EVENT_CHANNEL_CAPACITY: usize = 128;
@@ -48,11 +49,13 @@ pub async fn run() -> Result<()> {
     );
 
     let idle_tracker = Arc::new(IdleTracker::new());
+    let sleep_tracker = Arc::new(SleepTracker::new());
 
     let manager = SessionManager::new(
         db.clone(),
         Arc::clone(&enrichment_ctx),
         Arc::clone(&idle_tracker),
+        Arc::clone(&sleep_tracker),
     );
     manager
         .recover_orphans()
@@ -73,6 +76,15 @@ pub async fn run() -> Result<()> {
                 warn!(error = %e, "idle watcher exited with error");
             }
         })
+    };
+
+    // Sleep tracker polls the wall/monotonic clock drift every
+    // `DEFAULT_TICK_SECONDS` and adds any detected suspend to the
+    // accumulator. No D-Bus dependency; works across every desktop.
+    let sleep_handle = {
+        let tracker = Arc::clone(&sleep_tracker);
+        let sd = shutdown_rx.clone();
+        tokio::spawn(async move { sleep::run_watcher(tracker, sd).await })
     };
 
     // Sources. Each source is optional: if its backing state is not
@@ -125,6 +137,7 @@ pub async fn run() -> Result<()> {
         let _ = h.await;
     }
     let _ = idle_handle.await;
+    let _ = sleep_handle.await;
     manager_handle.await.context("session manager task")??;
 
     db.close().await;
