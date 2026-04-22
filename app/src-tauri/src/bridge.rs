@@ -156,8 +156,8 @@ pub(crate) type BridgeState<'r> = State<'r, Arc<TrackerBridge>>;
 pub(crate) async fn list_applications(
     bridge: BridgeState<'_>,
 ) -> Result<Vec<ApplicationSummary>, String> {
-    let proxy = bridge.proxy().await.map_err(friendly)?;
-    proxy.list_applications().await.map_err(friendly)
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy.list_applications().await.map_err(|e| friendly(&e))
 }
 
 /// `invoke('get_application', { id })` returns one application by
@@ -167,8 +167,8 @@ pub(crate) async fn get_application(
     bridge: BridgeState<'_>,
     id: i64,
 ) -> Result<Vec<ApplicationSummary>, String> {
-    let proxy = bridge.proxy().await.map_err(friendly)?;
-    proxy.get_application(id).await.map_err(friendly)
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy.get_application(id).await.map_err(|e| friendly(&e))
 }
 
 /// `invoke('list_recent_sessions', { limit })` returns the N most
@@ -178,8 +178,8 @@ pub(crate) async fn list_recent_sessions(
     bridge: BridgeState<'_>,
     limit: u32,
 ) -> Result<Vec<SessionSummary>, String> {
-    let proxy = bridge.proxy().await.map_err(friendly)?;
-    proxy.list_recent_sessions(limit).await.map_err(friendly)
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy.list_recent_sessions(limit).await.map_err(|e| friendly(&e))
 }
 
 /// `invoke('list_sessions_for_application', { applicationId, limit })`.
@@ -189,11 +189,11 @@ pub(crate) async fn list_sessions_for_application(
     application_id: i64,
     limit: u32,
 ) -> Result<Vec<SessionSummary>, String> {
-    let proxy = bridge.proxy().await.map_err(friendly)?;
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
     proxy
         .list_sessions_for_application(application_id, limit)
         .await
-        .map_err(friendly)
+        .map_err(|e| friendly(&e))
 }
 
 /// Subscribe to the daemon's D-Bus signals and re-emit them as
@@ -271,11 +271,20 @@ pub(crate) async fn run_signal_forwarder(app: AppHandle, bridge: Arc<TrackerBrid
     }
 }
 
-/// Convert any error into the short, human-readable string Tauri
-/// serializes to the frontend. `to_string` is usually enough;
-/// we wrap here to keep a single place to refine messages later
-/// (e.g. special-case `ServiceUnknown` into "ludex-daemon is not
-/// running").
-fn friendly(e: impl std::fmt::Display) -> String {
+/// Convert a zbus error into a short, human-readable string for the
+/// frontend to show verbatim.
+///
+/// `ServiceUnknown` in particular is a common-case failure — the
+/// user opened the GUI without the daemon running — and must not
+/// leak its D-Bus wire form into the UI. Other errors pass through
+/// as-is; they're rare enough to be worth their full text.
+fn friendly(e: &zbus::Error) -> String {
+    if let zbus::Error::MethodError(name, _message, _reply) = e {
+        if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown" {
+            return "ludex-daemon is not running. Start it with `ludex-daemon`, \
+                or enable the systemd user service."
+                .to_owned();
+        }
+    }
     e.to_string()
 }
