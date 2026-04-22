@@ -14,11 +14,13 @@
 //!   at `now` with [`ExitReason::Terminated`](ludex_core::ExitReason::Terminated).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use ludex_core::{
     Application, Database, Error, ExitReason, GameKey, GraphicsPlatform, Icons, NewApplication,
     PlaybackDelta, ProcessArchitecture, RuntimeSnapshot,
 };
+use ludex_enrich::EnrichmentContext;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info, instrument, warn};
@@ -44,15 +46,19 @@ struct OpenSession {
 /// Stateful session bookkeeper.
 pub struct SessionManager {
     db: Database,
+    enrichment_ctx: Arc<EnrichmentContext>,
     open: HashMap<GameKey, OpenSession>,
 }
 
 impl SessionManager {
-    /// Construct a manager that reads/writes the given [`Database`].
+    /// Construct a manager that reads/writes the given [`Database`] and
+    /// spawns enrichment with the given [`EnrichmentContext`] whenever it
+    /// sees a new application for the first time.
     #[must_use]
-    pub fn new(db: Database) -> Self {
+    pub fn new(db: Database, enrichment_ctx: Arc<EnrichmentContext>) -> Self {
         Self {
             db,
+            enrichment_ctx,
             open: HashMap::new(),
         }
     }
@@ -183,7 +189,8 @@ impl SessionManager {
         if let Some(app) = self.db.applications().find_by_key(key).await? {
             return Ok(app);
         }
-        self.db
+        let app = self
+            .db
             .applications()
             .create(NewApplication {
                 launcher_type: key.launcher_type,
@@ -201,7 +208,25 @@ impl SessionManager {
                 icons: Icons::default(),
                 first_seen_at: now,
             })
-            .await
+            .await?;
+        self.spawn_enrichment(app.id);
+        Ok(app)
+    }
+
+    /// Spawn the enrichment cascade against `app_id` on the runtime. The
+    /// cascade reads every configured identity source (`.desktop`, PE
+    /// `FileVersionInfo`, GOG `.info`, Steam `.acf`, etc.) and issues one
+    /// `update_identity` call with whatever it finds. Errors are logged
+    /// and swallowed; the handle is intentionally dropped — enrichment
+    /// is best-effort and must never block or fail session tracking.
+    fn spawn_enrichment(&self, app_id: i64) {
+        let db = self.db.clone();
+        let ctx = Arc::clone(&self.enrichment_ctx);
+        tokio::spawn(async move {
+            if let Err(e) = ludex_enrich::run_cascade(&db, &ctx, app_id).await {
+                warn!(app_id, error = %e, "enrichment failed");
+            }
+        });
     }
 
     async fn heartbeat_open_sessions(&self) -> Result<(), Error> {

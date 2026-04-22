@@ -1,8 +1,11 @@
 //! Top-level daemon wiring: open the database, spawn sources, spawn the
 //! session manager, run until a shutdown signal arrives.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use ludex_core::{default_database_path, Database};
+use ludex_enrich::EnrichmentContext;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
@@ -33,7 +36,16 @@ pub async fn run() -> Result<()> {
         .await
         .with_context(|| format!("open database at {}", db_path.display()))?;
 
-    let manager = SessionManager::new(db.clone());
+    let enrichment_ctx = Arc::new(EnrichmentContext::detect_from_env());
+    info!(
+        desktop_dirs = enrichment_ctx.desktop_dirs.len(),
+        steam = enrichment_ctx.steam_dir.is_some(),
+        heroic = enrichment_ctx.heroic_config_dir.is_some(),
+        lutris = enrichment_ctx.lutris_pga_db.is_some(),
+        "enrichment context ready"
+    );
+
+    let manager = SessionManager::new(db.clone(), Arc::clone(&enrichment_ctx));
     manager
         .recover_orphans()
         .await
@@ -62,11 +74,10 @@ pub async fn run() -> Result<()> {
     // exit.
     drop(event_tx);
 
-    // Session manager runs inline on this task; source tasks run on
-    // separate spawned tasks.
+    // Session manager runs on its own task so the main task stays free
+    // to handle the shutdown signal.
     let manager_handle = {
         let sd = shutdown_rx.clone();
-        let manager = SessionManager::new(db.clone());
         tokio::spawn(manager.run(event_rx, sd))
     };
 
