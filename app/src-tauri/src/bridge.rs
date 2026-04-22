@@ -32,6 +32,11 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::OnceCell;
 use zbus::zvariant::Type;
 
+/// Well-known D-Bus service name the daemon registers. Kept in
+/// sync with `ludex_daemon::dbus::SERVICE_NAME`; duplicated on the
+/// GUI side so this crate does not need to link the daemon.
+const SERVICE_NAME: &str = "net.ludex.Tracker1";
+
 /// Tauri event name emitted on every `ApplicationAdded` signal.
 pub(crate) const EVENT_APPLICATION_ADDED: &str = "ludex:application-added";
 /// Tauri event name emitted on every `SessionStarted` signal.
@@ -133,11 +138,17 @@ impl TrackerBridge {
     /// connects to the bus; subsequent calls reuse the cached
     /// connection.
     pub(crate) async fn proxy(&self) -> Result<TrackerProxy<'_>, zbus::Error> {
-        let conn = self
-            .connection
+        TrackerProxy::new(self.connection().await?).await
+    }
+
+    /// Borrow the cached session-bus connection, opening it on first
+    /// call. Used by the signal forwarder to subscribe to
+    /// `NameOwnerChanged` on the same connection as the tracker
+    /// proxy.
+    pub(crate) async fn connection(&self) -> Result<&zbus::Connection, zbus::Error> {
+        self.connection
             .get_or_try_init(zbus::Connection::session)
-            .await?;
-        TrackerProxy::new(conn).await
+            .await
     }
 }
 
@@ -179,7 +190,10 @@ pub(crate) async fn list_recent_sessions(
     limit: u32,
 ) -> Result<Vec<SessionSummary>, String> {
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
-    proxy.list_recent_sessions(limit).await.map_err(|e| friendly(&e))
+    proxy
+        .list_recent_sessions(limit)
+        .await
+        .map_err(|e| friendly(&e))
 }
 
 /// `invoke('list_sessions_for_application', { applicationId, limit })`.
@@ -196,47 +210,96 @@ pub(crate) async fn list_sessions_for_application(
         .map_err(|e| friendly(&e))
 }
 
+/// Why a signal-forwarding session ended — controls whether the
+/// outer loop rebuilds subscriptions or gives up.
+enum SessionOutcome {
+    /// The daemon's well-known name changed owner (restart, or it
+    /// just came up). Rebuild subscriptions against the new owner.
+    OwnerChanged,
+    /// Every signal stream closed without an owner change. Treated
+    /// as terminal: zbus tore down the connection and there's
+    /// nothing to reconnect to here.
+    StreamsClosed,
+    /// We couldn't build the proxy or a subscription at all. The
+    /// daemon may simply not be running yet — outer loop waits for
+    /// the name to come up, then rebuilds.
+    SetupFailed,
+}
+
 /// Subscribe to the daemon's D-Bus signals and re-emit them as
 /// Tauri events so every window can react. Runs forever; spawn on
 /// the Tauri async runtime at setup time.
 ///
-/// A daemon that isn't running at GUI start isn't an error — zbus
-/// still subscribes via match rules on the bus, and signals begin
-/// flowing as soon as the daemon registers its service name.
-/// Daemon *restarts* (well-known name changing owner) require
-/// refreshing the subscription; we log and exit on stream closure
-/// and leave reconnection logic for a later tranche.
+/// A daemon that isn't running at GUI start is not an error — we
+/// wait on `NameOwnerChanged` until it appears, then subscribe.
+/// Daemon *restarts* (the well-known name changing owner) also
+/// trigger a rebuild: zbus's match rules target the current owner,
+/// so without this signals would silently stop flowing until the
+/// user refreshed.
 pub(crate) async fn run_signal_forwarder(app: AppHandle, bridge: Arc<TrackerBridge>) {
+    loop {
+        match run_signal_session(&app, &bridge).await {
+            SessionOutcome::OwnerChanged => {
+                tracing::info!("ludex-daemon owner changed on the bus; rebuilding subscriptions");
+            }
+            SessionOutcome::SetupFailed => {
+                // Wait for the service to appear (or its owner to
+                // change) before retrying. `wait_for_service` uses
+                // the same NameOwnerChanged watcher; it simply
+                // returns when the name is owned.
+                if !wait_for_service(&bridge).await {
+                    tracing::warn!(
+                        "could not reach session bus to await daemon; forwarder exiting"
+                    );
+                    return;
+                }
+            }
+            SessionOutcome::StreamsClosed => {
+                tracing::info!(
+                    "D-Bus signal streams closed with no owner change; forwarder exiting"
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// One subscription lifetime. Returns when the subscription should
+/// be rebuilt (or abandoned).
+async fn run_signal_session(app: &AppHandle, bridge: &TrackerBridge) -> SessionOutcome {
     use futures_util::StreamExt as _;
 
     let proxy = match bridge.proxy().await {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(error = %e, "signal forwarder: could not build proxy; giving up");
-            return;
+            tracing::debug!(error = %e, "signal forwarder: could not build proxy");
+            return SessionOutcome::SetupFailed;
         }
     };
 
     let mut added = match proxy.receive_application_added().await {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!(error = %e, "receive_application_added failed; forwarder exiting");
-            return;
+            tracing::debug!(error = %e, "receive_application_added failed");
+            return SessionOutcome::SetupFailed;
         }
     };
     let mut started = match proxy.receive_session_started().await {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!(error = %e, "receive_session_started failed; forwarder exiting");
-            return;
+            tracing::debug!(error = %e, "receive_session_started failed");
+            return SessionOutcome::SetupFailed;
         }
     };
     let mut ended = match proxy.receive_session_ended().await {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!(error = %e, "receive_session_ended failed; forwarder exiting");
-            return;
+            tracing::debug!(error = %e, "receive_session_ended failed");
+            return SessionOutcome::SetupFailed;
         }
+    };
+    let Some(mut owner_changed) = subscribe_owner_changed(&proxy).await else {
+        return SessionOutcome::SetupFailed;
     };
 
     loop {
@@ -263,12 +326,98 @@ pub(crate) async fn run_signal_forwarder(app: AppHandle, bridge: Arc<TrackerBrid
                     );
                 }
             }
+            Some(_) = owner_changed.next() => {
+                return SessionOutcome::OwnerChanged;
+            }
             else => {
-                tracing::info!("all D-Bus signal streams closed; forwarder exiting");
-                break;
+                return SessionOutcome::StreamsClosed;
             }
         }
     }
+}
+
+/// Subscribe to `NameOwnerChanged` filtered to our service name.
+/// Any element on the resulting stream indicates the owner
+/// transitioned (to a new owner, to nothing, or from nothing); we
+/// treat all of them as "rebuild".
+async fn subscribe_owner_changed(
+    proxy: &TrackerProxy<'_>,
+) -> Option<zbus::fdo::NameOwnerChangedStream> {
+    let dbus = match zbus::fdo::DBusProxy::new(proxy.inner().connection()).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!(error = %e, "could not build DBusProxy for NameOwnerChanged");
+            return None;
+        }
+    };
+    match dbus
+        .receive_name_owner_changed_with_args(&[(0, SERVICE_NAME)])
+        .await
+    {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::debug!(error = %e, "receive_name_owner_changed_with_args failed");
+            None
+        }
+    }
+}
+
+/// Block until `net.ludex.Tracker1` has an owner on the session
+/// bus. Returns `false` only when the bus itself is unreachable —
+/// in that case reconnection is hopeless from inside the GUI
+/// process.
+async fn wait_for_service(bridge: &TrackerBridge) -> bool {
+    use futures_util::StreamExt as _;
+
+    let conn = match bridge.connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "wait_for_service: session bus unavailable");
+            return false;
+        }
+    };
+    let dbus = match zbus::fdo::DBusProxy::new(conn).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "wait_for_service: could not build DBusProxy");
+            return false;
+        }
+    };
+
+    // Subscribe before the has-owner check so we never miss a
+    // transition that happens between the two calls.
+    let mut changes = match dbus
+        .receive_name_owner_changed_with_args(&[(0, SERVICE_NAME)])
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "wait_for_service: could not watch NameOwnerChanged");
+            return false;
+        }
+    };
+
+    let service = match zbus::names::BusName::try_from(SERVICE_NAME) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(error = %e, "wait_for_service: SERVICE_NAME not a valid BusName");
+            return false;
+        }
+    };
+    if matches!(dbus.name_has_owner(service).await, Ok(true)) {
+        return true;
+    }
+
+    while let Some(signal) = changes.next().await {
+        if let Ok(args) = signal.args() {
+            // `new_owner` populated means the name was claimed.
+            // Ignore transitions that only clear the owner.
+            if args.new_owner().is_some() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Convert a zbus error into a short, human-readable string for the

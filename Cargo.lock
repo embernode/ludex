@@ -2503,12 +2503,14 @@ name = "ludex-gui"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-log",
  "tokio",
  "tracing",
+ "zbus",
 ]
 
 [[package]]

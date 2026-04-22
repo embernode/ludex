@@ -163,12 +163,6 @@ badge.
 Technical debt surfaced during M6 implementation, to be addressed
 after M6.6 or when it becomes user-visible:
 
-- **Daemon-restart resilience in `src-tauri/bridge.rs`.** If
-  `ludex-daemon` restarts while the GUI is open, the zbus match
-  rules follow the old well-known-name owner and stop firing.
-  Refresh recovers manually. Fix: subscribe to `NameOwnerChanged`
-  on `net.ludex.Tracker1` and rebuild the three signal streams on
-  owner change.
 - **Duplicated DTOs between `ludex-daemon::dbus` and
   `app/src-tauri/src/bridge.rs`.** Keeps the GUI binary free of
   the detector/sqlite stack but risks drift on wire-format
