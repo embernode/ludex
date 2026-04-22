@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ludex_core::{Database, ExitReason, GameKey};
+use ludex_daemon::idle::IdleTracker;
 use ludex_daemon::{GameEvent, SessionManager};
 use ludex_enrich::EnrichmentContext;
 use time::OffsetDateTime;
@@ -14,6 +15,10 @@ use tokio::sync::{mpsc, watch};
 
 fn default_enrichment_ctx() -> Arc<EnrichmentContext> {
     Arc::new(EnrichmentContext::default())
+}
+
+fn default_idle_tracker() -> Arc<IdleTracker> {
+    Arc::new(IdleTracker::new())
 }
 
 async fn yield_for(ms: u64) {
@@ -25,7 +30,7 @@ async fn yield_for(ms: u64) {
 #[tokio::test]
 async fn started_then_stopped_creates_one_closed_session() {
     let db = Database::open_memory().await.unwrap();
-    let manager = SessionManager::new(db.clone(), default_enrichment_ctx());
+    let manager = SessionManager::new(db.clone(), default_enrichment_ctx(), default_idle_tracker());
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -91,7 +96,7 @@ async fn started_then_stopped_creates_one_closed_session() {
 #[tokio::test]
 async fn duplicate_started_is_ignored() {
     let db = Database::open_memory().await.unwrap();
-    let manager = SessionManager::new(db.clone(), default_enrichment_ctx());
+    let manager = SessionManager::new(db.clone(), default_enrichment_ctx(), default_idle_tracker());
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -132,7 +137,7 @@ async fn duplicate_started_is_ignored() {
 #[tokio::test]
 async fn shutdown_closes_open_sessions() {
     let db = Database::open_memory().await.unwrap();
-    let manager = SessionManager::new(db.clone(), default_enrichment_ctx());
+    let manager = SessionManager::new(db.clone(), default_enrichment_ctx(), default_idle_tracker());
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -216,13 +221,129 @@ async fn recover_orphans_closes_stale_sessions() {
         .unwrap();
 
     // Act.
-    let manager = SessionManager::new(db.clone(), default_enrichment_ctx());
+    let manager = SessionManager::new(db.clone(), default_enrichment_ctx(), default_idle_tracker());
     let closed = manager.recover_orphans().await.unwrap();
     assert_eq!(closed, 1);
 
     let refreshed = db.sessions().find_by_id(stale.id).await.unwrap().unwrap();
     assert_eq!(refreshed.exit_reason, Some(ExitReason::Recovered));
     assert_eq!(refreshed.ended_at, Some(refreshed.heartbeat_at));
+}
+
+/// Idle time that accumulates during a session must be subtracted
+/// from the session's interactive runtime when it closes.
+#[tokio::test]
+async fn idle_time_reduces_interactive_runtime() {
+    let db = Database::open_memory().await.unwrap();
+    let idle = Arc::new(IdleTracker::new());
+    let manager = SessionManager::new(db.clone(), default_enrichment_ctx(), Arc::clone(&idle));
+    let (tx, rx) = mpsc::channel::<GameEvent>(16);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let handle = tokio::spawn(manager.run(rx, shutdown_rx));
+    let at = OffsetDateTime::now_utc();
+    tx.send(GameEvent::Started {
+        key: GameKey::steam("440"),
+        display_name: "Team Fortress 2".into(),
+        at,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    // User goes idle for 30s mid-session.
+    idle.record_idle_interval(30);
+
+    let end = at + time::Duration::seconds(120);
+    tx.send(GameEvent::Stopped {
+        key: GameKey::steam("440"),
+        at: end,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    let app = db
+        .applications()
+        .find_by_key(&GameKey::steam("440"))
+        .await
+        .unwrap()
+        .unwrap();
+    let sessions = db
+        .sessions()
+        .list_for_application(app.id, 10)
+        .await
+        .unwrap();
+    assert_eq!(sessions.len(), 1);
+    let session = &sessions[0];
+    assert_eq!(session.full_runtime_seconds, 120);
+    // Interactive should be full − idle_during_session = 120 − 30 = 90.
+    assert_eq!(session.interactive_runtime_seconds, 90);
+
+    let refreshed = db.applications().find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(refreshed.stat_total_full, 120);
+    assert_eq!(refreshed.stat_total_interactive, 90);
+
+    shutdown_tx.send(true).unwrap();
+    drop(tx);
+    handle.await.unwrap().unwrap();
+}
+
+/// Only idle time that happened *during* the session is subtracted —
+/// idle accumulated before `Started` must not count against the
+/// session's interactive runtime.
+#[tokio::test]
+async fn pre_session_idle_does_not_count_against_session() {
+    let db = Database::open_memory().await.unwrap();
+    let idle = Arc::new(IdleTracker::new());
+    // Before any session exists, pretend the user had already been
+    // idle for two minutes while using the daemon to, say, browse the
+    // GUI. The next session's interactive runtime must not be cut.
+    idle.record_idle_interval(120);
+
+    let manager = SessionManager::new(db.clone(), default_enrichment_ctx(), Arc::clone(&idle));
+    let (tx, rx) = mpsc::channel::<GameEvent>(16);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let handle = tokio::spawn(manager.run(rx, shutdown_rx));
+
+    let at = OffsetDateTime::now_utc();
+    tx.send(GameEvent::Started {
+        key: GameKey::steam("440"),
+        display_name: "Team Fortress 2".into(),
+        at,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    let end = at + time::Duration::seconds(60);
+    tx.send(GameEvent::Stopped {
+        key: GameKey::steam("440"),
+        at: end,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    let app = db
+        .applications()
+        .find_by_key(&GameKey::steam("440"))
+        .await
+        .unwrap()
+        .unwrap();
+    let sessions = db
+        .sessions()
+        .list_for_application(app.id, 10)
+        .await
+        .unwrap();
+    let session = &sessions[0];
+    assert_eq!(session.full_runtime_seconds, 60);
+    // No idle *during* the session → interactive equals full.
+    assert_eq!(session.interactive_runtime_seconds, 60);
+
+    shutdown_tx.send(true).unwrap();
+    drop(tx);
+    handle.await.unwrap().unwrap();
 }
 
 /// When a Started event creates a new application, the enrichment
@@ -245,7 +366,7 @@ async fn enrichment_fires_on_new_application() {
         ..Default::default()
     });
     let db = Database::open_memory().await.unwrap();
-    let manager = SessionManager::new(db.clone(), ctx);
+    let manager = SessionManager::new(db.clone(), ctx, default_idle_tracker());
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let handle = tokio::spawn(manager.run(rx, shutdown_rx));

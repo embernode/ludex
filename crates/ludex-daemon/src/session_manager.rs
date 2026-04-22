@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info, instrument, warn};
 
 use crate::event::GameEvent;
+use crate::idle::IdleTracker;
 
 /// Heartbeat cadence in seconds. Also the upper bound on runtime lost to
 /// a daemon crash.
@@ -41,24 +42,35 @@ struct OpenSession {
     session_id: i64,
     application_id: i64,
     started_at: OffsetDateTime,
+    /// Cumulative idle seconds at session start. The delta against the
+    /// tracker's current value is subtracted from the session's full
+    /// runtime to yield the interactive runtime.
+    baseline_idle_seconds: i64,
 }
 
 /// Stateful session bookkeeper.
 pub struct SessionManager {
     db: Database,
     enrichment_ctx: Arc<EnrichmentContext>,
+    idle_tracker: Arc<IdleTracker>,
     open: HashMap<GameKey, OpenSession>,
 }
 
 impl SessionManager {
-    /// Construct a manager that reads/writes the given [`Database`] and
-    /// spawns enrichment with the given [`EnrichmentContext`] whenever it
-    /// sees a new application for the first time.
+    /// Construct a manager that reads/writes the given [`Database`],
+    /// spawns enrichment with the given [`EnrichmentContext`] on new
+    /// applications, and queries the shared [`IdleTracker`] for the
+    /// user's idle time during each session.
     #[must_use]
-    pub fn new(db: Database, enrichment_ctx: Arc<EnrichmentContext>) -> Self {
+    pub fn new(
+        db: Database,
+        enrichment_ctx: Arc<EnrichmentContext>,
+        idle_tracker: Arc<IdleTracker>,
+    ) -> Self {
         Self {
             db,
             enrichment_ctx,
+            idle_tracker,
             open: HashMap::new(),
         }
     }
@@ -154,10 +166,12 @@ impl SessionManager {
             .find_or_create_application(&key, display_name, at)
             .await?;
         let session = self.db.sessions().begin(app.id, at).await?;
+        let baseline_idle_seconds = self.idle_tracker.accumulated_idle_seconds();
         info!(
             app_id = app.id,
             session_id = session.id,
             product_name = %app.product_name,
+            baseline_idle_seconds,
             "session opened"
         );
         self.open.insert(
@@ -166,6 +180,7 @@ impl SessionManager {
                 session_id: session.id,
                 application_id: app.id,
                 started_at: at,
+                baseline_idle_seconds,
             },
         );
         Ok(())
@@ -235,16 +250,14 @@ impl SessionManager {
         }
         let now = OffsetDateTime::now_utc();
         for open in self.open.values() {
-            let full = (now - open.started_at).whole_seconds().max(0);
+            let (full, interactive) = self.runtimes_for(open, now);
             self.db
                 .sessions()
                 .heartbeat(
                     open.session_id,
                     RuntimeSnapshot {
                         full_runtime_seconds: full,
-                        // Interactive accounting lands in M5; for now it
-                        // mirrors full runtime.
-                        interactive_runtime_seconds: full,
+                        interactive_runtime_seconds: interactive,
                         at: now,
                     },
                 )
@@ -253,14 +266,30 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Compute full and interactive runtime seconds for an open
+    /// session at `now`.
+    ///
+    /// Interactive runtime is `full_runtime − (idle_during_session)`,
+    /// clamped into `[0, full_runtime]`. The clamp matters because
+    /// the CHECK constraint on `sessions.interactive_runtime_seconds`
+    /// is `0 <= interactive <= full`; a single buggy idle sample
+    /// (e.g. from a clock jump) must not corrupt an in-flight
+    /// heartbeat.
+    fn runtimes_for(&self, open: &OpenSession, now: OffsetDateTime) -> (i64, i64) {
+        let full = (now - open.started_at).whole_seconds().max(0);
+        let current_idle = self.idle_tracker.accumulated_idle_seconds();
+        let idle_during = (current_idle - open.baseline_idle_seconds).max(0);
+        let interactive = (full - idle_during).clamp(0, full);
+        (full, interactive)
+    }
+
     async fn close_session(
         &self,
         open: OpenSession,
         ended_at: OffsetDateTime,
         reason: ExitReason,
     ) -> Result<(), Error> {
-        let full = (ended_at - open.started_at).whole_seconds().max(0);
-        let interactive = full;
+        let (full, interactive) = self.runtimes_for(&open, ended_at);
         self.db
             .sessions()
             .end(

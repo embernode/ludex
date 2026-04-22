@@ -59,6 +59,9 @@ freedesktop-desktop-entry = "0.7"
 # Filesystem watching (inotify on Linux)
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 
+# Stream combinators used by zbus property streams
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
 # Test-only helpers
 proptest = "1"
 tempfile = "3"

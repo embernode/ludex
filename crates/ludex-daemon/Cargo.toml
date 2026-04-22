@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+futures-util = { workspace = true }
 notify = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }

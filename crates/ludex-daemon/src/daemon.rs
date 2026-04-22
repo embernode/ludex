@@ -12,6 +12,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::gate::{Gate, GateConfig};
+use crate::idle::{self, IdleTracker};
 use crate::session_manager::SessionManager;
 use crate::sources::{KWinForegroundSource, SteamSource};
 
@@ -46,7 +47,13 @@ pub async fn run() -> Result<()> {
         "enrichment context ready"
     );
 
-    let manager = SessionManager::new(db.clone(), Arc::clone(&enrichment_ctx));
+    let idle_tracker = Arc::new(IdleTracker::new());
+
+    let manager = SessionManager::new(
+        db.clone(),
+        Arc::clone(&enrichment_ctx),
+        Arc::clone(&idle_tracker),
+    );
     manager
         .recover_orphans()
         .await
@@ -54,6 +61,19 @@ pub async fn run() -> Result<()> {
 
     let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Idle tracker watches logind on the system bus. Spawn before any
+    // source so the baseline reflects the live state by the time the
+    // first session opens.
+    let idle_handle = {
+        let tracker = Arc::clone(&idle_tracker);
+        let sd = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = idle::run_watcher(tracker, sd).await {
+                warn!(error = %e, "idle watcher exited with error");
+            }
+        })
+    };
 
     // Sources. Each source is optional: if its backing state is not
     // present, it logs and remains idle rather than failing the daemon.
@@ -104,6 +124,7 @@ pub async fn run() -> Result<()> {
     for h in source_handles {
         let _ = h.await;
     }
+    let _ = idle_handle.await;
     manager_handle.await.context("session manager task")??;
 
     db.close().await;

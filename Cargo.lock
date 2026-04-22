@@ -1085,7 +1085,9 @@ name = "ludex-daemon"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "ludex-core",
+ "ludex-enrich",
  "notify",
  "proptest",
  "tempfile",
@@ -1093,6 +1095,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]
