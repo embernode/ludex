@@ -1,20 +1,44 @@
 //! ludex desktop UI (Tauri + SvelteKit).
 //!
-//! The Rust side is deliberately thin: Tauri hosts a webview that
-//! serves the SvelteKit app, and exposes a D-Bus proxy for
-//! `net.ludex.Tracker1` through a small set of
-//! `#[tauri::command]` bridges (added in M6.3). This module is the
-//! entry point; [`run`] wires the plugins and hands control to
-//! Tauri's event loop.
+//! The Rust host is deliberately thin: Tauri opens a webview that
+//! serves the SvelteKit bundle, and [`bridge`] exposes the daemon's
+//! `net.ludex.Tracker1` D-Bus API through Tauri commands and events.
+//! All layout, state, and presentation live in Svelte.
 
 #![warn(missing_docs)]
 
-/// Start the Tauri application. Blocks the current thread until
-/// the window closes.
+use std::sync::Arc;
+
+use bridge::TrackerBridge;
+
+mod bridge;
+
+/// Start the Tauri application. Blocks the current thread until the
+/// window closes.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let bridge = Arc::new(TrackerBridge::new());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
+        .manage(Arc::clone(&bridge))
+        .setup(move |app| {
+            // Spawn the signal forwarder on Tauri's async runtime
+            // so D-Bus signals from the daemon surface as Tauri
+            // events the frontend can listen for.
+            let handle = app.handle().clone();
+            let bridge = Arc::clone(&bridge);
+            tauri::async_runtime::spawn(async move {
+                bridge::run_signal_forwarder(handle, bridge).await;
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            bridge::list_applications,
+            bridge::get_application,
+            bridge::list_recent_sessions,
+            bridge::list_sessions_for_application,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

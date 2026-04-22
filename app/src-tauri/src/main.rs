@@ -28,10 +28,7 @@ fn ensure_webkit_wayland_compat() {
             // concurrent `getenv` from other threads. We are the
             // first statement in `main`; no threads have been
             // spawned yet, so no such race exists.
-            #[allow(
-                unsafe_code,
-                reason = "single-threaded context at program startup"
-            )]
+            #[allow(unsafe_code, reason = "single-threaded context at program startup")]
             unsafe {
                 std::env::set_var(key, value);
             }
