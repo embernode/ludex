@@ -11,8 +11,9 @@ use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+use crate::gate::{Gate, GateConfig};
 use crate::session_manager::SessionManager;
-use crate::sources::SteamSource;
+use crate::sources::{KWinForegroundSource, SteamSource};
 
 const EVENT_CHANNEL_CAPACITY: usize = 128;
 
@@ -68,6 +69,19 @@ pub async fn run() -> Result<()> {
         }));
     } else {
         info!("Steam data directory not found; Steam source disabled");
+    }
+
+    if KWinForegroundSource::is_kwin_available().await {
+        let kwin = KWinForegroundSource::new(Gate::new(GateConfig::default()));
+        let tx = event_tx.clone();
+        let sd = shutdown_rx.clone();
+        source_handles.push(tokio::spawn(async move {
+            if let Err(e) = kwin.install_and_run(tx, sd).await {
+                warn!(error = %e, "KWin foreground source exited with error");
+            }
+        }));
+    } else {
+        info!("org.kde.KWin not present on session bus; foreground source disabled");
     }
 
     // Drop our own sender so the event channel closes when all sources

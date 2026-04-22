@@ -23,6 +23,7 @@ time = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+zbus = { workspace = true }
 
 ludex-core = { path = "../ludex-core" }
 ludex-enrich = { path = "../ludex-enrich" }

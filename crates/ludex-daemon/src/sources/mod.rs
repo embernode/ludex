@@ -11,8 +11,10 @@
 //! any enumeration of already-running games, so events fired during the
 //! enumeration are queued in the subscription and are not lost.
 
+pub mod kwin;
 pub mod steam;
 
+pub use kwin::KWinForegroundSource;
 pub use steam::SteamSource;
 
 #[allow(
