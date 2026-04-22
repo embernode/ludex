@@ -40,6 +40,7 @@ async fn started_then_stopped_creates_one_closed_session() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        None,
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -111,6 +112,7 @@ async fn duplicate_started_is_ignored() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        None,
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -157,6 +159,7 @@ async fn shutdown_closes_open_sessions() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        None,
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -246,6 +249,7 @@ async fn recover_orphans_closes_stale_sessions() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        None,
     );
     let closed = manager.recover_orphans().await.unwrap();
     assert_eq!(closed, 1);
@@ -266,6 +270,7 @@ async fn idle_time_reduces_interactive_runtime() {
         default_enrichment_ctx(),
         Arc::clone(&idle),
         default_sleep_tracker(),
+        None,
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -332,6 +337,7 @@ async fn suspended_time_reduces_full_runtime() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         Arc::clone(&sleep),
+        None,
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -399,6 +405,7 @@ async fn pre_session_idle_does_not_count_against_session() {
         default_enrichment_ctx(),
         Arc::clone(&idle),
         default_sleep_tracker(),
+        None,
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -469,6 +476,7 @@ async fn enrichment_fires_on_new_application() {
         ctx,
         default_idle_tracker(),
         default_sleep_tracker(),
+        None,
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

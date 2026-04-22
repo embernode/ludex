@@ -1090,6 +1090,8 @@ dependencies = [
  "ludex-enrich",
  "notify",
  "proptest",
+ "rustix",
+ "serde",
  "tempfile",
  "time",
  "tokio",

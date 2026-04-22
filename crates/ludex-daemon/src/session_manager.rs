@@ -25,6 +25,7 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info, instrument, warn};
 
+use crate::dbus::TrackerNotification;
 use crate::event::GameEvent;
 use crate::idle::IdleTracker;
 use crate::sleep::SleepTracker;
@@ -60,6 +61,10 @@ pub struct SessionManager {
     enrichment_ctx: Arc<EnrichmentContext>,
     idle_tracker: Arc<IdleTracker>,
     sleep_tracker: Arc<SleepTracker>,
+    /// Optional channel to the D-Bus notifier task. `None` when no
+    /// Tracker service is exposed (e.g. integration tests that don't
+    /// stand up the public API).
+    notifications: Option<mpsc::Sender<TrackerNotification>>,
     open: HashMap<GameKey, OpenSession>,
 }
 
@@ -69,19 +74,39 @@ impl SessionManager {
     /// applications, and queries the shared [`IdleTracker`] and
     /// [`SleepTracker`] for the user's idle and system-suspended time
     /// during each session.
+    ///
+    /// `notifications` is the optional channel to the
+    /// [`net.ludex.Tracker1`](crate::dbus) D-Bus notifier; pass
+    /// `None` when no public API is exposed.
     #[must_use]
     pub fn new(
         db: Database,
         enrichment_ctx: Arc<EnrichmentContext>,
         idle_tracker: Arc<IdleTracker>,
         sleep_tracker: Arc<SleepTracker>,
+        notifications: Option<mpsc::Sender<TrackerNotification>>,
     ) -> Self {
         Self {
             db,
             enrichment_ctx,
             idle_tracker,
             sleep_tracker,
+            notifications,
             open: HashMap::new(),
+        }
+    }
+
+    fn notify(&self, notification: TrackerNotification) {
+        let Some(tx) = self.notifications.as_ref() else {
+            return;
+        };
+        // `try_send` rather than `send`: we do not want to block a
+        // heartbeat or session-close path on a slow client. A full
+        // channel means the notifier task is lagging — worth a log
+        // line. A closed channel means the notifier has already
+        // exited (e.g. daemon shutdown in progress) — silent.
+        if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(notification) {
+            warn!("tracker notification channel full; dropping signal");
         }
     }
 
@@ -196,6 +221,9 @@ impl SessionManager {
                 baseline_suspended_seconds,
             },
         );
+        self.notify(TrackerNotification::SessionStarted {
+            application_id: app.id,
+        });
         Ok(())
     }
 
@@ -238,6 +266,9 @@ impl SessionManager {
             })
             .await?;
         self.spawn_enrichment(app.id);
+        self.notify(TrackerNotification::ApplicationAdded {
+            application_id: app.id,
+        });
         Ok(app)
     }
 
@@ -344,6 +375,11 @@ impl SessionManager {
             reason = %reason.as_ref(),
             "session closed"
         );
+        self.notify(TrackerNotification::SessionEnded {
+            application_id: open.application_id,
+            full_runtime_seconds: full,
+            interactive_runtime_seconds: interactive,
+        });
         Ok(())
     }
 
