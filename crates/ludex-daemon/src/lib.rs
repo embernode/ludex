@@ -8,6 +8,7 @@
 
 pub mod daemon;
 pub mod event;
+pub mod gate;
 pub mod proc;
 pub mod session_manager;
 pub mod sources;
