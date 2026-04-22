@@ -174,10 +174,6 @@ after M6.6 or when it becomes user-visible:
   the detector/sqlite stack but risks drift on wire-format
   changes. A small `ludex-dbus-types` crate would DRY them if the
   API grows.
-- **Friendlier error UX.** `friendly()` in the bridge currently
-  returns `to_string()` on every zbus error. Special-case
-  `ServiceUnknown` → "ludex-daemon is not running" and similar,
-  so the empty state is more explainable.
 
 ### Post-M6 (unscheduled)
 
