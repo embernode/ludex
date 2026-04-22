@@ -152,3 +152,133 @@ async fn cascade_preserves_existing_fields_when_sources_silent() {
     assert_eq!(after.publisher.as_deref(), Some("existing pub"));
     assert_eq!(after.product_name, "Foo");
 }
+
+#[tokio::test]
+async fn gog_info_provides_name_and_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let game_dir = tmp.path().join("Witcher 3");
+    fs::create_dir_all(&game_dir).unwrap();
+    fs::write(
+        game_dir.join("goggame-1207664663.info"),
+        r#"{
+            "name": "The Witcher 3: Wild Hunt",
+            "gameId": "1207664663",
+            "rootGameId": "1207664663",
+            "version": "4.04"
+        }"#,
+    )
+    .unwrap();
+    let exe_path = game_dir.join("witcher3.exe");
+    fs::write(&exe_path, b"not a real PE").unwrap();
+
+    let ctx = EnrichmentContext::default();
+    let db = Database::open_memory().await.unwrap();
+    let app = db
+        .applications()
+        .create(NewApplication {
+            executable_path: Some(exe_path.display().to_string()),
+            ..new_app(
+                LauncherType::Native,
+                &exe_path.display().to_string(),
+                "witcher3",
+            )
+        })
+        .await
+        .unwrap();
+
+    run_cascade(&db, &ctx, app.id).await.unwrap();
+
+    let after = db.applications().find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.product_name, "The Witcher 3: Wild Hunt");
+    assert_eq!(after.version.as_deref(), Some("4.04"));
+}
+
+#[tokio::test]
+async fn gog_info_is_found_in_parent_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let install_dir = tmp.path().join("Witcher 3");
+    let nested = install_dir.join("bin").join("x64");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(
+        install_dir.join("goggame-1207664663.info"),
+        r#"{"name": "The Witcher 3", "version": "4.04"}"#,
+    )
+    .unwrap();
+    let exe_path = nested.join("witcher3.exe");
+    fs::write(&exe_path, b"not a real PE").unwrap();
+
+    let ctx = EnrichmentContext::default();
+    let db = Database::open_memory().await.unwrap();
+    let app = db
+        .applications()
+        .create(NewApplication {
+            executable_path: Some(exe_path.display().to_string()),
+            ..new_app(
+                LauncherType::Native,
+                &exe_path.display().to_string(),
+                "witcher3",
+            )
+        })
+        .await
+        .unwrap();
+
+    run_cascade(&db, &ctx, app.id).await.unwrap();
+
+    let after = db.applications().find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.product_name, "The Witcher 3");
+}
+
+#[tokio::test]
+async fn pe_enricher_skips_non_exe_executables() {
+    // A native Linux ELF path should never even touch the PE parser.
+    // We can verify this by pointing at /bin/ls; if the PE source were
+    // called indiscriminately it would OS-read the file and produce
+    // garbage results or an error. Here we just assert the enrichment
+    // preserves the existing name.
+    let db = Database::open_memory().await.unwrap();
+    let ctx = EnrichmentContext::default();
+    let app = db
+        .applications()
+        .create(NewApplication {
+            executable_path: Some("/bin/ls".into()),
+            ..new_app(LauncherType::Native, "/bin/ls", "ls")
+        })
+        .await
+        .unwrap();
+
+    run_cascade(&db, &ctx, app.id).await.unwrap();
+
+    let after = db.applications().find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.product_name, "ls");
+    assert!(after.publisher.is_none());
+    assert!(after.version.is_none());
+}
+
+#[tokio::test]
+async fn pe_enricher_gracefully_handles_bogus_exe() {
+    // executable_path ends in .exe but the file is garbage — must not
+    // panic, must not error, must not contribute any fields.
+    let tmp = tempfile::tempdir().unwrap();
+    let exe_path = tmp.path().join("nonsense.exe");
+    fs::write(&exe_path, b"this is not a PE").unwrap();
+
+    let ctx = EnrichmentContext::default();
+    let db = Database::open_memory().await.unwrap();
+    let app = db
+        .applications()
+        .create(NewApplication {
+            executable_path: Some(exe_path.display().to_string()),
+            ..new_app(
+                LauncherType::Native,
+                &exe_path.display().to_string(),
+                "nonsense",
+            )
+        })
+        .await
+        .unwrap();
+
+    run_cascade(&db, &ctx, app.id).await.unwrap();
+
+    let after = db.applications().find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.product_name, "nonsense");
+}

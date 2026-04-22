@@ -5,4 +5,6 @@
 //! them in priority order.
 
 pub mod desktop;
+pub mod gog;
+pub mod pe;
 pub mod steam;

@@ -61,14 +61,16 @@ pub async fn run_cascade(
 /// Order (lowest priority first, so higher-priority sources overwrite):
 ///
 /// 1. `.desktop` entry
-/// 2. PE `FileVersionInfo` (Proton/Wine games only; stubbed in this tranche)
-/// 3. GOG `goggame-*.info` (stubbed in this tranche)
+/// 2. PE `FileVersionInfo` (Proton/Wine games only)
+/// 3. GOG `goggame-*.info`
 /// 4. Heroic store JSON (stubbed in this tranche)
 /// 5. Lutris `pga.db` (stubbed in this tranche)
 /// 6. Steam `appmanifest_*.acf`
 pub async fn build_patch(app: &Application, ctx: &EnrichmentContext) -> IdentityUpdate {
     let mut acc = IdentityUpdate::default();
     merge::merge_into(&mut acc, sources::desktop::enrich(app, ctx).await);
+    merge::merge_into(&mut acc, sources::pe::enrich(app, ctx).await);
+    merge::merge_into(&mut acc, sources::gog::enrich(app, ctx).await);
     merge::merge_into(&mut acc, sources::steam::enrich(app, ctx).await);
     acc
 }
