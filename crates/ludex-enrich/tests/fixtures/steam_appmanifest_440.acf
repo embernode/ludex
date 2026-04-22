@@ -1,0 +1,39 @@
+"AppState"
+{
+	"appid"		"440"
+	"Universe"		"1"
+	"name"		"Team Fortress 2"
+	"StateFlags"		"4"
+	"installdir"		"Team Fortress 2"
+	"LastUpdated"		"1715000000"
+	"LastPlayed"		"1716000000"
+	"SizeOnDisk"		"30000000000"
+	"StagingSize"		"0"
+	"buildid"		"14732810"
+	"LastOwner"		"76561197960265728"
+	"UpdateResult"		"0"
+	"BytesToDownload"		"0"
+	"BytesDownloaded"		"0"
+	"BytesToStage"		"0"
+	"BytesStaged"		"0"
+	"TargetBuildID"		"14732810"
+	"AutoUpdateBehavior"		"0"
+	"AllowOtherDownloadsWhileRunning"		"0"
+	"ScheduledAutoUpdate"		"0"
+	"InstalledDepots"
+	{
+		"441"
+		{
+			"manifest"		"1234567890123456789"
+			"size"		"15000000000"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+	"MountedDepots"
+	{
+		"441"		"1234567890123456789"
+	}
+}
