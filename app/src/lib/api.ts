@@ -46,6 +46,17 @@ export async function listApplications(): Promise<ApplicationSummary[]> {
     return invoke<ApplicationSummary[]>('list_applications');
 }
 
+/**
+ * Look up one application by id. D-Bus lacks a clean "optional"
+ * primitive, so the daemon returns a 0-or-1-element array and we
+ * expose the same shape.
+ */
+export async function getApplication(
+    id: number,
+): Promise<ApplicationSummary[]> {
+    return invoke<ApplicationSummary[]>('get_application', { id });
+}
+
 export async function listRecentSessions(limit = 20): Promise<SessionSummary[]> {
     return invoke<SessionSummary[]>('list_recent_sessions', { limit });
 }
