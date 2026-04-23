@@ -27,7 +27,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::proc::{environ, exe, fdinfo, maps};
+use crate::proc::{environ, exe, fdinfo, maps, tree};
+
+/// `/proc/<pid>/comm` values of the gamescope nested compositor. A
+/// process whose ancestry contains one of these is trusted as a game
+/// without the usual fullscreen / graphics-library gating — gamescope
+/// only hosts games, and the gating heuristics were designed for
+/// direct KWin-managed windows, not nested ones.
+const GAMESCOPE_COMMS: &[&str] = &["gamescope", "gamescope-wl"];
 
 /// Knobs the daemon supplies to the gate.
 #[derive(Debug, Clone)]
@@ -140,6 +147,14 @@ pub struct GateInput {
     pub window_is_fullscreen: bool,
 }
 
+/// Returns `true` when any ancestor process of `pid` reports a
+/// [`GAMESCOPE_COMMS`] value in `/proc/<ppid>/comm`. Used by the gate
+/// to bypass fullscreen / graphics-library gating for windows that
+/// are really rendered inside a nested gamescope compositor.
+fn has_gamescope_ancestor(pid: u32) -> bool {
+    tree::ancestors(pid).any(|p| tree::comm(p).is_ok_and(|c| GAMESCOPE_COMMS.contains(&c.as_str())))
+}
+
 /// The gate's verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateDecision {
@@ -185,6 +200,13 @@ pub enum RejectionReason {
 /// no hidden state — which makes every decision branch straightforward
 /// to unit-test. Kept crate-internal; callers outside the daemon go
 /// through [`Gate::decide`].
+///
+/// `gamescope_ancestry` signals that the process runs inside a nested
+/// gamescope compositor. When true, the fullscreen/GPU gate is
+/// bypassed and a missing `maps` or graphics-library read degrades to
+/// accept rather than reject — gamescope only hosts games, and its
+/// nested-window presentation can hide signals the outer compositor
+/// would otherwise see.
 #[must_use]
 pub(crate) fn decide_from_inputs(
     exe: Option<&Path>,
@@ -192,6 +214,7 @@ pub(crate) fn decide_from_inputs(
     libs: Option<maps::GraphicsLibraries>,
     gpu: Option<&fdinfo::GpuSummary>,
     window_is_fullscreen: bool,
+    gamescope_ancestry: bool,
     config: &GateConfig,
 ) -> GateDecision {
     let Some(exe_path) = exe else {
@@ -205,13 +228,15 @@ pub(crate) fn decide_from_inputs(
             return GateDecision::Reject(RejectionReason::AttributedToLauncher);
         }
     }
-    let Some(libs) = libs else {
-        return GateDecision::Reject(RejectionReason::MapsUnreadable);
+    let libs = match libs {
+        Some(l) => l,
+        None if gamescope_ancestry => maps::GraphicsLibraries::default(),
+        None => return GateDecision::Reject(RejectionReason::MapsUnreadable),
     };
-    if !libs.any() {
+    if !libs.any() && !gamescope_ancestry {
         return GateDecision::Reject(RejectionReason::NoGraphicsLibrary);
     }
-    if !window_is_fullscreen {
+    if !(window_is_fullscreen || gamescope_ancestry) {
         let memory = gpu.map_or(0, |g| g.memory_bytes);
         if memory < config.gpu_memory_threshold_bytes {
             return GateDecision::Reject(RejectionReason::NotFullscreenAndLowGpu);
@@ -269,15 +294,11 @@ impl Gate {
                 return GateDecision::Reject(RejectionReason::AttributedToLauncher);
             }
         }
-        let Ok(libs) = maps::read(input.pid).await else {
-            return GateDecision::Reject(RejectionReason::MapsUnreadable);
-        };
-        if !libs.any() {
-            return GateDecision::Reject(RejectionReason::NoGraphicsLibrary);
-        }
-        // Skip the expensive fdinfo walk entirely when the window is
-        // already fullscreen; we'd accept either way.
-        let gpu = if input.window_is_fullscreen {
+        let gamescope_ancestry = has_gamescope_ancestor(input.pid);
+        let libs = maps::read(input.pid).await.ok();
+        // Skip the expensive fdinfo walk when the fullscreen or
+        // gamescope shortcut already covers us.
+        let gpu = if input.window_is_fullscreen || gamescope_ancestry {
             None
         } else {
             fdinfo::read(input.pid).await.ok()
@@ -285,9 +306,10 @@ impl Gate {
         decide_from_inputs(
             Some(&exe_path),
             env.as_ref(),
-            Some(libs),
+            libs,
             gpu.as_ref(),
             input.window_is_fullscreen,
+            gamescope_ancestry,
             &self.config,
         )
     }
@@ -329,35 +351,35 @@ mod tests {
 
     #[test]
     fn missing_exe_rejects() {
-        let d = decide_from_inputs(None, None, Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(None, None, Some(gl_only()), None, true, false, &cfg());
         assert_eq!(d, GateDecision::Reject(RejectionReason::ExeUnreadable));
     }
 
     #[test]
     fn blocklisted_exe_rejects_even_if_fullscreen_and_gl() {
         let exe = PathBuf::from("/usr/bin/kwin_wayland");
-        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), None, true, false, &cfg());
         assert_eq!(d, GateDecision::Reject(RejectionReason::Blocklisted));
     }
 
     #[test]
     fn missing_maps_rejects() {
         let exe = PathBuf::from("/opt/games/foo/foo");
-        let d = decide_from_inputs(Some(&exe), None, None, None, true, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, None, None, true, false, &cfg());
         assert_eq!(d, GateDecision::Reject(RejectionReason::MapsUnreadable));
     }
 
     #[test]
     fn no_graphics_library_rejects() {
         let exe = PathBuf::from("/opt/games/foo/foo");
-        let d = decide_from_inputs(Some(&exe), None, Some(no_libs()), None, true, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, Some(no_libs()), None, true, false, &cfg());
         assert_eq!(d, GateDecision::Reject(RejectionReason::NoGraphicsLibrary));
     }
 
     #[test]
     fn fullscreen_with_graphics_library_accepts() {
         let exe = PathBuf::from("/opt/games/foo/foo");
-        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), None, true, false, &cfg());
         match d {
             GateDecision::Accept(a) => {
                 assert_eq!(a.executable_path, exe);
@@ -370,7 +392,15 @@ mod tests {
     #[test]
     fn non_fullscreen_without_gpu_rejects() {
         let exe = PathBuf::from("/opt/games/foo/foo");
-        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), None, false, &cfg());
+        let d = decide_from_inputs(
+            Some(&exe),
+            None,
+            Some(gl_only()),
+            None,
+            false,
+            false,
+            &cfg(),
+        );
         assert_eq!(
             d,
             GateDecision::Reject(RejectionReason::NotFullscreenAndLowGpu)
@@ -385,7 +415,15 @@ mod tests {
             memory_bytes: 5 * 1024 * 1024, // below 10 MiB threshold
             engine_nanoseconds: 0,
         };
-        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), Some(&gpu), false, &cfg());
+        let d = decide_from_inputs(
+            Some(&exe),
+            None,
+            Some(gl_only()),
+            Some(&gpu),
+            false,
+            false,
+            &cfg(),
+        );
         assert_eq!(
             d,
             GateDecision::Reject(RejectionReason::NotFullscreenAndLowGpu)
@@ -400,7 +438,15 @@ mod tests {
             memory_bytes: 500 * 1024 * 1024, // 500 MiB, well above
             engine_nanoseconds: 123,
         };
-        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), Some(&gpu), false, &cfg());
+        let d = decide_from_inputs(
+            Some(&exe),
+            None,
+            Some(gl_only()),
+            Some(&gpu),
+            false,
+            false,
+            &cfg(),
+        );
         assert!(matches!(d, GateDecision::Accept(_)));
     }
 
@@ -410,7 +456,15 @@ mod tests {
         let env = env_of(&[("SteamGameId", "440"), ("SteamAppId", "440")]);
         // Fullscreen + graphics library would otherwise accept; the
         // environ check must short-circuit first.
-        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &cfg(),
+        );
         assert_eq!(
             d,
             GateDecision::Reject(RejectionReason::AttributedToLauncher)
@@ -421,7 +475,15 @@ mod tests {
     fn proton_compat_env_rejects() {
         let exe = PathBuf::from("/home/u/game.exe");
         let env = env_of(&[("STEAM_COMPAT_APP_ID", "730")]);
-        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &cfg(),
+        );
         assert_eq!(
             d,
             GateDecision::Reject(RejectionReason::AttributedToLauncher)
@@ -432,7 +494,15 @@ mod tests {
     fn lutris_uuid_env_rejects() {
         let exe = PathBuf::from("/home/u/games/foo");
         let env = env_of(&[("LUTRIS_GAME_UUID", "abc-123")]);
-        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &cfg(),
+        );
         assert_eq!(
             d,
             GateDecision::Reject(RejectionReason::AttributedToLauncher)
@@ -443,7 +513,15 @@ mod tests {
     fn heroic_env_rejects() {
         let exe = PathBuf::from("/home/u/Games/legendary/foo/foo.exe");
         let env = env_of(&[("HEROIC_APP_NAME", "com.example.foo")]);
-        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &cfg(),
+        );
         assert_eq!(
             d,
             GateDecision::Reject(RejectionReason::AttributedToLauncher)
@@ -464,8 +542,78 @@ mod tests {
             ),
             ("STEAM_BASE_FOLDER", "/home/u/.local/share/Steam"),
         ]);
-        let d = decide_from_inputs(Some(&exe), Some(&env), Some(gl_only()), None, true, &cfg());
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &cfg(),
+        );
         assert!(matches!(d, GateDecision::Accept(_)), "got {d:?}");
+    }
+
+    #[test]
+    fn gamescope_ancestry_accepts_without_fullscreen_or_gpu() {
+        // A game rendered inside gamescope may present as a
+        // non-fullscreen window in the outer KWin, and GPU activity
+        // gets attributed to the gamescope process, not the child.
+        // Gamescope ancestry is itself the signal — accept outright.
+        let exe = PathBuf::from("/opt/games/foo/foo");
+        let d = decide_from_inputs(
+            Some(&exe),
+            None,
+            Some(gl_only()),
+            None,
+            /* window_is_fullscreen */ false,
+            /* gamescope_ancestry */ true,
+            &cfg(),
+        );
+        assert!(matches!(d, GateDecision::Accept(_)), "got {d:?}");
+    }
+
+    #[test]
+    fn gamescope_ancestry_accepts_even_without_graphics_library() {
+        // Gamescope children can be native Wayland processes whose
+        // /proc/<pid>/maps we can read but that link no
+        // libGL/libvulkan/libSDL (they talk directly to the nested
+        // compositor via Wayland). Under gamescope, accept anyway.
+        let exe = PathBuf::from("/opt/games/foo/foo");
+        let d = decide_from_inputs(Some(&exe), None, Some(no_libs()), None, false, true, &cfg());
+        assert!(matches!(d, GateDecision::Accept(_)), "got {d:?}");
+    }
+
+    #[test]
+    fn gamescope_ancestry_does_not_override_blocklist() {
+        // Even inside gamescope, the compositor binary itself (were it
+        // somehow re-parented under a gamescope instance) must not be
+        // tracked. Blocklist check fires first, before gamescope.
+        let exe = PathBuf::from("/usr/bin/kwin_wayland");
+        let d = decide_from_inputs(Some(&exe), None, Some(gl_only()), None, true, true, &cfg());
+        assert_eq!(d, GateDecision::Reject(RejectionReason::Blocklisted));
+    }
+
+    #[test]
+    fn gamescope_ancestry_does_not_override_launcher_attribution() {
+        // A Steam game running inside gamescope is still owned by the
+        // Steam source — the foreground fallback must reject to avoid
+        // double-counting.
+        let exe = PathBuf::from("/home/u/.steam/steamapps/common/foo/foo");
+        let env = env_of(&[("SteamGameId", "440")]);
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            true,
+            &cfg(),
+        );
+        assert_eq!(
+            d,
+            GateDecision::Reject(RejectionReason::AttributedToLauncher)
+        );
     }
 
     #[test]
