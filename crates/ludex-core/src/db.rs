@@ -27,9 +27,14 @@ impl Database {
     /// Open a database at a filesystem path, creating the file if missing,
     /// applying all pending migrations, and enforcing the standard pragma
     /// set.
+    ///
+    /// The path is passed to SQLite verbatim — characters that would
+    /// confuse a URL parser (spaces, `?`, `#`, `%`, unicode) survive
+    /// unscathed. Prefer this over [`Database::open_url`] for any caller
+    /// that already has a [`Path`].
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let url = format!("sqlite://{}", path.as_ref().display());
-        Self::open_url(&url).await
+        let options = SqliteConnectOptions::new().filename(path.as_ref());
+        Self::open_with(options).await
     }
 
     /// Open a purely in-memory database. Exists for tests and the
@@ -39,9 +44,17 @@ impl Database {
         Self::open_url("sqlite::memory:").await
     }
 
-    /// Open by raw SQLx connection URL.
+    /// Open by raw SQLx connection URL. Only for callers that genuinely
+    /// have a URL (for example `sqlite::memory:` in tests); filesystem
+    /// paths should go through [`Database::open`] instead, which
+    /// avoids URL-encoding hazards.
     pub async fn open_url(url: &str) -> Result<Self> {
-        let options = SqliteConnectOptions::from_str(url)?
+        let options = SqliteConnectOptions::from_str(url)?;
+        Self::open_with(options).await
+    }
+
+    async fn open_with(options: SqliteConnectOptions) -> Result<Self> {
+        let options = options
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)

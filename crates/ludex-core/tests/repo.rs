@@ -27,6 +27,35 @@ fn sample_new_app() -> NewApplication {
     }
 }
 
+/// `Database::open` must accept filesystem paths containing characters
+/// that have syntactic meaning in a URL (`?`, `#`, `%`, spaces,
+/// apostrophes). A path is not a URL; the prior implementation
+/// `format!("sqlite://{}", path)` broke on "Sam's Games" or any path
+/// with a bare space.
+#[tokio::test]
+async fn open_handles_paths_with_url_special_chars() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Sam's Games");
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("ludex?test#1.sqlite");
+
+    let db = Database::open(&db_path).await.expect("opens awkward path");
+    let apps = db.applications();
+    let created = apps.create(sample_new_app()).await.unwrap();
+    assert_eq!(created.launcher_id, "440");
+
+    // Close, reopen, read back — confirms the file on disk is what we
+    // wrote, not a URL-mangled sibling.
+    db.close().await;
+    let db = Database::open(&db_path).await.unwrap();
+    let found = db
+        .applications()
+        .find_by_key(&GameKey::steam("440"))
+        .await
+        .unwrap();
+    assert!(found.is_some());
+}
+
 #[tokio::test]
 async fn create_and_find_by_key() {
     let db = Database::open_memory().await.unwrap();
