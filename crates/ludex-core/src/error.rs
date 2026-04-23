@@ -34,4 +34,11 @@ pub enum Error {
     /// types disagree, which should be impossible in practice.
     #[error("invariant violated: {0}")]
     Invariant(&'static str),
+
+    /// Filesystem operation failed. Surfaces from paths the core
+    /// layer owns directly (backup snapshots, database open via a
+    /// prebuilt path) so callers get the same `Result<_, Error>`
+    /// surface as the SQL paths.
+    #[error("filesystem error: {0}")]
+    Io(#[from] std::io::Error),
 }

@@ -194,7 +194,13 @@ they become user-visible or when neighbouring work lands.
 
 ### Post-M6 (unscheduled)
 
-- Save-file backup scoped to Proton prefixes, opt-in per game.
+- Statistics database backup + restore. Snapshot `ludex.sqlite`
+  via `VACUUM INTO` to `$XDG_DATA_HOME/ludex/backups/`, scheduled
+  on shutdown and periodically while running. CLI surface:
+  `ludex backup {now,list,prune,restore}`. Retention tunable via
+  `SettingsRepo`. (Earlier roadmap copy said "save-file backup
+  scoped to Proton prefixes"; game-save backup is out of scope —
+  ludex is a tracker, not a save manager.)
 - Overlay or transient notifications.
 - Localisation via `gettext`.
 - `ludex migrate` — optional importer for users with per-game time data in other formats.

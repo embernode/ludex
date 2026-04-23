@@ -19,6 +19,7 @@
 #![warn(missing_docs)]
 
 mod application;
+pub mod backup;
 mod db;
 pub mod error;
 mod key;
@@ -32,6 +33,6 @@ pub use application::{Application, Icons, IdentityUpdate, NewApplication, Playba
 pub use db::Database;
 pub use error::{Error, Result};
 pub use key::GameKey;
-pub use paths::default_database_path;
+pub use paths::{default_backup_dir, default_database_path};
 pub use session::{DailyPlaytime, RecentSession, RuntimeSnapshot, Session};
 pub use types::{ExitReason, GraphicsPlatform, LauncherType, ProcessArchitecture};

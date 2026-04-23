@@ -135,6 +135,15 @@ pub async fn run() -> Result<()> {
         tokio::spawn(async move { sleep::run_watcher(tracker, sd).await })
     };
 
+    // Periodic + on-shutdown database snapshots. Runs against the
+    // same pool as everyone else; SQLite's VACUUM INTO is safe to
+    // interleave with live writers.
+    let backup_handle = {
+        let db = db.clone();
+        let sd = shutdown_rx.clone();
+        tokio::spawn(async move { crate::backup::run_scheduler(db, sd).await })
+    };
+
     let source_handles = spawn_sources(event_tx, shutdown_rx.clone(), gate_config).await;
 
     // Session manager runs on its own task so the main task stays free
@@ -155,6 +164,9 @@ pub async fn run() -> Result<()> {
     }
     let _ = idle_handle.await;
     let _ = sleep_handle.await;
+    // Back up BEFORE closing the database pool — run_scheduler's
+    // shutdown path needs a live pool to take the final snapshot.
+    let _ = backup_handle.await;
     let _ = notifier_handle.await;
     manager_handle.await.context("session manager task")??;
     drop(tracker_conn);

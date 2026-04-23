@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+mod backup;
 mod doctor;
 mod sessions;
 
@@ -34,6 +35,21 @@ enum Command {
         #[arg(long, short = 'n', default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=1000))]
         limit: u32,
     },
+
+    /// Manage ludex database backups.
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackupCommand {
+    /// Take one snapshot now, prune older ones per the configured
+    /// retention, and print the path of the new snapshot. Safe to
+    /// run while `ludex-daemon` is active — SQLite `VACUUM INTO`
+    /// produces a consistent copy without blocking the writer.
+    Now,
 }
 
 fn init_tracing() {
@@ -51,5 +67,8 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Doctor => doctor::run().await,
         Command::Sessions { limit } => sessions::run(limit).await,
+        Command::Backup { command } => match command {
+            BackupCommand::Now => backup::now().await,
+        },
     }
 }

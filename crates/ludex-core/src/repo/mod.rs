@@ -13,4 +13,7 @@ mod settings;
 pub use application::ApplicationRepo;
 pub use blocked::BlockedRepo;
 pub use session::SessionRepo;
-pub use settings::{SettingsRepo, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, GPU_MEMORY_THRESHOLD_BYTES};
+pub use settings::{
+    SettingsRepo, BACKUP_INTERVAL_HOURS, BACKUP_RETENTION_COUNT, DEFAULT_BACKUP_INTERVAL_HOURS,
+    DEFAULT_BACKUP_RETENTION_COUNT, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, GPU_MEMORY_THRESHOLD_BYTES,
+};

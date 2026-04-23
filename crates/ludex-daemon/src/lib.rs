@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+pub mod backup;
 pub mod daemon;
 pub mod dbus;
 pub mod event;

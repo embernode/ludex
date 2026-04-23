@@ -18,6 +18,21 @@ pub const GPU_MEMORY_THRESHOLD_BYTES: &str = "gpu_memory_threshold_bytes";
 /// user-configurable.
 pub const DEFAULT_GPU_MEMORY_THRESHOLD_BYTES: u64 = 50 * 1024 * 1024;
 
+/// Key for the interval (hours) between periodic database backups
+/// the daemon takes while running. Independent of shutdown backups,
+/// which always fire on a clean stop.
+pub const BACKUP_INTERVAL_HOURS: &str = "backup_interval_hours";
+
+/// Default for [`BACKUP_INTERVAL_HOURS`]: once a day.
+pub const DEFAULT_BACKUP_INTERVAL_HOURS: u64 = 24;
+
+/// Key for the number of database backups to retain. Older files
+/// are pruned after each successful snapshot.
+pub const BACKUP_RETENTION_COUNT: &str = "backup_retention_count";
+
+/// Default for [`BACKUP_RETENTION_COUNT`]: two weeks of dailies.
+pub const DEFAULT_BACKUP_RETENTION_COUNT: u64 = 14;
+
 /// Typed access to the `settings` table.
 pub struct SettingsRepo<'a> {
     pool: &'a SqlitePool,
