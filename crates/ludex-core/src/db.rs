@@ -9,7 +9,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::SqlitePool;
 
 use crate::error::Result;
-use crate::repo::{ApplicationRepo, SessionRepo};
+use crate::repo::{ApplicationRepo, SessionRepo, SettingsRepo};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -88,6 +88,12 @@ impl Database {
     #[must_use]
     pub fn sessions(&self) -> SessionRepo<'_> {
         SessionRepo::new(&self.pool)
+    }
+
+    /// Construct a [`SettingsRepo`] bound to this database's pool.
+    #[must_use]
+    pub fn settings(&self) -> SettingsRepo<'_> {
+        SettingsRepo::new(&self.pool)
     }
 
     /// Close the pool. Callers can simply drop [`Database`] instead; this

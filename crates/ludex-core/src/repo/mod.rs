@@ -7,6 +7,8 @@
 
 mod application;
 mod session;
+mod settings;
 
 pub use application::ApplicationRepo;
 pub use session::SessionRepo;
+pub use settings::{SettingsRepo, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, GPU_MEMORY_THRESHOLD_BYTES};

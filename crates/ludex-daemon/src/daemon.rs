@@ -17,6 +17,7 @@ use crate::idle::{self, IdleTracker};
 use crate::session_manager::SessionManager;
 use crate::sleep::{self, SleepTracker};
 use crate::sources::{KWinForegroundSource, SteamSource};
+use ludex_core::repo::{DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, GPU_MEMORY_THRESHOLD_BYTES};
 
 const EVENT_CHANNEL_CAPACITY: usize = 128;
 const NOTIFICATION_CHANNEL_CAPACITY: usize = 64;
@@ -40,6 +41,18 @@ pub async fn run() -> Result<()> {
     let db = Database::open(&db_path)
         .await
         .with_context(|| format!("open database at {}", db_path.display()))?;
+
+    // Resolve the gate configuration from persisted settings,
+    // falling back to compiled-in defaults when the row is absent.
+    // Kept read-once at startup: the live-reload path (change the
+    // value from the GUI and have running sources pick it up) is a
+    // follow-up tranche that needs a shared Arc<RwLock<GateConfig>>;
+    // for now the user restarts the daemon after editing settings.
+    let gate_config = resolve_gate_config(&db).await;
+    info!(
+        gpu_memory_threshold_bytes = gate_config.gpu_memory_threshold_bytes,
+        "gate configuration loaded"
+    );
 
     let enrichment_ctx = Arc::new(EnrichmentContext::detect_from_env());
     // Only log the sources whose enrichers are wired up today. Heroic
@@ -109,7 +122,7 @@ pub async fn run() -> Result<()> {
         tokio::spawn(async move { sleep::run_watcher(tracker, sd).await })
     };
 
-    let source_handles = spawn_sources(event_tx, shutdown_rx.clone()).await;
+    let source_handles = spawn_sources(event_tx, shutdown_rx.clone(), gate_config).await;
 
     // Session manager runs on its own task so the main task stays free
     // to handle the shutdown signal.
@@ -146,6 +159,7 @@ pub async fn run() -> Result<()> {
 async fn spawn_sources(
     event_tx: mpsc::Sender<crate::event::GameEvent>,
     shutdown_rx: watch::Receiver<bool>,
+    gate_config: GateConfig,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     let mut handles = Vec::new();
 
@@ -162,7 +176,7 @@ async fn spawn_sources(
     }
 
     if KWinForegroundSource::is_kwin_available().await {
-        let kwin = KWinForegroundSource::new(Gate::new(GateConfig::default()));
+        let kwin = KWinForegroundSource::new(Gate::new(gate_config));
         let tx = event_tx.clone();
         let sd = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
@@ -178,6 +192,32 @@ async fn spawn_sources(
     // when all sources exit.
     drop(event_tx);
     handles
+}
+
+/// Build a [`GateConfig`] from the `settings` table, defaulting each
+/// missing or unparseable value to the compiled-in default. Errors
+/// reading the row fall through to the default too — a transient DB
+/// read error must not stop the daemon from starting.
+async fn resolve_gate_config(db: &Database) -> GateConfig {
+    let mut config = GateConfig::default();
+    match db
+        .settings()
+        .get_u64(
+            GPU_MEMORY_THRESHOLD_BYTES,
+            DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
+        )
+        .await
+    {
+        Ok(v) => config.gpu_memory_threshold_bytes = v,
+        Err(e) => {
+            warn!(
+                error = %e,
+                setting = GPU_MEMORY_THRESHOLD_BYTES,
+                "settings read failed; using compiled-in default"
+            );
+        }
+    }
+    config
 }
 
 async fn wait_for_shutdown() {
