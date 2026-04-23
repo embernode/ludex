@@ -27,7 +27,7 @@ use ludex_core::GameKey;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use time::OffsetDateTime;
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader, SeekFrom};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, instrument, warn};
 
@@ -38,6 +38,11 @@ const APP_RUNNING_FLAG: u64 = 64;
 
 /// Fallback poll cadence in case the filesystem watcher misses an event.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Maximum bytes to read from the content log in a single drain pass.
+/// Guards against a pathological gap between cursor and file length;
+/// whatever's left is picked up on the next pass.
+const MAX_DRAIN_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Launcher source that watches Steam's content log.
 pub struct SteamSource {
@@ -191,21 +196,16 @@ impl SteamSource {
 
         self.cold_start_scan(&tx, &mut running).await?;
 
-        // Open log + seek to end so only new lines are processed.
-        let mut reader = match open_at_end(&log_path).await {
-            Ok(r) => r,
+        // Start reading from wherever the log currently ends — historical
+        // lines are not interesting at cold-start.
+        let mut cursor = match tokio::fs::metadata(&log_path).await {
+            Ok(m) => m.len(),
             Err(e) => {
-                warn!(path = %log_path.display(), error = %e, "cannot open content log; Steam source idle");
+                warn!(path = %log_path.display(), error = %e, "cannot stat content log; Steam source idle");
                 let _ = shutdown.changed().await;
                 return Ok(());
             }
         };
-        let mut cursor = reader
-            .get_ref()
-            .metadata()
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
 
         loop {
             tokio::select! {
@@ -215,44 +215,76 @@ impl SteamSource {
                     }
                 }
                 _ = notify_rx.recv() => {
-                    cursor = self.drain_lines(&log_path, &mut reader, cursor, &tx, &mut running).await?;
+                    cursor = self.drain_lines(&log_path, cursor, &tx, &mut running).await?;
                 }
                 () = tokio::time::sleep(POLL_INTERVAL) => {
-                    cursor = self.drain_lines(&log_path, &mut reader, cursor, &tx, &mut running).await?;
+                    cursor = self.drain_lines(&log_path, cursor, &tx, &mut running).await?;
                 }
             }
         }
         Ok(())
     }
 
-    /// Read all new lines since the last call; emit events for state
-    /// transitions. Handles log rotation/truncation by re-opening the
-    /// file when its length dips below the cursor.
+    /// Read every complete line appended since `cursor`, emit events for
+    /// the state transitions they describe, and return the new cursor.
+    ///
+    /// The cursor only advances past bytes ending in `\n`. A partial
+    /// write (Steam flushed `"...App Run"` but not yet `"ning,\n"`) is
+    /// left in place so the next wake picks up the full line once the
+    /// trailing bytes land — advancing past unterminated bytes used to
+    /// silently drop events when file flushes didn't land on a line
+    /// boundary.
+    ///
+    /// Log rotation / truncation is detected by the file shrinking
+    /// below the cursor; the cursor resets to zero and we rescan from
+    /// the top.
     async fn drain_lines(
         &self,
         path: &Path,
-        reader: &mut BufReader<File>,
-        mut cursor: u64,
+        cursor: u64,
         tx: &mpsc::Sender<GameEvent>,
         running: &mut HashSet<String>,
     ) -> Result<u64> {
-        let len = reader.get_ref().metadata().await?.len();
-        if len < cursor {
-            // Log was rotated or truncated; re-open.
-            debug!("content_log.txt shrank; reopening");
-            *reader = open_at_start(path).await?;
-            cursor = 0;
+        let mut file = File::open(path)
+            .await
+            .with_context(|| format!("open {}", path.display()))?;
+        let len = file.metadata().await?.len();
+
+        let mut cursor = if len < cursor {
+            debug!("content_log.txt shrank; rescanning from start");
+            0
+        } else {
+            cursor
+        };
+        if len == cursor {
+            return Ok(cursor);
         }
 
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line).await?;
-            if bytes == 0 {
-                break;
-            }
-            cursor += bytes as u64;
-            if let Some((appid, is_running)) = parse_state_change(&line) {
+        file.seek(SeekFrom::Start(cursor)).await?;
+        let available = len - cursor;
+        let to_read = available.min(MAX_DRAIN_BYTES);
+        let mut buf = Vec::with_capacity(to_read as usize);
+        file.take(to_read).read_to_end(&mut buf).await?;
+
+        // Keep only the bytes up to (and including) the final newline;
+        // whatever follows is a partial line that the next drain pass
+        // will pick up.
+        let consumed = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+        if consumed == 0 {
+            return Ok(cursor);
+        }
+
+        let Ok(terminated) = std::str::from_utf8(&buf[..consumed]) else {
+            // Content log is ASCII in practice; a non-UTF-8 chunk means
+            // a mid-line write with bytes we can't split safely. Skip
+            // this pass and let the next wake re-read when the flush
+            // completes.
+            debug!("content_log.txt chunk is not valid UTF-8; deferring");
+            return Ok(cursor);
+        };
+
+        for line in terminated.split_inclusive('\n') {
+            if let Some((appid, is_running)) = parse_state_change(line) {
                 let was_running = running.contains(appid);
                 if is_running && !was_running {
                     let display_name = self.resolve_name(appid).await;
@@ -285,23 +317,9 @@ impl SteamSource {
                 }
             }
         }
+        cursor += consumed as u64;
         Ok(cursor)
     }
-}
-
-async fn open_at_end(path: &Path) -> Result<BufReader<File>> {
-    let mut file = File::open(path)
-        .await
-        .with_context(|| format!("open {}", path.display()))?;
-    file.seek(SeekFrom::End(0)).await?;
-    Ok(BufReader::new(file))
-}
-
-async fn open_at_start(path: &Path) -> Result<BufReader<File>> {
-    let file = File::open(path)
-        .await
-        .with_context(|| format!("open {}", path.display()))?;
-    Ok(BufReader::new(file))
 }
 
 /// Parse a Steam content-log state-change line.
@@ -426,6 +444,120 @@ mod tests {
 }";
         let flags = parse_vdf_top_level_u64(content, "StateFlags").unwrap();
         assert!(flags & APP_RUNNING_FLAG != 0);
+    }
+
+    /// A partial line at the end of the file (the bytes between the
+    /// last `\n` and EOF) must not be consumed — `drain_lines` leaves
+    /// the cursor positioned before it so the next pass picks up the
+    /// full line once the trailing bytes land. Advancing past those
+    /// bytes (the old behaviour) silently dropped events that
+    /// straddled a flush boundary.
+    #[tokio::test]
+    async fn drain_lines_leaves_unterminated_tail_for_next_pass() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("content_log.txt");
+        let source = SteamSource::new(tmp.path().to_path_buf());
+        let (tx, mut rx) = mpsc::channel::<GameEvent>(8);
+        let mut running = HashSet::new();
+
+        // First write: one complete line, then a partial one with no
+        // trailing newline. Only the complete line should be consumed.
+        let mut f = tokio::fs::File::create(&log).await.unwrap();
+        f.write_all(b"[t] AppID 440 state changed : App Running,\n")
+            .await
+            .unwrap();
+        f.write_all(b"[t] AppID 730 state chang").await.unwrap();
+        f.flush().await.unwrap();
+
+        let mut cursor = source
+            .drain_lines(&log, 0, &tx, &mut running)
+            .await
+            .unwrap();
+
+        // Exactly the bytes up to and including the first \n.
+        assert_eq!(cursor, 43);
+        assert!(running.contains("440"));
+        assert!(!running.contains("730"));
+        let first = rx.try_recv().expect("Started for 440");
+        assert!(matches!(first, GameEvent::Started { .. }));
+        assert!(rx.try_recv().is_err());
+
+        // Second write: completes the deferred line and adds a new one.
+        // Next drain should process both.
+        let mut f = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .await
+            .unwrap();
+        f.write_all(b"ed : Fully Installed,App Running,\n")
+            .await
+            .unwrap();
+        f.write_all(b"[t] AppID 440 state changed : Fully Installed,\n")
+            .await
+            .unwrap();
+        f.flush().await.unwrap();
+
+        cursor = source
+            .drain_lines(&log, cursor, &tx, &mut running)
+            .await
+            .unwrap();
+
+        assert!(
+            running.contains("730"),
+            "730 started after partial line completed"
+        );
+        assert!(
+            !running.contains("440"),
+            "440 stopped when App Running bit cleared"
+        );
+        // Both transitions should have produced events.
+        let _ = rx.try_recv().expect("Started for 730");
+        let _ = rx.try_recv().expect("Stopped for 440");
+        // Cursor now at EOF.
+        let len = tokio::fs::metadata(&log).await.unwrap().len();
+        assert_eq!(cursor, len);
+    }
+
+    /// Rotation: if the file shrinks below the cursor, start over from
+    /// the top of the new content.
+    #[tokio::test]
+    async fn drain_lines_handles_rotation() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("content_log.txt");
+        let source = SteamSource::new(tmp.path().to_path_buf());
+        let (tx, mut rx) = mpsc::channel::<GameEvent>(8);
+        let mut running = HashSet::new();
+
+        tokio::fs::write(&log, b"[t] AppID 440 state changed : App Running,\n")
+            .await
+            .unwrap();
+        let cursor = source
+            .drain_lines(&log, 0, &tx, &mut running)
+            .await
+            .unwrap();
+        assert!(running.contains("440"));
+        let _ = rx.try_recv().unwrap();
+
+        // Simulate rotation: rewrite the file with shorter content
+        // under an entirely new appid. Cursor > new_len must trigger a
+        // rescan from the start.
+        let mut f = tokio::fs::File::create(&log).await.unwrap();
+        f.write_all(b"[t] AppID 9 state changed : App Running,\n")
+            .await
+            .unwrap();
+        f.flush().await.unwrap();
+
+        let new_cursor = source
+            .drain_lines(&log, cursor, &tx, &mut running)
+            .await
+            .unwrap();
+        assert!(running.contains("9"));
+        assert!(new_cursor > 0);
+        let _ = rx.try_recv().expect("Started for 9 after rotation");
     }
 
     proptest! {
