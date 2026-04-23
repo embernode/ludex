@@ -37,9 +37,11 @@
 use std::sync::Arc;
 
 use ludex_core::{Database, LauncherType, Session};
-pub use ludex_dbus_types::{ApplicationSummary, SessionSummary, OBJECT_PATH, SERVICE_NAME};
+pub use ludex_dbus_types::{
+    ApplicationSummary, DailyPlaytime, SessionSummary, OBJECT_PATH, SERVICE_NAME,
+};
 use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
 use zbus::object_server::SignalEmitter;
@@ -133,6 +135,30 @@ impl Tracker {
                 full_runtime_seconds: row.full_runtime_seconds,
                 interactive_runtime_seconds: row.interactive_runtime_seconds,
                 exit_reason: row.exit_reason.map(|r| r.to_string()).unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    /// Per-day aggregate runtime for the last `days` days (clamped to
+    /// `[1, 3650]`). One row per day that has at least one session;
+    /// days with no activity are omitted, so the GUI fills gaps with
+    /// zeros where the chart needs a continuous range.
+    async fn list_daily_playtime(&self, days: u32) -> zbus::fdo::Result<Vec<DailyPlaytime>> {
+        let days = days.clamp(1, 3650);
+        let cutoff = OffsetDateTime::now_utc() - Duration::days(i64::from(days));
+        let rows = self
+            .db
+            .sessions()
+            .daily_playtime_since(cutoff)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| DailyPlaytime {
+                date: r.date,
+                full_runtime_seconds: r.full_runtime_seconds,
+                interactive_runtime_seconds: r.interactive_runtime_seconds,
+                session_count: r.session_count,
             })
             .collect())
     }

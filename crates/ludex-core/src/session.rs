@@ -53,6 +53,29 @@ pub struct RuntimeSnapshot {
     pub at: OffsetDateTime,
 }
 
+/// One calendar day's aggregate runtime across every tracked
+/// application.
+///
+/// Produced by
+/// [`SessionRepo::daily_playtime_since`](crate::repo::SessionRepo::daily_playtime_since).
+/// Open sessions count toward the day they started on — their
+/// runtime is the most recent heartbeat value, which is accurate to
+/// within the heartbeat interval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
+pub struct DailyPlaytime {
+    /// Calendar date in `YYYY-MM-DD` form. Produced by SQLite's
+    /// `DATE()` function applied to the session's `started_at`, which
+    /// treats the stored RFC 3339 UTC timestamp as-is.
+    pub date: String,
+    /// Sum of `full_runtime_seconds` across every session that
+    /// started on this date.
+    pub full_runtime_seconds: i64,
+    /// Sum of `interactive_runtime_seconds` across the same sessions.
+    pub interactive_runtime_seconds: i64,
+    /// Number of sessions that started on this date.
+    pub session_count: i64,
+}
+
 /// A session row joined against its owning application.
 ///
 /// Produced by

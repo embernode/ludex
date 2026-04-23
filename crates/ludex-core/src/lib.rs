@@ -33,5 +33,5 @@ pub use db::Database;
 pub use error::{Error, Result};
 pub use key::GameKey;
 pub use paths::default_database_path;
-pub use session::{RecentSession, RuntimeSnapshot, Session};
+pub use session::{DailyPlaytime, RecentSession, RuntimeSnapshot, Session};
 pub use types::{ExitReason, GraphicsPlatform, LauncherType, ProcessArchitecture};

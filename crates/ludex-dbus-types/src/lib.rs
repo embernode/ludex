@@ -62,6 +62,26 @@ pub struct ApplicationSummary {
     pub last_played_at: String,
 }
 
+/// One day's worth of aggregate runtime, shaped for dashboards.
+///
+/// Produced by
+/// [`net.ludex.Tracker1.ListDailyPlaytime`](https://net.ludex/Tracker1).
+/// A day with no sessions is omitted from the reply; the GUI fills
+/// gaps with zeros where the chart needs a continuous range.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct DailyPlaytime {
+    /// Calendar date in `YYYY-MM-DD` form, UTC. Matches SQLite's
+    /// `DATE()` function applied to the session's `started_at`.
+    pub date: String,
+    /// Sum of full-runtime seconds across every session that started
+    /// on this date.
+    pub full_runtime_seconds: i64,
+    /// Sum of interactive-runtime seconds across the same sessions.
+    pub interactive_runtime_seconds: i64,
+    /// Number of sessions that started on this date.
+    pub session_count: i64,
+}
+
 /// Session row shaped for the GUI.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct SessionSummary {

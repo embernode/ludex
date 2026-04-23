@@ -152,7 +152,9 @@ application with live updates.
 session history.
 
 **M6.5 — ECharts dashboards.** Daily-playtime line, calendar
-heatmap, genre donut, sessions-this-week bar.
+heatmap, sessions-this-week bar. *Genre donut deferred to post-M6
+until a genre-assignment mechanism lands — `applications.group_id`
+is schema-ready but has no writer; nothing useful to plot.*
 
 **M6.6 — Settings + system tray.** Block/force list editor, idle
 threshold, GPU threshold. Minimise-to-tray with current-session
@@ -164,6 +166,7 @@ badge.
 - Overlay or transient notifications.
 - Localisation via `gettext`.
 - `ludex migrate` — optional importer for users with per-game time data in other formats.
+- Genre donut (originally M6.5). Requires a way to populate `applications.group_id` — either a `ludex groups assign` CLI/GUI editor, a heuristic (Steam tags, SteamGridDB lookup), or both. Nice-to-have once the mechanism exists.
 
 ## Commit discipline
 

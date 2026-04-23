@@ -38,6 +38,7 @@ pub fn run() {
             bridge::get_application,
             bridge::list_recent_sessions,
             bridge::list_sessions_for_application,
+            bridge::list_daily_playtime,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

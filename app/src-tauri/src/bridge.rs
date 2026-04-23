@@ -27,7 +27,9 @@
 
 use std::sync::Arc;
 
-pub(crate) use ludex_dbus_types::{ApplicationSummary, SessionSummary, SERVICE_NAME};
+pub(crate) use ludex_dbus_types::{
+    ApplicationSummary, DailyPlaytime, SessionSummary, SERVICE_NAME,
+};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::OnceCell;
@@ -64,6 +66,7 @@ pub(crate) trait Tracker {
         application_id: i64,
         limit: u32,
     ) -> zbus::Result<Vec<SessionSummary>>;
+    fn list_daily_playtime(&self, days: u32) -> zbus::Result<Vec<DailyPlaytime>>;
 
     #[zbus(signal)]
     fn application_added(&self, application_id: i64) -> zbus::Result<()>;
@@ -154,6 +157,20 @@ pub(crate) async fn list_recent_sessions(
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
     proxy
         .list_recent_sessions(limit)
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('list_daily_playtime', { days })` returns one row per day
+/// with activity, oldest first, over the last `days` days.
+#[tauri::command]
+pub(crate) async fn list_daily_playtime(
+    bridge: BridgeState<'_>,
+    days: u32,
+) -> Result<Vec<DailyPlaytime>, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .list_daily_playtime(days)
         .await
         .map_err(|e| friendly(&e))
 }

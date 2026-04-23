@@ -4,6 +4,7 @@ use ludex_core::{
     Database, ExitReason, GameKey, GraphicsPlatform, Icons, IdentityUpdate, LauncherType,
     NewApplication, PlaybackDelta, ProcessArchitecture, RuntimeSnapshot,
 };
+use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
 
 fn sample_new_app() -> NewApplication {
@@ -302,6 +303,71 @@ async fn close_and_rollup_updates_app_stats_atomically() {
     assert_eq!(app_after.stat_total_interactive, 240);
     assert_eq!(app_after.stat_longest_full, 300);
     assert_eq!(app_after.last_played_at, Some(end));
+}
+
+/// Daily aggregation buckets by `DATE(started_at)` in UTC, sums
+/// per-session runtimes, counts rows, and returns the days in
+/// chronological order. The result skips days that have no sessions,
+/// per the contract documented on [`SessionRepo::daily_playtime_since`].
+#[tokio::test]
+async fn daily_playtime_since_buckets_by_calendar_day() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // Two sessions on day A, one on day B, one on day C. A fourth
+    // session predates the cutoff and must not appear.
+    let day_a = datetime!(2026-03-10 08:00:00 UTC);
+    let day_b = datetime!(2026-03-11 09:00:00 UTC);
+    let day_c = datetime!(2026-03-12 10:00:00 UTC);
+    let pre_cutoff = datetime!(2026-03-01 10:00:00 UTC);
+
+    for (start, full, interactive) in [
+        (day_a, 300_i64, 250_i64),
+        (day_a + Duration::hours(6), 600, 500),
+        (day_b, 120, 120),
+        (day_c, 7_200, 6_000),
+        (pre_cutoff, 10_000, 10_000),
+    ] {
+        let s = sessions.begin(app.id, start).await.unwrap();
+        sessions
+            .close_and_rollup(
+                s.id,
+                app.id,
+                RuntimeSnapshot {
+                    full_runtime_seconds: full,
+                    interactive_runtime_seconds: interactive,
+                    at: start + Duration::seconds(full),
+                },
+                ExitReason::Terminated,
+            )
+            .await
+            .unwrap();
+    }
+
+    let cutoff = datetime!(2026-03-10 00:00:00 UTC);
+    let rows = sessions.daily_playtime_since(cutoff).await.unwrap();
+
+    assert_eq!(rows.len(), 3, "three distinct days at or after cutoff");
+    assert_eq!(rows[0].date, "2026-03-10");
+    assert_eq!(rows[0].session_count, 2);
+    assert_eq!(rows[0].full_runtime_seconds, 900);
+    assert_eq!(rows[0].interactive_runtime_seconds, 750);
+    assert_eq!(rows[1].date, "2026-03-11");
+    assert_eq!(rows[1].session_count, 1);
+    assert_eq!(rows[1].full_runtime_seconds, 120);
+    assert_eq!(rows[2].date, "2026-03-12");
+    assert_eq!(rows[2].session_count, 1);
+    assert_eq!(rows[2].full_runtime_seconds, 7_200);
+}
+
+#[tokio::test]
+async fn daily_playtime_since_empty_when_no_sessions_match() {
+    let db = Database::open_memory().await.unwrap();
+    let cutoff = datetime!(2026-03-10 00:00:00 UTC);
+    let rows = db.sessions().daily_playtime_since(cutoff).await.unwrap();
+    assert!(rows.is_empty());
 }
 
 #[tokio::test]

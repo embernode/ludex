@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 use time::OffsetDateTime;
 
 use crate::error::Result;
-use crate::session::{RecentSession, RuntimeSnapshot, Session};
+use crate::session::{DailyPlaytime, RecentSession, RuntimeSnapshot, Session};
 use crate::types::ExitReason;
 
 const SELECT_COLS: &str = "id, application_id, started_at, ended_at, heartbeat_at, \
@@ -124,6 +124,31 @@ impl<'a> SessionRepo<'a> {
              ORDER BY s.started_at DESC LIMIT ?";
         sqlx::query_as::<_, RecentSession>(sql)
             .bind(i64::from(limit))
+            .fetch_all(self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Aggregate total runtime per calendar day for sessions that
+    /// started at or after `cutoff`. Returns one row per day that has
+    /// at least one session; days with no sessions are omitted
+    /// (callers that need a continuous range fill zeros). Includes
+    /// open sessions — their runtime is the most recent heartbeat
+    /// value, which is good enough for a live dashboard.
+    pub async fn daily_playtime_since(&self, cutoff: OffsetDateTime) -> Result<Vec<DailyPlaytime>> {
+        // CAST around SUM/COUNT pins the result type to SQLite
+        // INTEGER so sqlx's i64 decoder doesn't complain about the
+        // default NUMERIC affinity of aggregate columns.
+        let sql = "SELECT DATE(started_at) AS date, \
+            CAST(COALESCE(SUM(full_runtime_seconds), 0) AS INTEGER) AS full_runtime_seconds, \
+            CAST(COALESCE(SUM(interactive_runtime_seconds), 0) AS INTEGER) AS interactive_runtime_seconds, \
+            CAST(COUNT(*) AS INTEGER) AS session_count \
+            FROM sessions \
+            WHERE started_at >= ? \
+            GROUP BY DATE(started_at) \
+            ORDER BY DATE(started_at) ASC";
+        sqlx::query_as::<_, DailyPlaytime>(sql)
+            .bind(cutoff)
             .fetch_all(self.pool)
             .await
             .map_err(Into::into)
