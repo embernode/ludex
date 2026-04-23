@@ -167,6 +167,68 @@ pub fn prune_backups(dir: &Path, keep: usize) -> Result<Vec<PathBuf>> {
     Ok(removed)
 }
 
+/// Restore `source` (a previously-created snapshot) over `dst`
+/// (a live ludex database path).
+///
+/// The caller is responsible for making sure nothing else has
+/// `dst` open — typically by verifying the daemon isn't running.
+/// We stage the source into a sibling file first, let SQLite run
+/// any pending migrations on the staged copy (so a snapshot from
+/// an older schema version restores cleanly without mutating the
+/// original backup file), then atomically rename into place after
+/// removing any stray WAL / shm sidecars.
+pub async fn restore(source: &Path, dst: &Path) -> Result<()> {
+    if !source.is_file() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("backup file not found: {}", source.display()),
+        )));
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let staging = sibling_with_suffix(dst, ".restoring");
+
+    // Clean up any leftover staging file from a prior aborted
+    // restore. Copy after — we want the freshest source bytes, not
+    // whatever a previous attempt got halfway through.
+    let _ = fs::remove_file(&staging);
+    let _ = fs::remove_file(sibling_with_suffix(&staging, "-wal"));
+    let _ = fs::remove_file(sibling_with_suffix(&staging, "-shm"));
+    fs::copy(source, &staging)?;
+
+    // Open + close runs any pending migrations against the staged
+    // copy. Modifying the source backup would be surprising; this
+    // keeps the caller's snapshot intact.
+    {
+        let db = Database::open(&staging).await?;
+        db.close().await;
+    }
+
+    // Tear down the live DB's files before the rename so SQLite
+    // doesn't re-apply stale WAL against the restored main file on
+    // the daemon's next startup.
+    let dst_wal = sibling_with_suffix(dst, "-wal");
+    let dst_shm = sibling_with_suffix(dst, "-shm");
+    let _ = fs::remove_file(dst);
+    let _ = fs::remove_file(&dst_wal);
+    let _ = fs::remove_file(&dst_shm);
+    // And any sidecars that the migration run on the staging file
+    // left behind — after a clean close SQLite usually cleans up,
+    // but belt-and-braces.
+    let _ = fs::remove_file(sibling_with_suffix(&staging, "-wal"));
+    let _ = fs::remove_file(sibling_with_suffix(&staging, "-shm"));
+
+    fs::rename(&staging, dst)?;
+    Ok(())
+}
+
+fn sibling_with_suffix(p: &Path, suffix: &str) -> PathBuf {
+    let mut os = p.as_os_str().to_owned();
+    os.push(suffix);
+    PathBuf::from(os)
+}
+
 /// Take a snapshot at `$XDG_DATA_HOME/ludex/backups/` using the
 /// standard filename format, then prune to the retention count
 /// stored in `SettingsRepo` (or `retention_override` when the

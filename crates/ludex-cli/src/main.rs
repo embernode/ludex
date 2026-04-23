@@ -50,6 +50,31 @@ enum BackupCommand {
     /// run while `ludex-daemon` is active — SQLite `VACUUM INTO`
     /// produces a consistent copy without blocking the writer.
     Now,
+
+    /// List every snapshot currently in the backup directory,
+    /// newest first. Reports the parsed timestamp, the size on
+    /// disk, and the full path.
+    List,
+
+    /// Prune older snapshots beyond the configured retention count.
+    /// A `--keep` override replaces the setting for this one run
+    /// only; the stored value is untouched.
+    Prune {
+        /// Retain this many newest snapshots; delete the rest.
+        /// Clamped to a minimum of 1.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        keep: Option<u64>,
+    },
+
+    /// Restore a snapshot over the live database. Refuses to run
+    /// while `ludex-daemon` is active; the daemon's open handle
+    /// would make the replacement unsafe. Stops and starts of the
+    /// daemon are the caller's responsibility.
+    Restore {
+        /// Path to the snapshot file to restore. `ludex backup list`
+        /// prints paths you can copy here.
+        path: std::path::PathBuf,
+    },
 }
 
 fn init_tracing() {
@@ -69,6 +94,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Sessions { limit } => sessions::run(limit).await,
         Command::Backup { command } => match command {
             BackupCommand::Now => backup::now().await,
+            BackupCommand::List => backup::list().await,
+            BackupCommand::Prune { keep } => backup::prune(keep).await,
+            BackupCommand::Restore { path } => backup::restore(path).await,
         },
     }
 }

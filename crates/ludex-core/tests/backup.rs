@@ -62,6 +62,72 @@ async fn snapshot_round_trips_application_rows() {
     assert_eq!(found.product_name, "Team Fortress 2");
 }
 
+/// After a restore the destination DB must contain exactly the
+/// source's rows — nothing from the pre-restore state should
+/// survive. Leftover WAL or shm sidecars against the old DB must
+/// be torn down so SQLite's next open starts clean.
+#[tokio::test]
+async fn restore_replaces_destination_with_source_contents() {
+    let tmp = tempfile::tempdir().unwrap();
+    let live_path = tmp.path().join("live.sqlite");
+    let backup_path = tmp.path().join("snap.sqlite");
+
+    // Live DB has app 440 (the "current" state the user is about
+    // to roll back from).
+    let live = Database::open(&live_path).await.unwrap();
+    live.applications().create(sample_new_app()).await.unwrap();
+
+    // Snapshot captures that state, then we add app 730 so the
+    // backup is genuinely older than the destination at restore
+    // time. The restore should wipe 730 and leave only 440.
+    create_snapshot(&live, &backup_path).await.unwrap();
+    let mut later_app = sample_new_app();
+    later_app.launcher_id = "730".into();
+    later_app.product_name = "CS:GO".into();
+    live.applications().create(later_app).await.unwrap();
+    live.close().await;
+
+    // Simulate a lingering WAL/shm pair (what a SIGKILLed daemon
+    // would leave behind). Restore must clean them so the next
+    // open doesn't apply stale WAL to the restored main file.
+    fs::write(tmp.path().join("live.sqlite-wal"), b"stale-wal").unwrap();
+    fs::write(tmp.path().join("live.sqlite-shm"), b"stale-shm").unwrap();
+
+    ludex_core::backup::restore(&backup_path, &live_path)
+        .await
+        .unwrap();
+    assert!(!tmp.path().join("live.sqlite-wal").is_file());
+    assert!(!tmp.path().join("live.sqlite-shm").is_file());
+
+    let restored = Database::open(&live_path).await.unwrap();
+    assert!(restored
+        .applications()
+        .find_by_key(&GameKey::steam("440"))
+        .await
+        .unwrap()
+        .is_some());
+    assert!(
+        restored
+            .applications()
+            .find_by_key(&GameKey::steam("730"))
+            .await
+            .unwrap()
+            .is_none(),
+        "post-snapshot app must not survive restore"
+    );
+}
+
+#[tokio::test]
+async fn restore_errors_on_missing_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("nope.sqlite");
+    let dst = tmp.path().join("live.sqlite");
+    let err = ludex_core::backup::restore(&missing, &dst)
+        .await
+        .expect_err("missing source should error");
+    assert!(err.to_string().contains("not found"), "got: {err}");
+}
+
 #[tokio::test]
 async fn snapshot_refuses_to_overwrite_existing_file() {
     let tmp = tempfile::tempdir().unwrap();
