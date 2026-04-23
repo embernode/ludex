@@ -5,6 +5,7 @@ use tracing_subscriber::EnvFilter;
 
 mod backup;
 mod doctor;
+mod merge;
 mod sessions;
 
 #[derive(Parser)]
@@ -40,6 +41,31 @@ enum Command {
     Backup {
         #[command(subcommand)]
         command: BackupCommand,
+    },
+
+    /// Fold one application row into another.
+    ///
+    /// Typical use: a legacy-history import lands a game as a
+    /// Native-launcher row (keyed by executable path) when the
+    /// live Steam source had already created the same game as a
+    /// Steam-launcher row (keyed by appid). `ludex merge <src>
+    /// <dst>` moves `src`'s sessions onto `dst`, sums aggregate
+    /// stats, fills empty metadata slots on `dst` from `src`,
+    /// then deletes `src`.
+    ///
+    /// Refuses to run while `ludex-daemon` is active. Look up
+    /// application ids in the GUI (`/app/<id>` in the URL) or
+    /// with `ludex sessions`.
+    Merge {
+        /// Application id that will be removed after its data is
+        /// merged into the destination.
+        #[arg(value_name = "SRC_ID")]
+        src_id: i64,
+        /// Application id that receives the source's sessions and
+        /// aggregate stats. Identity (`launcher_type`, `launcher_id`,
+        /// `product_name`) stays unchanged.
+        #[arg(value_name = "DST_ID")]
+        dst_id: i64,
     },
 }
 
@@ -98,5 +124,6 @@ async fn main() -> anyhow::Result<()> {
             BackupCommand::Prune { keep } => backup::prune(keep).await,
             BackupCommand::Restore { path } => backup::restore(path).await,
         },
+        Command::Merge { src_id, dst_id } => merge::run(src_id, dst_id).await,
     }
 }

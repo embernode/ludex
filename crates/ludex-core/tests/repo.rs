@@ -363,6 +363,136 @@ async fn daily_playtime_since_buckets_by_calendar_day() {
     assert_eq!(rows[2].full_runtime_seconds, 7_200);
 }
 
+/// Happy-path merge: two apps with different launcher types but
+/// the same underlying game. Sessions on src move to dst, stats
+/// sum correctly, and src is gone from the table.
+#[tokio::test]
+async fn merge_into_folds_sessions_and_stats() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+
+    // dst: a Steam-detected Core Keeper with a single short
+    // session (the 18-second edge-case the real user hit).
+    let dst = apps.create(sample_new_app()).await.unwrap();
+    let dst_session = sessions
+        .begin(dst.id, OffsetDateTime::now_utc() - Duration::minutes(5))
+        .await
+        .unwrap();
+    sessions
+        .close_and_rollup(
+            dst_session.id,
+            dst.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 18,
+                interactive_runtime_seconds: 18,
+                at: OffsetDateTime::now_utc() - Duration::minutes(4),
+            },
+            ExitReason::Terminated,
+        )
+        .await
+        .unwrap();
+
+    // src: a migrated row under Native. Different launcher id so
+    // the primary-key uniqueness isn't an issue.
+    let mut src_new = sample_new_app();
+    src_new.launcher_type = LauncherType::Native;
+    src_new.launcher_id = "/pelit/corekeeper.exe".into();
+    src_new.publisher = Some("Pugstorm".into()); // dst was Valve; we keep dst's here
+    let src = apps.create(src_new).await.unwrap();
+    let src_session = sessions
+        .begin(src.id, OffsetDateTime::now_utc() - Duration::days(30))
+        .await
+        .unwrap();
+    sessions
+        .close_and_rollup(
+            src_session.id,
+            src.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 7_200, // 2 hours
+                interactive_runtime_seconds: 6_500,
+                at: OffsetDateTime::now_utc() - Duration::days(30) + Duration::hours(2),
+            },
+            ExitReason::Terminated,
+        )
+        .await
+        .unwrap();
+
+    apps.merge_into(src.id, dst.id).await.unwrap();
+
+    // src is gone.
+    assert!(apps.find_by_id(src.id).await.unwrap().is_none());
+    // dst carries both sessions.
+    let dst_sessions = sessions.list_for_application(dst.id, 10).await.unwrap();
+    assert_eq!(dst_sessions.len(), 2);
+    // Aggregate stats reflect both histories.
+    let merged = apps.find_by_id(dst.id).await.unwrap().unwrap();
+    assert_eq!(merged.stat_run_count, 2);
+    assert_eq!(merged.stat_total_full, 7_218);
+    assert_eq!(merged.stat_total_interactive, 6_518);
+    // Longest uses MAX not SUM.
+    assert_eq!(merged.stat_longest_full, 7_200);
+    // Identity on dst is preserved.
+    assert_eq!(merged.launcher_type, dst.launcher_type);
+    assert_eq!(merged.launcher_id, dst.launcher_id);
+    assert_eq!(merged.product_name, dst.product_name);
+    assert_eq!(merged.publisher, dst.publisher);
+}
+
+#[tokio::test]
+async fn merge_into_fills_missing_metadata_from_src() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+
+    // dst lacks a publisher and an icon slot.
+    let mut dst_new = sample_new_app();
+    dst_new.publisher = None;
+    dst_new.icons.icon_32 = None;
+    let dst = apps.create(dst_new).await.unwrap();
+
+    // src has both.
+    let mut src_new = sample_new_app();
+    src_new.launcher_id = "/tmp/alt.exe".into();
+    src_new.launcher_type = LauncherType::Native;
+    src_new.publisher = Some("Backfilled Inc.".into());
+    src_new.icons.icon_32 = Some(vec![0x42; 32 * 32 * 4]);
+    let src = apps.create(src_new).await.unwrap();
+
+    apps.merge_into(src.id, dst.id).await.unwrap();
+
+    let after = apps.find_by_id(dst.id).await.unwrap().unwrap();
+    assert_eq!(after.publisher.as_deref(), Some("Backfilled Inc."));
+    assert_eq!(after.icon_32.as_ref().map(Vec::len), Some(32 * 32 * 4));
+}
+
+#[tokio::test]
+async fn merge_into_rejects_same_id() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    let err = apps
+        .merge_into(app.id, app.id)
+        .await
+        .expect_err("same-id merge must fail");
+    assert!(err.to_string().contains("same"), "got: {err}");
+}
+
+#[tokio::test]
+async fn merge_into_errors_on_missing_rows() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // Nonexistent src.
+    let err = apps.merge_into(99_999, app.id).await.unwrap_err();
+    assert!(err.to_string().contains("source"), "got: {err}");
+
+    // Nonexistent dst.
+    let err = apps.merge_into(app.id, 99_999).await.unwrap_err();
+    assert!(err.to_string().contains("destination"), "got: {err}");
+}
+
 #[tokio::test]
 async fn blocked_repo_round_trips_keys() {
     let db = Database::open_memory().await.unwrap();

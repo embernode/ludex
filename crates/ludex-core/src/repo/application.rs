@@ -3,7 +3,7 @@
 use sqlx::SqlitePool;
 
 use crate::application::{Application, IdentityUpdate, NewApplication, PlaybackDelta};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::key::GameKey;
 use crate::types::LauncherType;
 
@@ -263,5 +263,135 @@ impl<'a> ApplicationRepo<'a> {
             .await?
             .rows_affected();
         Ok(rows > 0)
+    }
+
+    /// Fold `src_id` into `dst_id` atomically, then delete `src_id`.
+    ///
+    /// Every session owned by `src_id` is re-parented to `dst_id`.
+    /// Aggregate statistics are summed where sums make sense
+    /// (`stat_run_count`, `stat_total_full`, `stat_total_interactive`)
+    /// and combined via MAX/MIN otherwise (`stat_longest_full`,
+    /// `first_seen_at`, `last_played_at`). Identity slots on `dst`
+    /// are preserved; metadata slots (publisher, version,
+    /// graphics/architecture, icons, paths, group) are filled from
+    /// `src` only when the destination's current value is NULL or
+    /// the canonical "unknown" placeholder.
+    ///
+    /// Idiomatic use is post-import deduplication: the Steam
+    /// source detected a game as `(steam, appid)` and a migration
+    /// landed the same game as `(native, exe_path)`; `merge_into`
+    /// collapses the latter into the former so the dashboards see
+    /// one row.
+    ///
+    /// Returns [`Error::Invariant`] when `src_id == dst_id` or
+    /// either id does not resolve to an application row. The whole
+    /// operation runs in one transaction — either every change
+    /// lands or none do.
+    pub async fn merge_into(&self, src_id: i64, dst_id: i64) -> Result<()> {
+        if src_id == dst_id {
+            return Err(Error::Invariant(
+                "merge source and destination are the same application",
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        // Fetch the source row up-front so the UPDATE against dst
+        // can use plain bound parameters instead of correlated
+        // subqueries. Also proves src exists before we touch
+        // anything.
+        let src: Application = sqlx::query_as::<_, Application>(&format!(
+            "SELECT {SELECT_COLS} FROM applications WHERE id = ?"
+        ))
+        .bind(src_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::Invariant("merge: source application not found"))?;
+
+        // Verify dst exists before committing. The UPDATE below
+        // would no-op against a missing id without failing; we'd
+        // rather surface the error than silently proceed.
+        let dst_exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM applications WHERE id = ?")
+            .bind(dst_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if dst_exists.is_none() {
+            return Err(Error::Invariant("merge: destination application not found"));
+        }
+
+        // Re-parent every session owned by src. The index on
+        // (application_id, started_at) keeps this fast even for
+        // long histories.
+        sqlx::query("UPDATE sessions SET application_id = ? WHERE application_id = ?")
+            .bind(dst_id)
+            .bind(src_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // Fold src's aggregate + identity slots into dst. One big
+        // UPDATE so we hit the row once — and a CHECK violation on
+        // the summed totals would fail the whole transaction
+        // rather than leaving dst half-merged.
+        sqlx::query(
+            "UPDATE applications SET \
+             stat_run_count         = stat_run_count + ?, \
+             stat_total_full        = stat_total_full + ?, \
+             stat_total_interactive = stat_total_interactive + ?, \
+             stat_longest_full      = MAX(stat_longest_full, ?), \
+             first_seen_at          = MIN(first_seen_at, ?), \
+             last_played_at         = CASE \
+                 WHEN last_played_at IS NULL THEN ? \
+                 WHEN ? IS NULL THEN last_played_at \
+                 ELSE MAX(last_played_at, ?) \
+             END, \
+             publisher              = COALESCE(publisher, ?), \
+             version                = COALESCE(version, ?), \
+             executable_path        = COALESCE(executable_path, ?), \
+             launcher_exe_path      = COALESCE(launcher_exe_path, ?), \
+             wineprefix_path        = COALESCE(wineprefix_path, ?), \
+             installed_flatpak_ref  = COALESCE(installed_flatpak_ref, ?), \
+             group_id               = COALESCE(group_id, ?), \
+             icon_16                = COALESCE(icon_16, ?), \
+             icon_32                = COALESCE(icon_32, ?), \
+             icon_48                = COALESCE(icon_48, ?), \
+             icon_256               = COALESCE(icon_256, ?), \
+             graphics_platform      = CASE WHEN graphics_platform = 'unknown' \
+                                           THEN ? ELSE graphics_platform END, \
+             process_architecture   = CASE WHEN process_architecture = 'unknown' \
+                                           THEN ? ELSE process_architecture END \
+             WHERE id = ?",
+        )
+        .bind(src.stat_run_count)
+        .bind(src.stat_total_full)
+        .bind(src.stat_total_interactive)
+        .bind(src.stat_longest_full)
+        .bind(src.first_seen_at)
+        .bind(src.last_played_at)
+        .bind(src.last_played_at)
+        .bind(src.last_played_at)
+        .bind(&src.publisher)
+        .bind(&src.version)
+        .bind(&src.executable_path)
+        .bind(&src.launcher_exe_path)
+        .bind(&src.wineprefix_path)
+        .bind(&src.installed_flatpak_ref)
+        .bind(src.group_id)
+        .bind(&src.icon_16)
+        .bind(&src.icon_32)
+        .bind(&src.icon_48)
+        .bind(&src.icon_256)
+        .bind(src.graphics_platform)
+        .bind(src.process_architecture)
+        .bind(dst_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("DELETE FROM applications WHERE id = ?")
+            .bind(src_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
     }
 }
