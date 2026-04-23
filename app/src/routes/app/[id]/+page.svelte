@@ -91,6 +91,9 @@
                 {#if app.publisher}
                     <span class="publisher">{app.publisher}</span>
                 {/if}
+                <span class="id-badge" title="Application id (for ludex merge)"
+                    >#{app.id}</span
+                >
             </div>
             <button onclick={refresh}>Refresh</button>
         </header>
@@ -216,6 +219,17 @@
     .publisher {
         font-size: 0.95rem;
         color: var(--text-muted);
+    }
+
+    .id-badge {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        font-size: 0.78rem;
+        color: var(--text-subtle);
+        background: var(--tag-bg);
+        padding: 0.1rem 0.45rem;
+        border-radius: 999px;
+        font-variant-numeric: tabular-nums;
+        cursor: help;
     }
 
     .stats {

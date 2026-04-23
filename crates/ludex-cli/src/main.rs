@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+mod apps;
 mod backup;
 mod doctor;
 mod merge;
@@ -37,6 +38,12 @@ enum Command {
         limit: u32,
     },
 
+    /// Inspect tracked applications.
+    Apps {
+        #[command(subcommand)]
+        command: AppsCommand,
+    },
+
     /// Manage ludex database backups.
     Backup {
         #[command(subcommand)]
@@ -67,6 +74,14 @@ enum Command {
         #[arg(value_name = "DST_ID")]
         dst_id: i64,
     },
+}
+
+#[derive(Subcommand)]
+enum AppsCommand {
+    /// Print every tracked application with its id, launcher key,
+    /// product name, and run count. Useful for looking up the
+    /// numeric id `ludex merge` and `ludex sessions` take.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -118,6 +133,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Doctor => doctor::run().await,
         Command::Sessions { limit } => sessions::run(limit).await,
+        Command::Apps { command } => match command {
+            AppsCommand::List => apps::list().await,
+        },
         Command::Backup { command } => match command {
             BackupCommand::Now => backup::now().await,
             BackupCommand::List => backup::list().await,
