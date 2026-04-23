@@ -194,17 +194,17 @@ they become user-visible or when neighbouring work lands.
 
 ### Post-M6 (unscheduled)
 
-- Statistics database backup + restore. Snapshot `ludex.sqlite`
-  via `VACUUM INTO` to `$XDG_DATA_HOME/ludex/backups/`, scheduled
-  on shutdown and periodically while running. CLI surface:
-  `ludex backup {now,list,prune,restore}`. Retention tunable via
-  `SettingsRepo`. (Earlier roadmap copy said "save-file backup
-  scoped to Proton prefixes"; game-save backup is out of scope —
-  ludex is a tracker, not a save manager.)
 - Overlay or transient notifications.
 - Localisation via `gettext`.
 - `ludex migrate` — optional importer for users with per-game time data in other formats.
 - Genre donut (originally M6.5). Requires a way to populate `applications.group_id` — either a `ludex groups assign` CLI/GUI editor, a heuristic (Steam tags, SteamGridDB lookup), or both. Nice-to-have once the mechanism exists.
+- Dependency sweep. `cargo install` surfaces periodic holdbacks
+  worth a dedicated verify-and-bump session: `notify 7 → 8`
+  (major, transitive through the Steam log watcher),
+  `freedesktop-desktop-entry 0.7 → 0.8` (minor, enrich crate),
+  `generic-array 0.14.9` (held back — suspected MSRV above our
+  pinned 1.94), `toml` + `toml_edit` patch trains. None blocking;
+  bundle into one pass every few months.
 
 ## Commit discipline
 
