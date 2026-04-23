@@ -42,11 +42,13 @@ pub async fn run() -> Result<()> {
         .with_context(|| format!("open database at {}", db_path.display()))?;
 
     let enrichment_ctx = Arc::new(EnrichmentContext::detect_from_env());
+    // Only log the sources whose enrichers are wired up today. Heroic
+    // and Lutris paths are detected in the context for future use but
+    // have no consumer yet; logging them advertised support we don't
+    // actually provide.
     info!(
         desktop_dirs = enrichment_ctx.desktop_dirs.len(),
         steam = enrichment_ctx.steam_dir.is_some(),
-        heroic = enrichment_ctx.heroic_config_dir.is_some(),
-        lutris = enrichment_ctx.lutris_pga_db.is_some(),
         "enrichment context ready"
     );
 
