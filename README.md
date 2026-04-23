@@ -68,8 +68,19 @@ pnpm install          # one-off; lockfile is committed
 pnpm tauri dev        # launches the webview + hot-reloads Svelte edits
 ```
 
+### Using the CLI
+
+```sh
+cargo install --path crates/ludex-cli
+ludex doctor
+```
+
+Full subcommand reference (apps / sessions / backup / merge) is in
+[`docs/cli.md`](docs/cli.md).
+
 See [`docs/roadmap.md`](docs/roadmap.md) for the phased milestone
-plan.
+plan and [`docs/architecture.md`](docs/architecture.md) for the
+design.
 
 ## License
 
