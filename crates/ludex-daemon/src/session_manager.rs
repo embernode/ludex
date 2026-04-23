@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use ludex_core::{
     Application, Database, Error, ExitReason, GameKey, GraphicsPlatform, Icons, NewApplication,
-    PlaybackDelta, ProcessArchitecture, RuntimeSnapshot,
+    ProcessArchitecture, RuntimeSnapshot,
 };
 use ludex_enrich::EnrichmentContext;
 use time::{Duration, OffsetDateTime};
@@ -113,15 +113,31 @@ impl SessionManager {
     /// Close any sessions left open by a prior daemon run whose heartbeat
     /// is older than [`ORPHAN_GRACE_MINUTES`]. Returns the number of rows
     /// closed. Call once before [`Self::run`].
+    ///
+    /// Each orphan is closed with its last-known heartbeat runtime and
+    /// rolled into the owning application's aggregate stats in a single
+    /// transaction — the recovery path makes the same atomicity promise
+    /// as the normal close path, so a crash during recovery cannot drop
+    /// runtime from the application counters.
     pub async fn recover_orphans(&self) -> Result<u64, Error> {
-        let count = self
-            .db
-            .sessions()
-            .recover_orphans(
-                OffsetDateTime::now_utc(),
-                Duration::minutes(ORPHAN_GRACE_MINUTES),
-            )
-            .await?;
+        let cutoff = OffsetDateTime::now_utc() - Duration::minutes(ORPHAN_GRACE_MINUTES);
+        let orphans = self.db.sessions().list_orphans(cutoff).await?;
+        let count = orphans.len() as u64;
+        for orphan in orphans {
+            self.db
+                .sessions()
+                .close_and_rollup(
+                    orphan.id,
+                    orphan.application_id,
+                    RuntimeSnapshot {
+                        full_runtime_seconds: orphan.full_runtime_seconds,
+                        interactive_runtime_seconds: orphan.interactive_runtime_seconds,
+                        at: orphan.heartbeat_at,
+                    },
+                    ExitReason::Recovered,
+                )
+                .await?;
+        }
         if count > 0 {
             info!(
                 recovered = count,
@@ -346,26 +362,15 @@ impl SessionManager {
         let (full, interactive) = self.runtimes_for(&open, ended_at);
         self.db
             .sessions()
-            .end(
+            .close_and_rollup(
                 open.session_id,
+                open.application_id,
                 RuntimeSnapshot {
                     full_runtime_seconds: full,
                     interactive_runtime_seconds: interactive,
                     at: ended_at,
                 },
                 reason,
-            )
-            .await?;
-        self.db
-            .applications()
-            .apply_playback(
-                open.application_id,
-                PlaybackDelta {
-                    full_runtime_seconds: full,
-                    interactive_runtime_seconds: interactive,
-                    longest_full_candidate: Some(full),
-                    last_played_at: ended_at,
-                },
             )
             .await?;
         info!(

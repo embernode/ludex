@@ -176,7 +176,7 @@ async fn session_begin_heartbeat_end_and_playback_delta() {
 }
 
 #[tokio::test]
-async fn recover_orphans_closes_only_stale_open_sessions() {
+async fn list_orphans_returns_only_stale_open_sessions() {
     let db = Database::open_memory().await.unwrap();
     let apps = db.applications();
     let sessions = db.sessions();
@@ -218,19 +218,61 @@ async fn recover_orphans_closes_only_stale_open_sessions() {
         .await
         .unwrap();
 
-    let recovered = sessions
-        .recover_orphans(now, Duration::minutes(2))
-        .await
-        .unwrap();
-    assert_eq!(recovered, 1);
+    let cutoff = now - Duration::minutes(2);
+    let orphans = sessions.list_orphans(cutoff).await.unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0].id, stale.id);
 
-    let stale_after = sessions.find_by_id(stale.id).await.unwrap().unwrap();
-    assert_eq!(stale_after.exit_reason, Some(ExitReason::Recovered));
-    assert_eq!(stale_after.ended_at, Some(stale_after.heartbeat_at));
-
+    // Fresh session must still be open.
     let fresh_after = sessions.find_by_id(fresh.id).await.unwrap().unwrap();
     assert_eq!(fresh_after.ended_at, None);
     assert_eq!(fresh_after.exit_reason, None);
+}
+
+/// Closing a session through `close_and_rollup` must update both the
+/// `sessions` row and the owning `applications` aggregate stats in a
+/// single transaction. This is the invariant the audit flagged: the
+/// prior two-call path could drop the app-level rollup if the daemon
+/// crashed between the session-close and the aggregate update.
+#[tokio::test]
+async fn close_and_rollup_updates_app_stats_atomically() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+    assert_eq!(app.stat_run_count, 0);
+    assert_eq!(app.stat_total_full, 0);
+
+    let start = OffsetDateTime::now_utc() - Duration::minutes(10);
+    let session = sessions.begin(app.id, start).await.unwrap();
+    let end = start + Duration::seconds(300);
+
+    sessions
+        .close_and_rollup(
+            session.id,
+            app.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 300,
+                interactive_runtime_seconds: 240,
+                at: end,
+            },
+            ExitReason::Terminated,
+        )
+        .await
+        .unwrap();
+
+    let session_after = sessions.find_by_id(session.id).await.unwrap().unwrap();
+    assert_eq!(session_after.ended_at, Some(end));
+    assert_eq!(session_after.exit_reason, Some(ExitReason::Terminated));
+    assert_eq!(session_after.full_runtime_seconds, 300);
+    assert_eq!(session_after.interactive_runtime_seconds, 240);
+
+    let app_after = apps.find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(app_after.stat_run_count, 1);
+    assert_eq!(app_after.stat_total_full, 300);
+    assert_eq!(app_after.stat_total_interactive, 240);
+    assert_eq!(app_after.stat_longest_full, 300);
+    assert_eq!(app_after.last_played_at, Some(end));
 }
 
 #[tokio::test]

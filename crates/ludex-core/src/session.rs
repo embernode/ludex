@@ -11,11 +11,11 @@ use crate::types::ExitReason;
 /// A session is created by [`SessionRepo::begin`](crate::repo::SessionRepo::begin)
 /// when the detector accepts an application. It is updated at heartbeat
 /// intervals (default 60 s), and closed by
-/// [`SessionRepo::end`](crate::repo::SessionRepo::end) on process exit,
-/// foreground change, or sleep-split. Orphaned open sessions (left behind
-/// by a crash) are closed by
-/// [`SessionRepo::recover_orphans`](crate::repo::SessionRepo::recover_orphans)
-/// at daemon startup.
+/// [`SessionRepo::close_and_rollup`](crate::repo::SessionRepo::close_and_rollup)
+/// on process exit, foreground change, or sleep-split. Orphaned open
+/// sessions (left behind by a crash) are listed via
+/// [`SessionRepo::list_orphans`](crate::repo::SessionRepo::list_orphans) and
+/// closed the same way at daemon startup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
 pub struct Session {
     /// Primary key.

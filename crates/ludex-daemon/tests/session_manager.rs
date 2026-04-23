@@ -257,6 +257,16 @@ async fn recover_orphans_closes_stale_sessions() {
     let refreshed = db.sessions().find_by_id(stale.id).await.unwrap().unwrap();
     assert_eq!(refreshed.exit_reason, Some(ExitReason::Recovered));
     assert_eq!(refreshed.ended_at, Some(refreshed.heartbeat_at));
+
+    // Application aggregate stats must reflect the recovered session's
+    // runtime — not doing so was the P1 data-loss bug this recovery
+    // path used to have.
+    let app_after = db.applications().find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(app_after.stat_run_count, 1);
+    assert_eq!(app_after.stat_total_full, 600);
+    assert_eq!(app_after.stat_total_interactive, 600);
+    assert_eq!(app_after.stat_longest_full, 600);
+    assert_eq!(app_after.last_played_at, Some(refreshed.heartbeat_at));
 }
 
 /// Idle time that accumulates during a session must be subtracted

@@ -1,7 +1,7 @@
 //! Session-shaped queries.
 
 use sqlx::SqlitePool;
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 
 use crate::error::Result;
 use crate::session::{RecentSession, RuntimeSnapshot, Session};
@@ -129,25 +129,78 @@ impl<'a> SessionRepo<'a> {
             .map_err(Into::into)
     }
 
-    /// Close any sessions that were still open when the previous daemon
-    /// run ended. A session is considered orphaned if it has no `ended_at`
-    /// and its last heartbeat is older than `now - grace`.
+    /// Return every session with `ended_at IS NULL` whose last heartbeat
+    /// is older than `cutoff`. Used by the daemon's cold-start recovery
+    /// to locate sessions left open by a prior crashed run.
     ///
-    /// Orphaned sessions are closed at their last heartbeat timestamp
-    /// with `exit_reason = 'recovered'`. Returns the number of sessions
-    /// closed.
-    pub async fn recover_orphans(&self, now: OffsetDateTime, grace: Duration) -> Result<u64> {
-        let cutoff = now - grace;
-        let rows = sqlx::query(
+    /// The caller is expected to close each row with
+    /// [`Self::close_and_rollup`] so the application-level aggregate
+    /// stats are also updated.
+    pub async fn list_orphans(&self, cutoff: OffsetDateTime) -> Result<Vec<Session>> {
+        let sql = format!(
+            "SELECT {SELECT_COLS} FROM sessions \
+             WHERE ended_at IS NULL AND heartbeat_at < ?"
+        );
+        sqlx::query_as::<_, Session>(&sql)
+            .bind(cutoff)
+            .fetch_all(self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Close a session and roll its runtime into the owning application's
+    /// aggregate statistics in a single transaction.
+    ///
+    /// Supersedes paired [`Self::end`] +
+    /// [`ApplicationRepo::apply_playback`](crate::repo::ApplicationRepo::apply_playback)
+    /// calls. Those are still exported for callers that need finer
+    /// control, but every session-close path — normal shutdown,
+    /// foreground change, `pidfd`-observed exit, cold-start orphan
+    /// recovery — should prefer this so a crash between the two writes
+    /// cannot leave the aggregate counters missing a session's runtime.
+    pub async fn close_and_rollup(
+        &self,
+        session_id: i64,
+        application_id: i64,
+        snapshot: RuntimeSnapshot,
+        reason: ExitReason,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
             "UPDATE sessions \
-             SET ended_at    = heartbeat_at, \
-                 exit_reason = 'recovered' \
-             WHERE ended_at IS NULL AND heartbeat_at < ?",
+             SET ended_at = ?, heartbeat_at = ?, \
+                 full_runtime_seconds = ?, interactive_runtime_seconds = ?, \
+                 exit_reason = ? \
+             WHERE id = ? AND ended_at IS NULL",
         )
-        .bind(cutoff)
-        .execute(self.pool)
-        .await?
-        .rows_affected();
-        Ok(rows)
+        .bind(snapshot.at)
+        .bind(snapshot.at)
+        .bind(snapshot.full_runtime_seconds)
+        .bind(snapshot.interactive_runtime_seconds)
+        .bind(reason)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE applications \
+             SET stat_run_count         = stat_run_count + 1, \
+                 stat_total_full        = stat_total_full + ?, \
+                 stat_total_interactive = stat_total_interactive + ?, \
+                 stat_longest_full      = MAX(stat_longest_full, ?), \
+                 last_played_at         = ? \
+             WHERE id = ?",
+        )
+        .bind(snapshot.full_runtime_seconds)
+        .bind(snapshot.interactive_runtime_seconds)
+        .bind(snapshot.full_runtime_seconds)
+        .bind(snapshot.at)
+        .bind(application_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
     }
 }
