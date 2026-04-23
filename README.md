@@ -2,16 +2,16 @@
 
 A launcher-agnostic playtime tracker for Linux.
 
-**Status: pre-alpha, design phase.** No working binary yet. The repository currently holds the architecture document and roadmap; implementation begins with milestone M0 (workspace scaffold).
+**Status: pre-alpha.** The daemon, CLI, and Tauri GUI all build and run end-to-end; Steam-launched sessions are detected and recorded. The detection set is still being filled in — Lutris and Heroic launcher integrations are deferred (see the roadmap for the current tranche status).
 
 ## What it does
 
 ludex records time spent playing games on Linux without requiring per-game configuration. The daemon observes game launches from:
 
-- **Steam** via inotify on the Steam content log
-- **Lutris** via its `net.lutris.Lutris` D-Bus service
-- **Heroic Games Launcher** via inotify on its running-game state file
-- **Anything else** via a Wayland foreground-window fallback gated on DRM fdinfo GPU-usage metrics
+- **Steam** via inotify on the Steam content log *(shipped)*
+- **Lutris** via its `net.lutris.Lutris` D-Bus service *(deferred — Lutris does not expose start/stop signals on its session-bus interface today)*
+- **Heroic Games Launcher** via process-tree / log inspection *(deferred — Heroic 2.x removed the single `running_game.json` file this was designed around)*
+- **Anything else** via a Wayland foreground-window fallback gated on loaded graphics libraries and DRM fdinfo GPU-usage metrics *(shipped on KDE Plasma 6 Wayland)*
 
 Each recognised game has its sessions persisted to SQLite with two runtime figures: **full runtime** (wall-clock session duration) and **interactive runtime** (full runtime minus system-reported idle intervals via `logind.IdleHint`).
 
@@ -33,7 +33,7 @@ The primary target is KDE Plasma 6 on Wayland; X11 is supported where the mechan
 
 Full architecture in [docs/architecture.md](docs/architecture.md). Phased plan in [docs/roadmap.md](docs/roadmap.md).
 
-## Repository layout (target)
+## Repository layout
 
 ```
 Cargo.toml            # Rust workspace manifest
@@ -41,7 +41,11 @@ crates/
   ludex-core/         # shared types, schema, SQL, errors
   ludex-daemon/       # the tracker (binary)
   ludex-cli/          # CLI client (binary)
-app/                  # Tauri + SvelteKit frontend (post-M5)
+  ludex-enrich/       # metadata enrichment cascade (desktop/Steam/GOG/PE)
+  ludex-dbus-types/   # wire types shared by daemon and GUI
+app/
+  src/                # SvelteKit frontend (TypeScript + Svelte 5)
+  src-tauri/          # Tauri 2 host binary
 packaging/            # systemd service, PKGBUILD
 docs/                 # architecture, roadmap
 ```

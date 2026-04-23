@@ -57,13 +57,15 @@ The daemon is split into three actor-style layers that communicate over `tokio::
 
 ### Primary: launcher-state subscriptions
 
-| Launcher | Mechanism | Event source |
-|---|---|---|
-| Steam | inotify | `~/.local/share/Steam/logs/content_log.txt` — parses `AppState changed : <appid> : Running\|Stopped` lines; cross-references `appmanifest_<appid>.acf` for the canonical name. Rotated logs handled. |
-| Lutris | D-Bus | `net.lutris.Lutris` signals over session bus. |
-| Heroic | inotify | `~/.config/heroic/running_game.json` — file present ⇔ game running. Parses for `appName` / `title`. |
+| Launcher | Mechanism | Event source | Status |
+|---|---|---|---|
+| Steam | inotify | `~/.local/share/Steam/logs/content_log.txt` — parses `AppState changed : <appid> : Running\|Stopped` lines; cross-references `appmanifest_<appid>.acf` for the canonical name. Rotated logs handled. | Shipped |
+| Lutris | *TBD* | `net.lutris.Lutris` is owned on the session bus but does not emit game-start/stop signals there today. Options on the table: `lutris-wrapper` process-tree scanning, a Lutris upstream patch, or log-tailing. | Deferred (roadmap M2.2) |
+| Heroic | *TBD* | Heroic 2.x removed the `~/.config/heroic/running_game.json` file this entry was designed around. Remaining options are log-tailing or process-tree inspection. | Deferred (roadmap M2.2) |
 
 Steam has no public D-Bus API for game start/stop events; filesystem watching is the stable approach. Rotating backups to a process-tree scan (`reaper`, `steam-launch-wrapper` descendants) is a documented fallback if the log format changes.
+
+Until the Lutris and Heroic sources land, games launched through those launchers flow through the Wayland-foreground fallback below instead of being attributed at the launcher level.
 
 **Cold-start ordering.** On daemon start the sources subscribe first, then perform an enumeration of already-running games. Events fired during the enumeration are queued in the subscription, not lost.
 
