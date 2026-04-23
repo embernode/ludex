@@ -160,6 +160,38 @@ is schema-ready but has no writer; nothing useful to plot.*
 threshold, GPU threshold. Minimise-to-tray with current-session
 badge.
 
+### GUI backlog (deferred from M6.6 tranches)
+
+Cleanly scoped follow-ups to what shipped in M6.6; revisit when
+they become user-visible or when neighbouring work lands.
+
+- **GPU-threshold live reload.** `SetGpuMemoryThresholdBytes`
+  persists immediately but the running `Gate` isn't rebuilt —
+  the new value takes effect at the next daemon restart. Fix
+  shape: wrap `GateConfig` in `Arc<RwLock<GateConfig>>`, thread it
+  through `KWinForegroundSource`, swap `self.config` reads for
+  `self.config.read().await`, and have the setter's D-Bus handler
+  mutate the lock alongside the DB write. Would also cover any
+  future `GateConfig` knobs (blocklist basenames, launcher env
+  vars) on the same plumbing.
+- **Session-tooltip game name in the tray.** Today the tooltip
+  flips between `ludex` and `ludex · session active` — the
+  game's name isn't shown because `Listener::listen_any`'s
+  callback is synchronous and resolving the name needs an async
+  `GetApplication(id)` RPC. Fix shape: on setup, spawn a small
+  worker task holding an `mpsc::Receiver<TooltipUpdate>`; the
+  event listener sends the application_id through the channel;
+  the worker calls the proxy asynchronously and applies
+  `tray.set_tooltip(...)` with the resolved name.
+- **Forced-applications list.** Schema (`forced_applications`) is
+  ready but no gate-layer override exists. Interacts awkwardly
+  with launcher sources (Steam/Lutris/Heroic games are
+  recognised before the gate even sees them), so the feature
+  really only benefits unrecognised native apps that the gate
+  currently rejects for `NoGraphicsLibrary` or
+  `NotFullscreenAndLowGpu`. Low priority until a user asks for
+  it.
+
 ### Post-M6 (unscheduled)
 
 - Save-file backup scoped to Proton prefixes, opt-in per game.
