@@ -35,6 +35,15 @@ export interface SessionSummary {
     exit_reason: string;
 }
 
+/** One day's aggregate runtime from `net.ludex.Tracker1.ListDailyPlaytime`. */
+export interface DailyPlaytime {
+    /** `YYYY-MM-DD` UTC calendar date. */
+    date: string;
+    full_runtime_seconds: number;
+    interactive_runtime_seconds: number;
+    session_count: number;
+}
+
 /** Payload of the `ludex:session-ended` event. */
 export interface SessionEndedPayload {
     application_id: number;
@@ -59,6 +68,16 @@ export async function getApplication(
 
 export async function listRecentSessions(limit = 20): Promise<SessionSummary[]> {
     return invoke<SessionSummary[]>('list_recent_sessions', { limit });
+}
+
+/**
+ * `invoke('list_daily_playtime', { days })` returns one row per
+ * day with activity over the last `days` days, oldest first. Days
+ * with no sessions are omitted; callers that need a continuous
+ * axis fill zeros themselves.
+ */
+export async function listDailyPlaytime(days: number): Promise<DailyPlaytime[]> {
+    return invoke<DailyPlaytime[]>('list_daily_playtime', { days });
 }
 
 export async function listSessionsForApplication(

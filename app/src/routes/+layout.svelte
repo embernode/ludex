@@ -46,6 +46,7 @@
         <a class="brand" href="/">ludex</a>
         <div class="links">
             <a href="/" class:active={isActive('/')}>Apps</a>
+            <a href="/dashboard" class:active={isActive('/dashboard')}>Dashboard</a>
             <a href="/recent" class:active={isActive('/recent')}>Recent</a>
         </div>
         <span class="tag">pre-alpha</span>
