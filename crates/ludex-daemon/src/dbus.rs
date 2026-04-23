@@ -36,6 +36,7 @@
 
 use std::sync::Arc;
 
+use ludex_core::repo::{DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, GPU_MEMORY_THRESHOLD_BYTES};
 use ludex_core::{Database, LauncherType, Session};
 pub use ludex_dbus_types::{
     ApplicationSummary, DailyPlaytime, SessionSummary, OBJECT_PATH, SERVICE_NAME,
@@ -46,6 +47,8 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
 use zbus::object_server::SignalEmitter;
 use zbus::Connection;
+
+use crate::session_manager::SharedBlocklist;
 
 /// A session-lifecycle notification the [`SessionManager`] hands to
 /// the D-Bus layer. The notifier task translates these into
@@ -77,13 +80,17 @@ pub enum TrackerNotification {
 /// The D-Bus interface object served at [`OBJECT_PATH`].
 pub struct Tracker {
     db: Arc<Database>,
+    blocklist: SharedBlocklist,
 }
 
 impl Tracker {
-    /// Construct a tracker bound to the given database handle.
+    /// Construct a tracker bound to the given database handle and
+    /// the shared blocklist the session manager also watches.
+    /// Block/unblock RPCs mutate both the DB row and this handle, so
+    /// changes take effect on the very next `Started` event.
     #[must_use]
-    pub fn new(db: Arc<Database>) -> Self {
-        Self { db }
+    pub fn new(db: Arc<Database>, blocklist: SharedBlocklist) -> Self {
+        Self { db, blocklist }
     }
 }
 
@@ -192,6 +199,113 @@ impl Tracker {
             .collect())
     }
 
+    /// Primary keys of every application currently present in the
+    /// `blocked_applications` table. The GUI cross-references these
+    /// against `ListApplications` output to display a blocked-state
+    /// toggle per row.
+    async fn list_blocked_application_ids(&self) -> zbus::fdo::Result<Vec<i64>> {
+        let keys = self.db.blocked().list().await.map_err(|e| into_fdo(&e))?;
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        // There's typically one blocked entry at most; looking up
+        // ids individually keeps the query trivial. If the blocklist
+        // grows large, a JOIN against applications would be the
+        // obvious follow-up.
+        let mut ids = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(app) = self
+                .db
+                .applications()
+                .find_by_key(&key)
+                .await
+                .map_err(|e| into_fdo(&e))?
+            {
+                ids.push(app.id);
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Block the application with primary-key `id`. Updates both the
+    /// `blocked_applications` table and the shared in-memory set
+    /// consulted by the session manager, so the next `Started` for
+    /// this key will be dropped. Blocking an id that doesn't exist
+    /// returns `NotFound`.
+    async fn block_application(&self, id: i64) -> zbus::fdo::Result<()> {
+        let app = self
+            .db
+            .applications()
+            .find_by_id(id)
+            .await
+            .map_err(|e| into_fdo(&e))?
+            .ok_or_else(|| zbus::fdo::Error::Failed(format!("no application with id {id}")))?;
+        let key = ludex_core::GameKey::new(app.launcher_type, app.launcher_id);
+        self.db
+            .blocked()
+            .insert(&key, OffsetDateTime::now_utc())
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        self.blocklist.write().await.insert(key);
+        info!(application_id = id, "application blocked");
+        Ok(())
+    }
+
+    /// Unblock the application with primary-key `id`. Safe to call
+    /// on an id that isn't blocked — the call returns Ok and
+    /// nothing changes.
+    async fn unblock_application(&self, id: i64) -> zbus::fdo::Result<()> {
+        let Some(app) = self
+            .db
+            .applications()
+            .find_by_id(id)
+            .await
+            .map_err(|e| into_fdo(&e))?
+        else {
+            return Err(zbus::fdo::Error::Failed(format!(
+                "no application with id {id}"
+            )));
+        };
+        let key = ludex_core::GameKey::new(app.launcher_type, app.launcher_id);
+        self.db
+            .blocked()
+            .remove(&key)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        self.blocklist.write().await.remove(&key);
+        info!(application_id = id, "application unblocked");
+        Ok(())
+    }
+
+    /// Per-process GPU memory threshold the foreground-window
+    /// fallback uses to accept a non-fullscreen window as a game.
+    /// Reports the stored value when present, otherwise the compiled-
+    /// in default.
+    async fn get_gpu_memory_threshold_bytes(&self) -> zbus::fdo::Result<u64> {
+        self.db
+            .settings()
+            .get_u64(
+                GPU_MEMORY_THRESHOLD_BYTES,
+                DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
+            )
+            .await
+            .map_err(|e| into_fdo(&e))
+    }
+
+    /// Update the GPU memory threshold setting. Takes effect on the
+    /// next daemon start — live reload is a follow-up that needs a
+    /// shared `Arc<RwLock<GateConfig>>` the gate reads from. The GUI
+    /// should surface the "restart required" state to the user.
+    async fn set_gpu_memory_threshold_bytes(&self, bytes: u64) -> zbus::fdo::Result<()> {
+        self.db
+            .settings()
+            .set_u64(GPU_MEMORY_THRESHOLD_BYTES, bytes)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        info!(gpu_memory_threshold_bytes = bytes, "setting updated");
+        Ok(())
+    }
+
     /// Fired when a fresh application row was inserted into the
     /// database. Clients that maintain an in-memory list of
     /// applications should re-read `ListApplications`.
@@ -262,8 +376,8 @@ fn launcher_type_string(lt: LauncherType) -> String {
 /// The daemon already owns a *separate* session-bus connection for
 /// the KWin callback; this one is purposely independent so the public
 /// API's lifecycle is not tangled with the compositor integration.
-pub async fn serve(db: Arc<Database>) -> anyhow::Result<Connection> {
-    let tracker = Tracker::new(db);
+pub async fn serve(db: Arc<Database>, blocklist: SharedBlocklist) -> anyhow::Result<Connection> {
+    let tracker = Tracker::new(db, blocklist);
     let conn = zbus::connection::Builder::session()?
         .name(SERVICE_NAME)?
         .serve_at(OBJECT_PATH, tracker)?

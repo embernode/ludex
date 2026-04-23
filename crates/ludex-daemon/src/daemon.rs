@@ -84,7 +84,7 @@ pub async fn run() -> Result<()> {
     // (distinct from the KWin callback's org.kde.ludex.Tracker1)
     // so each service's lifecycle is independent.
     let shared_db = Arc::new(db.clone());
-    let tracker_conn = dbus::serve(Arc::clone(&shared_db))
+    let tracker_conn = dbus::serve(Arc::clone(&shared_db), Arc::clone(&blocklist))
         .await
         .context("register net.ludex.Tracker1 service")?;
     let (notif_tx, notif_rx) = mpsc::channel::<TrackerNotification>(NOTIFICATION_CHANNEL_CAPACITY);

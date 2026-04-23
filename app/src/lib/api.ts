@@ -90,6 +90,34 @@ export async function listSessionsForApplication(
     });
 }
 
+/** Primary keys of every application the user has blocked. */
+export async function listBlockedApplicationIds(): Promise<number[]> {
+    return invoke<number[]>('list_blocked_application_ids');
+}
+
+/** Mark the application as blocked; the daemon drops future Started events for it. */
+export async function blockApplication(id: number): Promise<void> {
+    return invoke<void>('block_application', { id });
+}
+
+/** Remove the block so future Started events open sessions normally. */
+export async function unblockApplication(id: number): Promise<void> {
+    return invoke<void>('unblock_application', { id });
+}
+
+/** Read the per-process GPU memory threshold (bytes) used by the gate. */
+export async function getGpuMemoryThresholdBytes(): Promise<number> {
+    return invoke<number>('get_gpu_memory_threshold_bytes');
+}
+
+/**
+ * Persist the GPU memory threshold. Takes effect at the next
+ * daemon restart; live reload is a follow-up.
+ */
+export async function setGpuMemoryThresholdBytes(bytes: number): Promise<void> {
+    return invoke<void>('set_gpu_memory_threshold_bytes', { bytes });
+}
+
 export function onApplicationAdded(
     cb: (applicationId: number) => void,
 ): Promise<UnlistenFn> {

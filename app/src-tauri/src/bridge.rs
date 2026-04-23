@@ -67,6 +67,11 @@ pub(crate) trait Tracker {
         limit: u32,
     ) -> zbus::Result<Vec<SessionSummary>>;
     fn list_daily_playtime(&self, days: u32) -> zbus::Result<Vec<DailyPlaytime>>;
+    fn list_blocked_application_ids(&self) -> zbus::Result<Vec<i64>>;
+    fn block_application(&self, id: i64) -> zbus::Result<()>;
+    fn unblock_application(&self, id: i64) -> zbus::Result<()>;
+    fn get_gpu_memory_threshold_bytes(&self) -> zbus::Result<u64>;
+    fn set_gpu_memory_threshold_bytes(&self, bytes: u64) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn application_added(&self, application_id: i64) -> zbus::Result<()>;
@@ -171,6 +176,61 @@ pub(crate) async fn list_daily_playtime(
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
     proxy
         .list_daily_playtime(days)
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('list_blocked_application_ids')` returns ids of every
+/// application the user has blocked.
+#[tauri::command]
+pub(crate) async fn list_blocked_application_ids(
+    bridge: BridgeState<'_>,
+) -> Result<Vec<i64>, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .list_blocked_application_ids()
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('block_application', { id })`.
+#[tauri::command]
+pub(crate) async fn block_application(bridge: BridgeState<'_>, id: i64) -> Result<(), String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy.block_application(id).await.map_err(|e| friendly(&e))
+}
+
+/// `invoke('unblock_application', { id })`.
+#[tauri::command]
+pub(crate) async fn unblock_application(bridge: BridgeState<'_>, id: i64) -> Result<(), String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .unblock_application(id)
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('get_gpu_memory_threshold_bytes')`.
+#[tauri::command]
+pub(crate) async fn get_gpu_memory_threshold_bytes(bridge: BridgeState<'_>) -> Result<u64, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .get_gpu_memory_threshold_bytes()
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('set_gpu_memory_threshold_bytes', { bytes })`. Takes
+/// effect at the next daemon restart; the GUI should surface that
+/// to the user.
+#[tauri::command]
+pub(crate) async fn set_gpu_memory_threshold_bytes(
+    bridge: BridgeState<'_>,
+    bytes: u64,
+) -> Result<(), String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .set_gpu_memory_threshold_bytes(bytes)
         .await
         .map_err(|e| friendly(&e))
 }

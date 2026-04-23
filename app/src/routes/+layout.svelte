@@ -48,6 +48,7 @@
             <a href="/" class:active={isActive('/')}>Apps</a>
             <a href="/dashboard" class:active={isActive('/dashboard')}>Dashboard</a>
             <a href="/recent" class:active={isActive('/recent')}>Recent</a>
+            <a href="/settings" class:active={isActive('/settings')}>Settings</a>
         </div>
         <span class="tag">pre-alpha</span>
         <button

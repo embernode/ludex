@@ -39,6 +39,11 @@ pub fn run() {
             bridge::list_recent_sessions,
             bridge::list_sessions_for_application,
             bridge::list_daily_playtime,
+            bridge::list_blocked_application_ids,
+            bridge::block_application,
+            bridge::unblock_application,
+            bridge::get_gpu_memory_threshold_bytes,
+            bridge::set_gpu_memory_threshold_bytes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
