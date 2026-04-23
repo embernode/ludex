@@ -29,6 +29,7 @@
         "targets": "all",
         "category": "Utility",
         "shortDescription": "Linux playtime tracker",
-        "longDescription": "Launcher-agnostic playtime tracker for Linux, with automatic detection across Steam and native games."
+        "longDescription": "Launcher-agnostic playtime tracker for Linux, with automatic detection across Steam and native games.",
+        "icon": ["icons/icon.png"]
     }
 }

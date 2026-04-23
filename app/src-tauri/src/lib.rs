@@ -12,6 +12,7 @@ use std::sync::Arc;
 use bridge::TrackerBridge;
 
 mod bridge;
+mod tray;
 
 /// Start the Tauri application. Blocks the current thread until the
 /// window closes.
@@ -31,6 +32,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 bridge::run_signal_forwarder(handle, bridge).await;
             });
+
+            // Install the tray icon. Must run after the main window
+            // is registered so `get_webview_window("main")` resolves.
+            tray::install(app.handle())?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
