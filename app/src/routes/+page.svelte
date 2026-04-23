@@ -3,6 +3,7 @@
     import type { UnlistenFn } from '@tauri-apps/api/event';
     import {
         listApplications,
+        listBlockedApplicationIds,
         onApplicationAdded,
         onSessionEnded,
         onSessionStarted,
@@ -11,12 +12,22 @@
     import { formatSeconds, formatTimestamp } from '$lib/format';
 
     let apps = $state<ApplicationSummary[]>([]);
+    let hiddenBlocked = $state(0);
     let loading = $state(true);
     let error = $state<string | null>(null);
 
     async function refresh() {
         try {
-            apps = await listApplications();
+            const [allApps, blockedIds] = await Promise.all([
+                listApplications(),
+                // `.catch` so an older daemon without the M6.6.3
+                // D-Bus methods degrades to "nothing blocked"
+                // instead of hiding the apps page entirely.
+                listBlockedApplicationIds().catch(() => [] as number[]),
+            ]);
+            const blocked = new Set(blockedIds);
+            apps = allApps.filter((a) => !blocked.has(a.id));
+            hiddenBlocked = allApps.length - apps.length;
             error = null;
         } catch (e) {
             error = String(e);
@@ -42,7 +53,7 @@
 
 <main>
     <header>
-        <h1>Applications</h1>
+        <h1>Games</h1>
         <button onclick={refresh} disabled={loading}>Refresh</button>
     </header>
 
@@ -54,13 +65,21 @@
             <p class="detail">{error}</p>
             <p class="hint">Is <code>ludex-daemon</code> running?</p>
         </div>
-    {:else if apps.length === 0}
+    {:else if apps.length === 0 && hiddenBlocked === 0}
         <div class="empty">
             <p>No games tracked yet.</p>
             <p class="hint">
                 Launch a game through Steam or Proton while the daemon is running,
                 or open any fullscreen game with a graphics library loaded — it
                 will appear here automatically.
+            </p>
+        </div>
+    {:else if apps.length === 0}
+        <div class="empty">
+            <p>Nothing to show — every tracked game is blocked.</p>
+            <p class="hint">
+                Unblock from <a href="/settings">Settings</a> to see them here
+                again.
             </p>
         </div>
     {:else}

@@ -135,11 +135,11 @@
         </section>
 
         <section>
-            <h2>Blocked applications</h2>
+            <h2>Blocked games</h2>
             <p class="description">
-                Blocked games keep their existing history visible but stop
-                recording new sessions. Unblocking is reversible and takes effect
-                on the next launch.
+                Blocked games stop recording new sessions and are hidden from
+                the Games and Recent views. Their history stays in the database
+                — unblock here to see them again.
             </p>
             {#if apps.length === 0}
                 <p class="hint">No applications tracked yet.</p>

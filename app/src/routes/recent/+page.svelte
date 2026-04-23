@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import type { UnlistenFn } from '@tauri-apps/api/event';
     import {
+        listBlockedApplicationIds,
         listRecentSessions,
         onSessionEnded,
         onSessionStarted,
@@ -10,12 +11,19 @@
     import { formatSeconds, formatTimestamp } from '$lib/format';
 
     let sessions = $state<SessionSummary[]>([]);
+    let hiddenBlocked = $state(0);
     let loading = $state(true);
     let error = $state<string | null>(null);
 
     async function refresh() {
         try {
-            sessions = await listRecentSessions(100);
+            const [recent, blockedIds] = await Promise.all([
+                listRecentSessions(100),
+                listBlockedApplicationIds().catch(() => [] as number[]),
+            ]);
+            const blocked = new Set(blockedIds);
+            sessions = recent.filter((s) => !blocked.has(s.application_id));
+            hiddenBlocked = recent.length - sessions.length;
             error = null;
         } catch (e) {
             error = String(e);
@@ -57,10 +65,17 @@
             <p class="detail">{error}</p>
             <p class="hint">Is <code>ludex-daemon</code> running?</p>
         </div>
-    {:else if sessions.length === 0}
+    {:else if sessions.length === 0 && hiddenBlocked === 0}
         <div class="empty">
             <p>No sessions yet.</p>
             <p class="hint">Sessions appear here as soon as a game starts.</p>
+        </div>
+    {:else if sessions.length === 0}
+        <div class="empty">
+            <p>Nothing to show — every recent session belongs to a blocked game.</p>
+            <p class="hint">
+                Unblock from <a href="/settings">Settings</a> to see these again.
+            </p>
         </div>
     {:else}
         <table>

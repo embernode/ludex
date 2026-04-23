@@ -45,7 +45,7 @@
     <nav>
         <a class="brand" href="/">ludex</a>
         <div class="links">
-            <a href="/" class:active={isActive('/')}>Apps</a>
+            <a href="/" class:active={isActive('/')}>Games</a>
             <a href="/dashboard" class:active={isActive('/dashboard')}>Dashboard</a>
             <a href="/recent" class:active={isActive('/recent')}>Recent</a>
             <a href="/settings" class:active={isActive('/settings')}>Settings</a>
