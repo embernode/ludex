@@ -26,6 +26,7 @@ mod paths;
 pub mod repo;
 mod session;
 mod types;
+pub mod vdf;
 
 pub use application::{Application, Icons, IdentityUpdate, NewApplication, PlaybackDelta};
 pub use db::Database;

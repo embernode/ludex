@@ -23,6 +23,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use ludex_core::vdf::{
+    parse_top_level_string as parse_vdf_top_level_string,
+    parse_top_level_u64 as parse_vdf_top_level_u64,
+};
 use ludex_core::GameKey;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use time::OffsetDateTime;
@@ -345,32 +349,6 @@ fn parse_state_change(line: &str) -> Option<(&str, bool)> {
     Some((appid, app_running))
 }
 
-/// Extract the first value associated with a simple `"key" "value"` line
-/// from a VDF document. Does not understand nesting; suitable for the
-/// flat records Steam emits for `name` and `StateFlags` in
-/// appmanifest files.
-fn parse_vdf_top_level_string(content: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\"");
-    for line in content.lines() {
-        let trimmed = line.trim_start();
-        let Some(rest) = trimmed.strip_prefix(&needle) else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        let Some(after_open) = rest.strip_prefix('"') else {
-            continue;
-        };
-        if let Some(end) = after_open.find('"') {
-            return Some(after_open[..end].to_owned());
-        }
-    }
-    None
-}
-
-fn parse_vdf_top_level_u64(content: &str, key: &str) -> Option<u64> {
-    parse_vdf_top_level_string(content, key).and_then(|s| s.parse().ok())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,22 +393,6 @@ mod tests {
             parse_state_change("[x] AppID abc state changed : App Running,\n"),
             None
         );
-    }
-
-    #[test]
-    fn parses_manifest_name() {
-        let content = "\
-\"AppState\"
-{
-\t\"appid\"\t\t\"228980\"
-\t\"name\"\t\t\"Steamworks Common Redistributables\"
-\t\"StateFlags\"\t\t\"4\"
-}";
-        assert_eq!(
-            parse_vdf_top_level_string(content, "name").as_deref(),
-            Some("Steamworks Common Redistributables")
-        );
-        assert_eq!(parse_vdf_top_level_u64(content, "StateFlags"), Some(4));
     }
 
     #[test]
@@ -566,16 +528,6 @@ mod tests {
         #[test]
         fn state_change_parser_never_panics(s in "\\PC{0,300}") {
             let _ = parse_state_change(&s);
-        }
-
-        #[test]
-        fn vdf_string_parser_never_panics(s in "\\PC{0,500}", key in "[a-zA-Z_]{1,20}") {
-            let _ = parse_vdf_top_level_string(&s, &key);
-        }
-
-        #[test]
-        fn vdf_u64_parser_never_panics(s in "\\PC{0,500}", key in "[a-zA-Z_]{1,20}") {
-            let _ = parse_vdf_top_level_u64(&s, &key);
         }
     }
 }
