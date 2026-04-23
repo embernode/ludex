@@ -4,6 +4,32 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>ludex</title>
+        <!--
+          Set data-theme before the stylesheet loads so the first paint
+          already reflects the user's choice. Without this the page
+          briefly renders in the default (light) palette before the
+          Svelte runtime gets a chance to apply the saved preference,
+          which is jarring on OLED displays.
+        -->
+        <script>
+            (function () {
+                try {
+                    var saved = localStorage.getItem('ludex-theme');
+                    var prefersDark =
+                        window.matchMedia &&
+                        window.matchMedia('(prefers-color-scheme: dark)').matches;
+                    document.documentElement.dataset.theme =
+                        saved === 'light' || saved === 'dark'
+                            ? saved
+                            : prefersDark
+                              ? 'dark'
+                              : 'light';
+                } catch (_) {
+                    // localStorage blocked; fall through with the
+                    // default light palette.
+                }
+            })();
+        </script>
         %sveltekit.head%
     </head>
     <body data-sveltekit-preload-data="hover">

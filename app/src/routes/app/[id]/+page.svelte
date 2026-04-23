@@ -176,13 +176,13 @@
     }
 
     .crumb a {
-        color: #6b7280;
+        color: var(--text-muted);
         text-decoration: none;
         font-size: 0.9rem;
     }
 
     .crumb a:hover {
-        color: #111;
+        color: var(--text-primary);
     }
 
     header {
@@ -210,12 +210,12 @@
         font-size: 1.05rem;
         font-weight: 600;
         margin: 2rem 0 0.75rem;
-        color: #374151;
+        color: var(--text-label);
     }
 
     .publisher {
         font-size: 0.95rem;
-        color: #6b7280;
+        color: var(--text-muted);
     }
 
     .stats {
@@ -225,14 +225,14 @@
     }
 
     .stat-card {
-        background: white;
-        border: 1px solid #e5e7eb;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 0.9rem 1rem;
     }
 
     .stat-label {
-        color: #9ca3af;
+        color: var(--text-subtle);
         font-size: 0.75rem;
         text-transform: uppercase;
         letter-spacing: 0.03em;
@@ -240,7 +240,7 @@
     }
 
     .stat-value {
-        color: #111;
+        color: var(--text-primary);
         font-size: 1.15rem;
         font-weight: 600;
         font-variant-numeric: tabular-nums;
@@ -254,7 +254,7 @@
     }
 
     .identity dt {
-        color: #9ca3af;
+        color: var(--text-subtle);
         font-size: 0.85rem;
     }
 
@@ -266,8 +266,8 @@
     table {
         width: 100%;
         border-collapse: collapse;
-        background: white;
-        border: 1px solid #e5e7eb;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
         border-radius: 8px;
         overflow: hidden;
     }
@@ -280,17 +280,17 @@
     }
 
     th {
-        background: #f9fafb;
-        color: #6b7280;
+        background: var(--bg-hover);
+        color: var(--text-muted);
         font-weight: 500;
         font-size: 0.72rem;
         text-transform: uppercase;
         letter-spacing: 0.03em;
-        border-bottom: 1px solid #e5e7eb;
+        border-bottom: 1px solid var(--border);
     }
 
     tbody tr {
-        border-bottom: 1px solid #f3f4f6;
+        border-bottom: 1px solid var(--border-soft);
     }
 
     tbody tr:last-child {
@@ -299,16 +299,16 @@
 
     .num {
         font-variant-numeric: tabular-nums;
-        color: #333;
+        color: var(--text-secondary);
     }
 
     .status {
-        color: #6b7280;
+        color: var(--text-muted);
         font-size: 0.85rem;
     }
 
     .status.open {
-        color: #059669;
+        color: var(--status-open);
         font-weight: 500;
     }
 </style>

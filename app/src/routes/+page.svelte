@@ -140,18 +140,20 @@
 
     .row-link {
         display: block;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 1rem 1.25rem;
-        background: white;
+        background: var(--bg-surface);
         color: inherit;
         text-decoration: none;
-        transition: border-color 120ms, box-shadow 120ms;
+        transition:
+            border-color 120ms,
+            box-shadow 120ms;
     }
 
     .row-link:hover {
-        border-color: #9ca3af;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        border-color: var(--border-strong);
+        box-shadow: 0 1px 3px var(--row-shadow);
     }
 
     .name {
@@ -164,12 +166,12 @@
     .product {
         font-size: 1.05rem;
         font-weight: 600;
-        color: #111;
+        color: var(--text-primary);
     }
 
     .publisher {
         font-size: 0.85rem;
-        color: #6b7280;
+        color: var(--text-muted);
     }
 
     .stats {
@@ -185,14 +187,14 @@
     }
 
     .stat-label {
-        color: #9ca3af;
+        color: var(--text-subtle);
         font-size: 0.75rem;
         text-transform: uppercase;
         letter-spacing: 0.03em;
     }
 
     .stat-value {
-        color: #333;
+        color: var(--text-secondary);
         font-variant-numeric: tabular-nums;
     }
 </style>
