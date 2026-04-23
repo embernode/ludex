@@ -3,16 +3,17 @@
 //! Drive the manager with synthetic events and assert the resulting
 //! database state — no sources involved.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ludex_core::{Database, ExitReason, GameKey};
 use ludex_daemon::idle::IdleTracker;
 use ludex_daemon::sleep::SleepTracker;
-use ludex_daemon::{GameEvent, SessionManager};
+use ludex_daemon::{GameEvent, SessionManager, SharedBlocklist};
 use ludex_enrich::EnrichmentContext;
 use time::OffsetDateTime;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, RwLock};
 
 fn default_enrichment_ctx() -> Arc<EnrichmentContext> {
     Arc::new(EnrichmentContext::default())
@@ -24,6 +25,14 @@ fn default_idle_tracker() -> Arc<IdleTracker> {
 
 fn default_sleep_tracker() -> Arc<SleepTracker> {
     Arc::new(SleepTracker::new())
+}
+
+fn empty_blocklist() -> SharedBlocklist {
+    Arc::new(RwLock::new(HashSet::new()))
+}
+
+fn blocklist_with(keys: impl IntoIterator<Item = GameKey>) -> SharedBlocklist {
+    Arc::new(RwLock::new(keys.into_iter().collect()))
 }
 
 async fn yield_for(ms: u64) {
@@ -41,6 +50,7 @@ async fn started_then_stopped_creates_one_closed_session() {
         default_idle_tracker(),
         default_sleep_tracker(),
         None,
+        empty_blocklist(),
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -102,6 +112,102 @@ async fn started_then_stopped_creates_one_closed_session() {
     handle.await.unwrap().unwrap();
 }
 
+/// A blocked key (mirrored from the `blocked_applications` table into
+/// `SharedBlocklist`) must never open a session — the session
+/// manager drops the Started event before creating an application
+/// or opening a row. Already-tracked applications from before the
+/// block survive; only future sessions are suppressed.
+#[tokio::test]
+async fn blocked_key_drops_started_event() {
+    let db = Database::open_memory().await.unwrap();
+    let blocked_key = GameKey::steam("440");
+    let manager = SessionManager::new(
+        db.clone(),
+        default_enrichment_ctx(),
+        default_idle_tracker(),
+        default_sleep_tracker(),
+        None,
+        blocklist_with([blocked_key.clone()]),
+    );
+    let (tx, rx) = mpsc::channel::<GameEvent>(16);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let handle = tokio::spawn(manager.run(rx, shutdown_rx));
+
+    tx.send(GameEvent::Started {
+        key: blocked_key.clone(),
+        display_name: "Team Fortress 2".into(),
+        at: OffsetDateTime::now_utc(),
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    // No application, no session: the event was swallowed.
+    assert!(db
+        .applications()
+        .find_by_key(&blocked_key)
+        .await
+        .unwrap()
+        .is_none());
+
+    shutdown_tx.send(true).unwrap();
+    drop(tx);
+    handle.await.unwrap().unwrap();
+}
+
+/// Removing a key from the in-memory blocklist takes effect without
+/// a daemon restart — the session manager reads the `Arc<RwLock>` on
+/// every Started, so a write-side update (M6.6.3 will plug in the
+/// D-Bus path here) is reflected on the very next event.
+#[tokio::test]
+async fn unblocking_a_key_lets_subsequent_sessions_through() {
+    let db = Database::open_memory().await.unwrap();
+    let key = GameKey::steam("440");
+    let blocklist = blocklist_with([key.clone()]);
+    let manager = SessionManager::new(
+        db.clone(),
+        default_enrichment_ctx(),
+        default_idle_tracker(),
+        default_sleep_tracker(),
+        None,
+        Arc::clone(&blocklist),
+    );
+    let (tx, rx) = mpsc::channel::<GameEvent>(16);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let handle = tokio::spawn(manager.run(rx, shutdown_rx));
+
+    // First Started: blocked.
+    tx.send(GameEvent::Started {
+        key: key.clone(),
+        display_name: "Team Fortress 2".into(),
+        at: OffsetDateTime::now_utc(),
+    })
+    .await
+    .unwrap();
+    yield_for(30).await;
+    assert!(db.applications().find_by_key(&key).await.unwrap().is_none());
+
+    // Unblock through the shared handle.
+    blocklist.write().await.remove(&key);
+
+    // Second Started: opens normally.
+    tx.send(GameEvent::Started {
+        key: key.clone(),
+        display_name: "Team Fortress 2".into(),
+        at: OffsetDateTime::now_utc(),
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+    assert!(db.applications().find_by_key(&key).await.unwrap().is_some());
+
+    shutdown_tx.send(true).unwrap();
+    drop(tx);
+    handle.await.unwrap().unwrap();
+}
+
 /// A duplicate `Started` for an already-open key must not create a second
 /// session; the manager logs a warning and drops the event.
 #[tokio::test]
@@ -113,6 +219,7 @@ async fn duplicate_started_is_ignored() {
         default_idle_tracker(),
         default_sleep_tracker(),
         None,
+        empty_blocklist(),
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -160,6 +267,7 @@ async fn shutdown_closes_open_sessions() {
         default_idle_tracker(),
         default_sleep_tracker(),
         None,
+        empty_blocklist(),
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -250,6 +358,7 @@ async fn recover_orphans_closes_stale_sessions() {
         default_idle_tracker(),
         default_sleep_tracker(),
         None,
+        empty_blocklist(),
     );
     let closed = manager.recover_orphans().await.unwrap();
     assert_eq!(closed, 1);
@@ -281,6 +390,7 @@ async fn idle_time_reduces_interactive_runtime() {
         Arc::clone(&idle),
         default_sleep_tracker(),
         None,
+        empty_blocklist(),
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -348,6 +458,7 @@ async fn suspended_time_reduces_full_runtime() {
         default_idle_tracker(),
         Arc::clone(&sleep),
         None,
+        empty_blocklist(),
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -416,6 +527,7 @@ async fn pre_session_idle_does_not_count_against_session() {
         Arc::clone(&idle),
         default_sleep_tracker(),
         None,
+        empty_blocklist(),
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -487,6 +599,7 @@ async fn enrichment_fires_on_new_application() {
         default_idle_tracker(),
         default_sleep_tracker(),
         None,
+        empty_blocklist(),
     );
     let (tx, rx) = mpsc::channel::<GameEvent>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

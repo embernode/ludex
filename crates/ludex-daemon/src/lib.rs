@@ -18,4 +18,4 @@ pub mod sources;
 
 pub use daemon::{init_tracing, run};
 pub use event::GameEvent;
-pub use session_manager::SessionManager;
+pub use session_manager::{SessionManager, SharedBlocklist};

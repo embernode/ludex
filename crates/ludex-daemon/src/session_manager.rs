@@ -13,7 +13,7 @@
 //! - On graceful shutdown (signal received) all open sessions are closed
 //!   at `now` with [`ExitReason::Terminated`](ludex_core::ExitReason::Terminated).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ludex_core::{
@@ -22,8 +22,16 @@ use ludex_core::{
 };
 use ludex_enrich::EnrichmentContext;
 use time::{Duration, OffsetDateTime};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{error, info, instrument, warn};
+
+/// Shared in-memory mirror of the `blocked_applications` table.
+///
+/// The session manager reads it on every `Started`; future GUI-side
+/// writers (M6.6.3+) hold a clone of the same `Arc` so a D-Bus
+/// `Block(appid)` call both updates the DB and flips the in-memory
+/// set in one shot — no reload signal, no polling, no TOCTOU.
+pub type SharedBlocklist = Arc<RwLock<HashSet<GameKey>>>;
 
 use crate::dbus::TrackerNotification;
 use crate::event::GameEvent;
@@ -65,6 +73,7 @@ pub struct SessionManager {
     /// Tracker service is exposed (e.g. integration tests that don't
     /// stand up the public API).
     notifications: Option<mpsc::Sender<TrackerNotification>>,
+    blocklist: SharedBlocklist,
     open: HashMap<GameKey, OpenSession>,
 }
 
@@ -77,7 +86,11 @@ impl SessionManager {
     ///
     /// `notifications` is the optional channel to the
     /// [`net.ludex.Tracker1`](crate::dbus) D-Bus notifier; pass
-    /// `None` when no public API is exposed.
+    /// `None` when no public API is exposed. `blocklist` is the
+    /// shared in-memory mirror of the `blocked_applications` table;
+    /// pass `Arc::new(RwLock::new(HashSet::new()))` when the caller
+    /// doesn't care about blocking (tests that only exercise the
+    /// session-lifecycle paths).
     #[must_use]
     pub fn new(
         db: Database,
@@ -85,6 +98,7 @@ impl SessionManager {
         idle_tracker: Arc<IdleTracker>,
         sleep_tracker: Arc<SleepTracker>,
         notifications: Option<mpsc::Sender<TrackerNotification>>,
+        blocklist: SharedBlocklist,
     ) -> Self {
         Self {
             db,
@@ -92,6 +106,7 @@ impl SessionManager {
             idle_tracker,
             sleep_tracker,
             notifications,
+            blocklist,
             open: HashMap::new(),
         }
     }
@@ -209,6 +224,10 @@ impl SessionManager {
         display_name: String,
         at: OffsetDateTime,
     ) -> Result<(), Error> {
+        if self.blocklist.read().await.contains(&key) {
+            info!(%key, "blocked application; not opening session");
+            return Ok(());
+        }
         if self.open.contains_key(&key) {
             warn!(%key, "Started received for already-open session; ignoring");
             return Ok(());

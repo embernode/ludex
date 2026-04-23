@@ -1,20 +1,21 @@
 //! Top-level daemon wiring: open the database, spawn sources, spawn the
 //! session manager, run until a shutdown signal arrives.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use ludex_core::{default_database_path, Database};
 use ludex_enrich::EnrichmentContext;
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::dbus::{self, TrackerNotification};
 use crate::gate::{Gate, GateConfig};
 use crate::idle::{self, IdleTracker};
-use crate::session_manager::SessionManager;
+use crate::session_manager::{SessionManager, SharedBlocklist};
 use crate::sleep::{self, SleepTracker};
 use crate::sources::{KWinForegroundSource, SteamSource};
 use ludex_core::repo::{DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, GPU_MEMORY_THRESHOLD_BYTES};
@@ -68,6 +69,17 @@ pub async fn run() -> Result<()> {
     let idle_tracker = Arc::new(IdleTracker::new());
     let sleep_tracker = Arc::new(SleepTracker::new());
 
+    // Hydrate the in-memory blocklist from the DB. Future D-Bus
+    // write methods will mutate the same Arc<RwLock<…>> so the
+    // session manager sees additions and removals immediately
+    // without a reload signal.
+    let blocklist: SharedBlocklist =
+        Arc::new(RwLock::new(db.blocked().list().await.unwrap_or_else(|e| {
+            warn!(error = %e, "could not load blocklist; treating as empty");
+            HashSet::new()
+        })));
+    info!(blocked = blocklist.read().await.len(), "blocklist loaded");
+
     // Public D-Bus API. Served on its own session-bus connection
     // (distinct from the KWin callback's org.kde.ludex.Tracker1)
     // so each service's lifecycle is independent.
@@ -83,6 +95,7 @@ pub async fn run() -> Result<()> {
         Arc::clone(&idle_tracker),
         Arc::clone(&sleep_tracker),
         Some(notif_tx),
+        Arc::clone(&blocklist),
     );
     manager
         .recover_orphans()
