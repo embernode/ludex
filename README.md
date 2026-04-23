@@ -2,7 +2,7 @@
 
 A launcher-agnostic playtime tracker for Linux.
 
-**Status: pre-alpha.** The daemon, CLI, and Tauri GUI all build and run end-to-end; Steam-launched sessions are detected and recorded. The detection set is still being filled in — Lutris and Heroic launcher integrations are deferred (see the roadmap for the current tranche status).
+**Status: pre-alpha.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6. The GUI covers the apps list, recent sessions, per-application detail, an ECharts dashboard, settings, and a system tray with close-to-tray. Lutris and Heroic launcher integrations remain deferred; no released binaries yet.
 
 ## What it does
 
@@ -15,7 +15,7 @@ ludex records time spent playing games on Linux without requiring per-game confi
 
 Each recognised game has its sessions persisted to SQLite with two runtime figures: **full runtime** (wall-clock session duration) and **interactive runtime** (full runtime minus system-reported idle intervals via `logind.IdleHint`).
 
-The primary target is KDE Plasma 6 on Wayland; X11 is supported where the mechanisms collapse to `_NET_ACTIVE_WINDOW` and friends.
+The primary target is KDE Plasma 6 on Wayland. X11 support is on the roadmap (the gate code already expects an `_NET_ACTIVE_WINDOW` source) but no X11 foreground source is wired up today — on X11 the launcher-based paths (Steam log tailing) still work, but the foreground fallback does not.
 
 ## Design principles
 
@@ -27,18 +27,23 @@ The primary target is KDE Plasma 6 on Wayland; X11 is supported where the mechan
 
 ## Architecture
 
-- Rust daemon (`ludex-daemon`) runs as a systemd user service. Tokio for async, zbus for D-Bus, sqlx for SQLite, tracing for structured logs.
-- Tauri + Svelte + ECharts GUI (`ludex-gui`) for dashboards and configuration (post-M5 milestone).
-- D-Bus IPC (`net.ludex.Tracker1`) between daemon and GUI.
+- Rust daemon (`ludex-daemon`): tokio for async, zbus for D-Bus, sqlx for SQLite, tracing for structured logs. Designed to run as a `systemctl --user` service.
+- Tauri 2 + SvelteKit + ECharts GUI (`ludex-gui`): apps list, recent sessions, per-app detail, dashboard, settings, system tray. Dark-mode toggle with OLED-friendly palette.
+- CLI (`ludex`): operator tool — `doctor`, `apps list`, `sessions`, `backup {now,list,prune,restore}`, `merge`.
+- D-Bus IPC over `net.ludex.Tracker1` on the user session bus. Wire types in the dedicated `ludex-dbus-types` crate.
 
-Full architecture in [docs/architecture.md](docs/architecture.md). Phased plan in [docs/roadmap.md](docs/roadmap.md).
+Full design in [docs/architecture.md](docs/architecture.md); phased
+plan + current backlog in [docs/roadmap.md](docs/roadmap.md); CLI
+reference in [docs/cli.md](docs/cli.md).
 
 ## Repository layout
 
 ```
 Cargo.toml            # Rust workspace manifest
+rust-toolchain.toml   # pinned toolchain version
 crates/
-  ludex-core/         # shared types, schema, SQL, errors
+  ludex-core/         # shared types, schema, SQL, errors, backup engine
+    migrations/       # SQLite schema migrations (sqlx::migrate!)
   ludex-daemon/       # the tracker (binary)
   ludex-cli/          # CLI client (binary)
   ludex-enrich/       # metadata enrichment cascade (desktop/Steam/GOG/PE)
@@ -46,25 +51,61 @@ crates/
 app/
   src/                # SvelteKit frontend (TypeScript + Svelte 5)
   src-tauri/          # Tauri 2 host binary
-packaging/            # systemd service, PKGBUILD
-docs/                 # architecture, roadmap
+docs/                 # architecture, roadmap, CLI reference
+.github/workflows/    # fmt, clippy, test, frontend, cargo-deny
 ```
+
+A `packaging/` directory for the systemd user service and
+PKGBUILD is planned (see the roadmap); there's nothing in it yet.
 
 ## Building
 
-Workspace layout:
-
 - `crates/ludex-daemon` and `crates/ludex-cli` are pure Rust and build
-  with `cargo build`.
+  with `cargo build --workspace`.
 - `app/src-tauri` is the Tauri host for the desktop UI. Building or
   running it needs WebKitGTK 4.1 + javascriptcoregtk 4.1 installed at
-  system level (Arch: `pacman -S webkit2gtk-4.1`).
+  system level (Arch: `pacman -S webkit2gtk-4.1`). The tray icon
+  also needs `libayatana-appindicator3`
+  (`pacman -S libayatana-appindicator`).
+
+Workspace-wide tests + lints:
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+```
+
+Frontend type-check + build:
+
+```sh
+cd app
+pnpm install          # one-off; lockfile is committed
+pnpm run check        # svelte-check
+pnpm run build        # static bundle for Tauri
+```
+
+### Running the daemon
+
+```sh
+cargo run -p ludex-daemon            # runs in the foreground
+# or build-then-run for longer sessions:
+cargo build --release -p ludex-daemon
+./target/release/ludex-daemon
+```
+
+Data lands at `$XDG_DATA_HOME/ludex/ludex.sqlite` (or
+`~/.local/share/ludex/ludex.sqlite` fallback). The daemon takes
+periodic database snapshots at
+`$XDG_DATA_HOME/ludex/backups/` by default.
+
+Control logging via `LUDEX_LOG=info` (or `debug`, `trace`;
+defaults to `info` for the daemon, `warn` for the CLI).
 
 ### Running the UI in dev mode
 
 ```sh
 cd app
-pnpm install          # one-off; lockfile is committed
 pnpm tauri dev        # launches the webview + hot-reloads Svelte edits
 ```
 
@@ -75,12 +116,8 @@ cargo install --path crates/ludex-cli
 ludex doctor
 ```
 
-Full subcommand reference (apps / sessions / backup / merge) is in
-[`docs/cli.md`](docs/cli.md).
-
-See [`docs/roadmap.md`](docs/roadmap.md) for the phased milestone
-plan and [`docs/architecture.md`](docs/architecture.md) for the
-design.
+Full subcommand reference (`apps` / `sessions` / `backup` /
+`merge` / `doctor`) in [`docs/cli.md`](docs/cli.md).
 
 ## License
 
