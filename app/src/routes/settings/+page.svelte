@@ -51,6 +51,19 @@
     /** A reference timestamp so the user can see each format in action. */
     const TS_SAMPLE = new Date(Date.now() - 2 * 3_600_000).toISOString();
 
+    /** Blocked-games list filter. Case-insensitive substring match
+     *  against product name and publisher. */
+    let filterQuery = $state<string>('');
+    const visibleApps = $derived.by(() => {
+        const q = filterQuery.trim().toLowerCase();
+        if (!q) return apps;
+        return apps.filter((a) => {
+            if (a.product_name.toLowerCase().includes(q)) return true;
+            if (a.publisher && a.publisher.toLowerCase().includes(q)) return true;
+            return false;
+        });
+    });
+
     async function load() {
         loading = true;
         try {
@@ -270,27 +283,39 @@
             {#if apps.length === 0}
                 <p class="hint">No applications tracked yet.</p>
             {:else}
-                <ul class="apps">
-                    {#each apps as app (app.id)}
-                        {@const isBlocked = blocked.has(app.id)}
-                        <li class:blocked={isBlocked}>
-                            <div class="app-name">
-                                <span class="product">{app.product_name}</span>
-                                {#if app.publisher}
-                                    <span class="publisher">{app.publisher}</span>
-                                {/if}
-                            </div>
-                            <button
-                                type="button"
-                                class="block-toggle"
-                                class:is-blocked={isBlocked}
-                                onclick={() => toggleBlock(app.id)}
-                            >
-                                {isBlocked ? 'Unblock' : 'Block'}
-                            </button>
-                        </li>
-                    {/each}
-                </ul>
+                <label class="search">
+                    <span class="visually-hidden">Filter games</span>
+                    <input
+                        type="search"
+                        placeholder="Filter by name or publisher…"
+                        bind:value={filterQuery}
+                    />
+                </label>
+                {#if visibleApps.length === 0}
+                    <p class="hint">No games match "{filterQuery}".</p>
+                {:else}
+                    <ul class="apps">
+                        {#each visibleApps as app (app.id)}
+                            {@const isBlocked = blocked.has(app.id)}
+                            <li class:blocked={isBlocked}>
+                                <div class="app-name">
+                                    <span class="product">{app.product_name}</span>
+                                    {#if app.publisher}
+                                        <span class="publisher">{app.publisher}</span>
+                                    {/if}
+                                </div>
+                                <button
+                                    type="button"
+                                    class="block-toggle"
+                                    class:is-blocked={isBlocked}
+                                    onclick={() => toggleBlock(app.id)}
+                                >
+                                    {isBlocked ? 'Unblock' : 'Block'}
+                                </button>
+                            </li>
+                        {/each}
+                    </ul>
+                {/if}
             {/if}
         </section>
     {/if}
@@ -352,6 +377,7 @@
     }
 
     input[type='number'],
+    input[type='search'],
     select {
         font: inherit;
         padding: 0.45rem 0.6rem;
@@ -363,9 +389,32 @@
     }
 
     input[type='number']:focus,
+    input[type='search']:focus,
     select:focus {
         outline: 2px solid var(--accent);
         outline-offset: -1px;
+    }
+
+    .search {
+        display: block;
+        margin-bottom: 0.75rem;
+    }
+
+    .search input {
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
     }
 
     .actions {
