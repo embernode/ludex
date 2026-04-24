@@ -164,15 +164,6 @@ badge.
 Cleanly scoped follow-ups to what shipped in M6.6; revisit when
 they become user-visible or when neighbouring work lands.
 
-- **GPU-threshold live reload.** `SetGpuMemoryThresholdBytes`
-  persists immediately but the running `Gate` isn't rebuilt —
-  the new value takes effect at the next daemon restart. Fix
-  shape: wrap `GateConfig` in `Arc<RwLock<GateConfig>>`, thread it
-  through `KWinForegroundSource`, swap `self.config` reads for
-  `self.config.read().await`, and have the setter's D-Bus handler
-  mutate the lock alongside the DB write. Would also cover any
-  future `GateConfig` knobs (blocklist basenames, launcher env
-  vars) on the same plumbing.
 - **Session-tooltip game name in the tray.** Today the tooltip
   flips between `ludex` and `ludex · session active` — the
   game's name isn't shown because `Listener::listen_any`'s
@@ -229,4 +220,3 @@ they become user-visible or when neighbouring work lands.
 
 - **Minimum supported Plasma version.** Targeting 6.x only keeps the KWin scripting surface simple. 5.27 LTS support adds complexity; deferred unless a user requests it.
 - **MSRV.** Pin to the current stable at M0 start; bump only when a dependency forces it.
-- **What counts as a session boundary when alt-tabbing between a native game and a launcher-attributed one.** Today: a KWin activation for a launcher-attributed window (Steam / Lutris / Heroic) is rejected by the foreground-fallback gate with `AttributedToLauncher`, and the transition layer emits a `Stopped` for any previously-tracked native game. Alt-tabbing back to the native game then emits `Started` again — a fresh session row. Strictly correct if "playing" is defined as "foreground-active", but noticeable session fragmentation for users who alt-tab constantly. Two candidate resolutions: (a) accept the fragmentation and document the semantics under "what counts as a session" in architecture.md, or (b) hold the `Stopped` for a configurable grace period (seconds) so short alt-tab round-trips don't split the session. No urgency; revisit once real users report it.
