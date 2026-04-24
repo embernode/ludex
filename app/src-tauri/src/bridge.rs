@@ -40,6 +40,12 @@ pub(crate) const EVENT_APPLICATION_ADDED: &str = "ludex:application-added";
 pub(crate) const EVENT_SESSION_STARTED: &str = "ludex:session-started";
 /// Tauri event name emitted on every `SessionEnded` signal.
 pub(crate) const EVENT_SESSION_ENDED: &str = "ludex:session-ended";
+/// Tauri event emitted after the bridge rebuilds its D-Bus
+/// subscription — either because `ludex-daemon` just came up, or
+/// because it restarted. Signals to frontend pages that any local
+/// data they cached may be stale. Not emitted on the first-ever
+/// connect (the page's own `onMount` fetch handles that case).
+pub(crate) const EVENT_DAEMON_RECONNECTED: &str = "ludex:daemon-reconnected";
 
 /// Payload for the `ludex:session-ended` Tauri event.
 #[derive(Debug, Clone, Serialize)]
@@ -276,10 +282,17 @@ enum SessionOutcome {
 /// so without this signals would silently stop flowing until the
 /// user refreshed.
 pub(crate) async fn run_signal_forwarder(app: AppHandle, bridge: Arc<TrackerBridge>) {
+    // First successful session is the initial connect — the page's
+    // own `onMount` refresh already covers it, so we don't fire a
+    // spurious `daemon-reconnected` then. Every subsequent session
+    // counts as a reconnect and the frontend refreshes to pick up
+    // any state that changed while the daemon was down.
+    let mut is_reconnect = false;
     loop {
-        match run_signal_session(&app, &bridge).await {
+        match run_signal_session(&app, &bridge, is_reconnect).await {
             SessionOutcome::OwnerChanged => {
                 tracing::info!("ludex-daemon owner changed on the bus; rebuilding subscriptions");
+                is_reconnect = true;
             }
             SessionOutcome::SetupFailed => {
                 // Wait for the service to appear (or its owner to
@@ -292,6 +305,7 @@ pub(crate) async fn run_signal_forwarder(app: AppHandle, bridge: Arc<TrackerBrid
                     );
                     return;
                 }
+                is_reconnect = true;
             }
             SessionOutcome::StreamsClosed => {
                 tracing::info!(
@@ -304,8 +318,14 @@ pub(crate) async fn run_signal_forwarder(app: AppHandle, bridge: Arc<TrackerBrid
 }
 
 /// One subscription lifetime. Returns when the subscription should
-/// be rebuilt (or abandoned).
-async fn run_signal_session(app: &AppHandle, bridge: &TrackerBridge) -> SessionOutcome {
+/// be rebuilt (or abandoned). `is_reconnect` is true after the
+/// first successful session so the frontend can tell
+/// "daemon just came back" from "daemon was here when we started".
+async fn run_signal_session(
+    app: &AppHandle,
+    bridge: &TrackerBridge,
+    is_reconnect: bool,
+) -> SessionOutcome {
     use futures_util::StreamExt as _;
 
     let proxy = match bridge.proxy().await {
@@ -340,6 +360,14 @@ async fn run_signal_session(app: &AppHandle, bridge: &TrackerBridge) -> SessionO
     let Some(mut owner_changed) = subscribe_owner_changed(&proxy).await else {
         return SessionOutcome::SetupFailed;
     };
+
+    // All four streams are live — tell frontend pages they can
+    // safely re-fetch, so any data that changed while the daemon
+    // was down (merges, restores, importers) flows into the UI
+    // without the user having to hit Refresh.
+    if is_reconnect {
+        let _ = app.emit(EVENT_DAEMON_RECONNECTED, ());
+    }
 
     loop {
         tokio::select! {

@@ -5,6 +5,7 @@
     import {
         getApplication,
         listSessionsForApplication,
+        onDaemonReconnected,
         onSessionEnded,
         onSessionStarted,
         type ApplicationSummary,
@@ -58,6 +59,7 @@
         const unlisteners: Promise<UnlistenFn>[] = [
             onSessionStarted(refresh),
             onSessionEnded(refresh),
+            onDaemonReconnected(refresh),
         ];
         return () => {
             for (const p of unlisteners) {

@@ -5,6 +5,7 @@
         listApplications,
         listBlockedApplicationIds,
         onApplicationAdded,
+        onDaemonReconnected,
         onSessionEnded,
         onSessionStarted,
         type ApplicationSummary,
@@ -42,6 +43,7 @@
             onApplicationAdded(refresh),
             onSessionStarted(refresh),
             onSessionEnded(refresh),
+            onDaemonReconnected(refresh),
         ];
         return () => {
             for (const p of unlisteners) {

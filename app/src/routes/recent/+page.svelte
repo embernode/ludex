@@ -4,6 +4,7 @@
     import {
         listBlockedApplicationIds,
         listRecentSessions,
+        onDaemonReconnected,
         onSessionEnded,
         onSessionStarted,
         type SessionSummary,
@@ -42,6 +43,7 @@
         const unlisteners: Promise<UnlistenFn>[] = [
             onSessionStarted(refresh),
             onSessionEnded(refresh),
+            onDaemonReconnected(refresh),
         ];
         return () => {
             for (const p of unlisteners) {

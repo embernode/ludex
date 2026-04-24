@@ -137,3 +137,16 @@ export function onSessionEnded(
         cb(event.payload),
     );
 }
+
+/**
+ * Fires when the bridge rebuilds its D-Bus subscription — i.e. after
+ * `ludex-daemon` came up or restarted. Subscribe alongside the
+ * session-lifecycle handlers so pages re-fetch state that may have
+ * changed while the daemon was down (merges, restores, imports).
+ *
+ * Not emitted on the first-ever connect: the page's own `onMount`
+ * fetch already covers that case.
+ */
+export function onDaemonReconnected(cb: () => void): Promise<UnlistenFn> {
+    return listen<null>('ludex:daemon-reconnected', () => cb());
+}

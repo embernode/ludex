@@ -1,10 +1,12 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import type { UnlistenFn } from '@tauri-apps/api/event';
     import {
         blockApplication,
         getGpuMemoryThresholdBytes,
         listApplications,
         listBlockedApplicationIds,
+        onDaemonReconnected,
         setGpuMemoryThresholdBytes,
         unblockApplication,
         type ApplicationSummary,
@@ -81,7 +83,13 @@
         Math.max(1, Math.round(savedThresholdBytes / MIB)) !== thresholdMib,
     );
 
-    onMount(load);
+    onMount(() => {
+        load();
+        const unlisten: Promise<UnlistenFn> = onDaemonReconnected(load);
+        return () => {
+            unlisten.then((u) => u()).catch(() => {});
+        };
+    });
 </script>
 
 <main>

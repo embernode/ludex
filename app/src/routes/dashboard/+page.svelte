@@ -10,6 +10,7 @@
     import { observeTheme, type Theme } from '$lib/theme';
     import {
         listDailyPlaytime,
+        onDaemonReconnected,
         onSessionEnded,
         onSessionStarted,
         type DailyPlaytime,
@@ -43,6 +44,7 @@
         const unlisteners: Promise<UnlistenFn>[] = [
             onSessionStarted(refresh),
             onSessionEnded(refresh),
+            onDaemonReconnected(refresh),
         ];
         return () => {
             unlistenTheme();
