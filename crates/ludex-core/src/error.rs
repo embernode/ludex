@@ -41,4 +41,12 @@ pub enum Error {
     /// surface as the SQL paths.
     #[error("filesystem error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Tried to open a session for an application that already
+    /// has an open one in the database. Enforced by the
+    /// `one_open_session_per_app` partial unique index; seen when
+    /// two daemons share a database (systemd service + a dev
+    /// binary, both writing to `$XDG_DATA_HOME/ludex/ludex.sqlite`).
+    #[error("an open session already exists for application {0}")]
+    OpenSessionExists(i64),
 }

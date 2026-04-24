@@ -235,7 +235,28 @@ impl SessionManager {
         let app = self
             .find_or_create_application(&key, display_name, at)
             .await?;
-        let session = self.db.sessions().begin(app.id, at).await?;
+        let session = match self.db.sessions().begin(app.id, at).await {
+            Ok(s) => s,
+            // The DB-level uniqueness guard — see migration 0003 —
+            // fires when some other writer already has an open
+            // session for this application. In a correctly-running
+            // single-daemon setup this is unreachable (the bus-
+            // name lock in dbus::serve prevents two daemons from
+            // ever both running); if we hit it anyway, some other
+            // process owns the row and will close it eventually.
+            // We drop our side silently rather than forcing a
+            // close that would strand their in-memory state.
+            Err(Error::OpenSessionExists(app_id)) => {
+                warn!(
+                    %key,
+                    app_id,
+                    "open session already exists in the database; \
+                     dropping Start (another ludex-daemon may be running — check `pgrep -a ludex-daemon`)"
+                );
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
         let baseline_idle_seconds = self.idle_tracker.accumulated_idle_seconds();
         let baseline_suspended_seconds = self.sleep_tracker.accumulated_suspended_seconds();
         // Game title logged at debug only; info keeps the numeric

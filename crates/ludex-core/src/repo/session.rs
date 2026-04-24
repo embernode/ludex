@@ -3,7 +3,7 @@
 use sqlx::SqlitePool;
 use time::OffsetDateTime;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::session::{DailyPlaytime, RecentSession, RuntimeSnapshot, Session};
 use crate::types::ExitReason;
 
@@ -24,18 +24,31 @@ impl<'a> SessionRepo<'a> {
 
     /// Open a new session for the given application. The row is created
     /// with `ended_at = NULL` and the heartbeat equal to `started_at`.
+    ///
+    /// Returns [`Error::OpenSessionExists`] if an open session for
+    /// this application already exists. That's normally impossible
+    /// within a single daemon (the session manager dedupes by
+    /// `GameKey` in memory) but can fire when two daemons are
+    /// accidentally running against the same database; the partial
+    /// unique index `one_open_session_per_app` catches the race.
     pub async fn begin(&self, application_id: i64, started_at: OffsetDateTime) -> Result<Session> {
         let sql = format!(
             "INSERT INTO sessions (application_id, started_at, heartbeat_at) \
              VALUES (?, ?, ?) RETURNING {SELECT_COLS}"
         );
-        sqlx::query_as::<_, Session>(&sql)
+        match sqlx::query_as::<_, Session>(&sql)
             .bind(application_id)
             .bind(started_at)
             .bind(started_at)
             .fetch_one(self.pool)
             .await
-            .map_err(Into::into)
+        {
+            Ok(row) => Ok(row),
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+                Err(Error::OpenSessionExists(application_id))
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Update the heartbeat and runtime counters for an open session.

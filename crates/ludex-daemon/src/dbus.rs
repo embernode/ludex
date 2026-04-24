@@ -36,6 +36,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use ludex_core::repo::{
     ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
     GPU_MEMORY_THRESHOLD_BYTES,
@@ -48,6 +49,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
+use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::object_server::SignalEmitter;
 use zbus::Connection;
 
@@ -417,11 +419,29 @@ pub async fn serve(
     config: SharedConfig,
 ) -> anyhow::Result<Connection> {
     let tracker = Tracker::new(db, blocklist, config);
+    // Build the connection without requesting the name in the
+    // builder so we can supply explicit flags below. The default
+    // path takes the name-queue slot if the name is already
+    // owned — we want strict failure instead, so two daemons
+    // can't silently share writes to the same SQLite file.
     let conn = zbus::connection::Builder::session()?
-        .name(SERVICE_NAME)?
         .serve_at(OBJECT_PATH, tracker)?
         .build()
         .await?;
+    let reply = conn
+        .request_name_with_flags(SERVICE_NAME, RequestNameFlags::DoNotQueue.into())
+        .await
+        .context("request net.ludex.Tracker1 bus name")?;
+    match reply {
+        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => {}
+        RequestNameReply::Exists | RequestNameReply::InQueue => {
+            anyhow::bail!(
+                "another ludex-daemon already owns {SERVICE_NAME}; \
+                 refusing to start a second instance. \
+                 Run `pgrep -a ludex-daemon` to find the existing process."
+            );
+        }
+    }
     info!(
         service = SERVICE_NAME,
         path = OBJECT_PATH,

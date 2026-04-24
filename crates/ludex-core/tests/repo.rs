@@ -211,13 +211,22 @@ async fn list_orphans_returns_only_stale_open_sessions() {
     let db = Database::open_memory().await.unwrap();
     let apps = db.applications();
     let sessions = db.sessions();
-    let app = apps.create(sample_new_app()).await.unwrap();
+    // Two distinct applications: `one_open_session_per_app` enforces
+    // that a single app has at most one open session at a time. The
+    // orphan-recovery case this test guards is per-application, so we
+    // set up one stale-app and one fresh-app rather than forcing two
+    // sessions under the same app id.
+    let stale_app = apps.create(sample_new_app()).await.unwrap();
+    let mut fresh_new = sample_new_app();
+    fresh_new.launcher_id = "730".into();
+    fresh_new.product_name = "Counter-Strike 2".into();
+    let fresh_app = apps.create(fresh_new).await.unwrap();
 
     let now = OffsetDateTime::now_utc();
 
     // Orphaned session: last heartbeat 10 minutes ago.
     let stale = sessions
-        .begin(app.id, now - Duration::minutes(15))
+        .begin(stale_app.id, now - Duration::minutes(15))
         .await
         .unwrap();
     sessions
@@ -234,7 +243,7 @@ async fn list_orphans_returns_only_stale_open_sessions() {
 
     // Fresh session: heartbeat 30 seconds ago. Should NOT be recovered.
     let fresh = sessions
-        .begin(app.id, now - Duration::seconds(60))
+        .begin(fresh_app.id, now - Duration::seconds(60))
         .await
         .unwrap();
     sessions
