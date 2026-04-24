@@ -14,6 +14,11 @@
         unblockApplication,
         type ApplicationSummary,
     } from '$lib/api';
+    import {
+        currentTimestampFormat,
+        formatTimestamp,
+        type TimestampFormat,
+    } from '$lib/format';
 
     /** MiB <-> bytes (we show mebibytes in the UI). */
     const MIB = 1024 * 1024;
@@ -34,6 +39,17 @@
     /** Seconds, edit-in-progress value bound to the input. */
     let graceSeconds = $state<number>(15);
     let graceStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+    /**
+     * Timestamp format preference. Stored in `localStorage` and
+     * mirrored on `<html data-timestamp-format>` so every page
+     * observing the attribute re-renders on change. Purely a
+     * presentation concern — no daemon round-trip.
+     */
+    let tsFormat = $state<TimestampFormat>(currentTimestampFormat());
+
+    /** A reference timestamp so the user can see each format in action. */
+    const TS_SAMPLE = new Date(Date.now() - 2 * 3_600_000).toISOString();
 
     async function load() {
         loading = true;
@@ -88,6 +104,16 @@
         } catch (e) {
             error = String(e);
             thresholdStatus = 'error';
+        }
+    }
+
+    function saveTimestampFormat() {
+        document.documentElement.dataset.timestampFormat = tsFormat;
+        try {
+            localStorage.setItem('ludex-timestamp-format', tsFormat);
+        } catch (_) {
+            // localStorage blocked; the change still applies to
+            // this session, just won't persist across restarts.
         }
     }
 
@@ -175,6 +201,28 @@
                     <span class="hint">Unsaved change.</span>
                 {/if}
             </div>
+        </section>
+
+        <section>
+            <h2>Date & time format</h2>
+            <p class="description">
+                How timestamps are rendered in the Games, Recent, and
+                app-detail views. Short follows your system locale; ISO is
+                tabular and unambiguous; Relative reads as "2 hours ago".
+                Stored in-app only — no daemon round-trip.
+            </p>
+            <label class="field">
+                <span class="field-label">Format</span>
+                <select bind:value={tsFormat} onchange={saveTimestampFormat}>
+                    <option value="short">Short (locale)</option>
+                    <option value="iso">ISO (2026-04-24 18:30)</option>
+                    <option value="dmy">Day-first (24.04.2026 18:30)</option>
+                    <option value="relative">Relative (2 hours ago)</option>
+                </select>
+            </label>
+            <p class="hint">
+                Preview: {formatTimestamp(TS_SAMPLE, tsFormat)}
+            </p>
         </section>
 
         <section>
@@ -303,7 +351,8 @@
         color: var(--text-label);
     }
 
-    input[type='number'] {
+    input[type='number'],
+    select {
         font: inherit;
         padding: 0.45rem 0.6rem;
         border: 1px solid var(--button-border);
@@ -313,7 +362,8 @@
         font-variant-numeric: tabular-nums;
     }
 
-    input[type='number']:focus {
+    input[type='number']:focus,
+    select:focus {
         outline: 2px solid var(--accent);
         outline-offset: -1px;
     }

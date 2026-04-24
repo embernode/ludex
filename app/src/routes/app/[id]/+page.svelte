@@ -11,12 +11,18 @@
         type ApplicationSummary,
         type SessionSummary,
     } from '$lib/api';
-    import { formatSeconds, formatTimestamp } from '$lib/format';
+    import {
+        formatSeconds,
+        formatTimestamp,
+        observeTimestampFormat,
+        type TimestampFormat,
+    } from '$lib/format';
 
     let app = $state<ApplicationSummary | null>(null);
     let sessions = $state<SessionSummary[]>([]);
     let loading = $state(true);
     let error = $state<string | null>(null);
+    let tsFormat = $state<TimestampFormat>('short');
 
     // Route param is a string; convert once per navigation.
     const id = $derived(Number(page.params.id));
@@ -56,12 +62,14 @@
     });
 
     onMount(() => {
+        const unobserveTs = observeTimestampFormat((f) => (tsFormat = f));
         const unlisteners: Promise<UnlistenFn>[] = [
             onSessionStarted(refresh),
             onSessionEnded(refresh),
             onDaemonReconnected(refresh),
         ];
         return () => {
+            unobserveTs();
             for (const p of unlisteners) {
                 p.then((unlisten) => unlisten()).catch(() => {});
             }
@@ -117,7 +125,9 @@
             </div>
             <div class="stat-card">
                 <div class="stat-label">Last played</div>
-                <div class="stat-value">{formatTimestamp(app.last_played_at)}</div>
+                <div class="stat-value">
+                    {formatTimestamp(app.last_played_at, tsFormat)}
+                </div>
             </div>
         </section>
 
@@ -147,8 +157,8 @@
                     <tbody>
                         {#each sessions as s (s.id)}
                             <tr>
-                                <td>{formatTimestamp(s.started_at)}</td>
-                                <td>{formatTimestamp(s.ended_at)}</td>
+                                <td>{formatTimestamp(s.started_at, tsFormat)}</td>
+                                <td>{formatTimestamp(s.ended_at, tsFormat)}</td>
                                 <td class="num"
                                     >{formatSeconds(s.full_runtime_seconds)}</td
                                 >

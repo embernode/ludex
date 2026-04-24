@@ -108,6 +108,11 @@
        and lower-power. Surface tones are close to but not black so
        cards and tables still read as lifted. */
     :global(:root) {
+        /* Tell the browser which palette to render native UA
+           controls in (<select> dropdown, scrollbars, date
+           pickers). Without this the dropdown list paints from the
+           system light theme even when ludex is in dark mode. */
+        color-scheme: light;
         --bg-page: #f7f7f9;
         --bg-surface: #ffffff;
         --bg-nav: #ffffff;
@@ -140,6 +145,7 @@
     }
 
     :global(:root[data-theme='dark']) {
+        color-scheme: dark;
         --bg-page: #000000;
         --bg-surface: #0f0f10;
         --bg-nav: #0a0a0b;

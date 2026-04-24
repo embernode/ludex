@@ -10,12 +10,18 @@
         onSessionStarted,
         type SessionSummary,
     } from '$lib/api';
-    import { formatSeconds, formatTimestamp } from '$lib/format';
+    import {
+        formatSeconds,
+        formatTimestamp,
+        observeTimestampFormat,
+        type TimestampFormat,
+    } from '$lib/format';
 
     let sessions = $state<SessionSummary[]>([]);
     let hiddenBlocked = $state(0);
     let loading = $state(true);
     let error = $state<string | null>(null);
+    let tsFormat = $state<TimestampFormat>('short');
 
     async function refresh() {
         try {
@@ -41,6 +47,7 @@
 
     onMount(() => {
         refresh();
+        const unobserveTs = observeTimestampFormat((f) => (tsFormat = f));
         const unlisteners: Promise<UnlistenFn>[] = [
             onSessionStarted(refresh),
             onSessionEnded(refresh),
@@ -48,6 +55,7 @@
             onBlocklistChanged(refresh),
         ];
         return () => {
+            unobserveTs();
             for (const p of unlisteners) {
                 p.then((unlisten) => unlisten()).catch(() => {});
             }
@@ -95,7 +103,7 @@
             <tbody>
                 {#each sessions as s (s.id)}
                     <tr>
-                        <td>{formatTimestamp(s.started_at)}</td>
+                        <td>{formatTimestamp(s.started_at, tsFormat)}</td>
                         <td
                             ><a href="/app/{s.application_id}"
                                 >{s.product_name}</a

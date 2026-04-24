@@ -11,12 +11,18 @@
         onSessionStarted,
         type ApplicationSummary,
     } from '$lib/api';
-    import { formatSeconds, formatTimestamp } from '$lib/format';
+    import {
+        formatSeconds,
+        formatTimestamp,
+        observeTimestampFormat,
+        type TimestampFormat,
+    } from '$lib/format';
 
     let apps = $state<ApplicationSummary[]>([]);
     let hiddenBlocked = $state(0);
     let loading = $state(true);
     let error = $state<string | null>(null);
+    let tsFormat = $state<TimestampFormat>('short');
 
     async function refresh() {
         try {
@@ -40,6 +46,7 @@
 
     onMount(() => {
         refresh();
+        const unobserveTs = observeTimestampFormat((f) => (tsFormat = f));
         const unlisteners: Promise<UnlistenFn>[] = [
             onApplicationAdded(refresh),
             onSessionStarted(refresh),
@@ -48,6 +55,7 @@
             onBlocklistChanged(refresh),
         ];
         return () => {
+            unobserveTs();
             for (const p of unlisteners) {
                 p.then((unlisten) => unlisten()).catch(() => {});
             }
@@ -119,7 +127,10 @@
                             <span class="stat">
                                 <span class="stat-label">last played</span>
                                 <span class="stat-value"
-                                    >{formatTimestamp(app.last_played_at)}</span
+                                    >{formatTimestamp(
+                                        app.last_played_at,
+                                        tsFormat,
+                                    )}</span
                                 >
                             </span>
                         </div>

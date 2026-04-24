@@ -24,9 +24,17 @@
                             : prefersDark
                               ? 'dark'
                               : 'light';
+                    var savedFmt = localStorage.getItem('ludex-timestamp-format');
+                    document.documentElement.dataset.timestampFormat =
+                        savedFmt === 'iso' ||
+                        savedFmt === 'dmy' ||
+                        savedFmt === 'relative' ||
+                        savedFmt === 'short'
+                            ? savedFmt
+                            : 'short';
                 } catch (_) {
                     // localStorage blocked; fall through with the
-                    // default light palette.
+                    // default light palette / short timestamps.
                 }
             })();
         </script>
