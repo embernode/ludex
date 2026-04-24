@@ -50,7 +50,6 @@
             <a href="/recent" class:active={isActive('/recent')}>Recent</a>
             <a href="/settings" class:active={isActive('/settings')}>Settings</a>
         </div>
-        <span class="tag">pre-alpha</span>
         <button
             class="theme-toggle"
             type="button"
@@ -132,8 +131,6 @@
         --button-border: #d1d5db;
         --button-text: #333333;
         --button-hover-bg: #f4f5f7;
-        --tag-bg: #e6e7eb;
-        --tag-text: #666666;
         --active-bg: #e5e7eb;
         --code-bg: #eceef2;
         --code-text: inherit;
@@ -165,8 +162,6 @@
         --button-border: #3f3f46;
         --button-text: #e4e4e7;
         --button-hover-bg: #27272a;
-        --tag-bg: #27272a;
-        --tag-text: #a1a1aa;
         --active-bg: #27272a;
         --code-bg: #18181b;
         --code-text: #e4e4e7;
@@ -291,15 +286,6 @@
     .links a.active {
         background: var(--active-bg);
         color: var(--text-primary);
-        font-weight: 500;
-    }
-
-    .tag {
-        font-size: 0.75rem;
-        padding: 0.1rem 0.45rem;
-        border-radius: 999px;
-        background: var(--tag-bg);
-        color: var(--tag-text);
         font-weight: 500;
     }
 
