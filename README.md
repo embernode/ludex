@@ -2,7 +2,7 @@
 
 A launcher-agnostic playtime tracker for Linux.
 
-**Status: pre-alpha.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6. The GUI covers the apps list, recent sessions, per-application detail, an ECharts dashboard, settings, and a system tray with close-to-tray. Lutris and Heroic launcher integrations remain deferred; no released binaries yet.
+**Status: 0.1.0.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6. The GUI covers the apps list, recent sessions, per-application detail, an ECharts dashboard, settings, and a system tray with close-to-tray. Lutris and Heroic launcher integrations remain deferred; no released binaries yet.
 
 ## What it does
 
@@ -51,50 +51,52 @@ crates/
 app/
   src/                # SvelteKit frontend (TypeScript + Svelte 5)
   src-tauri/          # Tauri 2 host binary
+packaging/            # systemd --user unit; PKGBUILD planned
 docs/                 # architecture, roadmap, CLI reference
 .github/workflows/    # fmt, clippy, test, frontend, cargo-deny
 ```
 
-A `packaging/` directory for the systemd user service and
-PKGBUILD is planned (see the roadmap); there's nothing in it yet.
+## Prerequisites
 
-## Building
+- **Rust** — pinned in `rust-toolchain.toml`. Use `rustup` to install the matching toolchain automatically.
+- **WebKitGTK 4.1 + JavaScriptCoreGTK 4.1** for the Tauri webview. On Arch: `pacman -S webkit2gtk-4.1`.
+- **pnpm** for the frontend bundle.
+- A Wayland session running **KDE Plasma 6** if you want the foreground-window fallback to work. The Steam-log path is desktop-agnostic and runs anywhere.
 
-- `crates/ludex-daemon` and `crates/ludex-cli` are pure Rust and build
-  with `cargo build --workspace`.
-- `app/src-tauri` is the Tauri host for the desktop UI. Building or
-  running it needs WebKitGTK 4.1 + javascriptcoregtk 4.1 installed at
-  system level (Arch: `pacman -S webkit2gtk-4.1`). The tray icon
-  also needs `libayatana-appindicator3`
-  (`pacman -S libayatana-appindicator`).
+The tray uses `ksni` (pure-Rust StatusNotifierItem); no `libappindicator`-shaped C dep needed.
 
-Workspace-wide tests + lints:
+## Running from source
+
+For day-to-day development. Daemon and GUI in two terminals:
 
 ```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all --check
+# Terminal 1 — daemon, foreground (Ctrl-C to stop).
+cargo run -p ludex-daemon
+
+# Terminal 2 — GUI with hot-reload on Svelte edits.
+cd app && pnpm install      # one-off; lockfile is committed
+cd app && pnpm tauri dev
 ```
 
-Frontend type-check + build:
+CLI commands run directly from the workspace too:
 
 ```sh
-cd app
-pnpm install          # one-off; lockfile is committed
-pnpm run check        # svelte-check
-pnpm run build        # static bundle for Tauri
+cargo run -p ludex-cli -- doctor
+cargo run -p ludex-cli -- apps list
+cargo run -p ludex-cli -- sessions --since 1d
 ```
 
-### Running the daemon
-
-For quick experimentation:
+If you also have a daemon installed via the systemd unit below, stop it first so two daemons aren't fighting over the SQLite file (the daemon now refuses to start a second instance, but stopping is cleaner):
 
 ```sh
-cargo run -p ludex-daemon            # runs in the foreground
+systemctl --user stop ludex-daemon
 ```
 
-For a long-running install, use the packaged systemd `--user`
-unit — see [`packaging/README.md`](packaging/README.md):
+## Installing for daily use
+
+Three pieces — daemon, CLI, GUI — built from source and dropped into your local Cargo bin / a path of your choice. No published packages yet.
+
+**Daemon** — runs as a systemd user service. Full notes in [`packaging/README.md`](packaging/README.md):
 
 ```sh
 cargo install --path crates/ludex-daemon
@@ -102,35 +104,54 @@ mkdir -p ~/.config/systemd/user
 cp packaging/ludex-daemon.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now ludex-daemon
-journalctl --user -u ludex-daemon -f
+journalctl --user -u ludex-daemon -f      # tail the log
 ```
 
-Data lands at `$XDG_DATA_HOME/ludex/ludex.sqlite` (or
-`~/.local/share/ludex/ludex.sqlite` fallback). The daemon takes
-periodic database snapshots at
-`$XDG_DATA_HOME/ludex/backups/` by default.
-
-Control logging via `LUDEX_LOG=info` (or `debug`, `trace`;
-defaults to `info` for the daemon, `warn` for the CLI). Under
-systemd, create a drop-in with `systemctl --user edit ludex-daemon`
-to set `Environment="LUDEX_LOG=debug"`.
-
-### Running the UI in dev mode
-
-```sh
-cd app
-pnpm tauri dev        # launches the webview + hot-reloads Svelte edits
-```
-
-### Using the CLI
+**CLI:**
 
 ```sh
 cargo install --path crates/ludex-cli
 ludex doctor
 ```
 
-Full subcommand reference (`apps` / `sessions` / `backup` /
-`merge` / `doctor`) in [`docs/cli.md`](docs/cli.md).
+**GUI** — Tauri builds a single native binary; copy it onto your `PATH`:
+
+```sh
+cd app
+pnpm install                              # one-off
+pnpm tauri build
+install -Dm755 ../target/release/ludex-gui ~/.local/bin/ludex-gui
+```
+
+A `.desktop` entry, an AppImage, and an AUR PKGBUILD are on the post-M6 roadmap; for now the binary is bare.
+
+## Configuration + data location
+
+- Database: `$XDG_DATA_HOME/ludex/ludex.sqlite` (default `~/.local/share/ludex/ludex.sqlite`).
+- Backups: `$XDG_DATA_HOME/ludex/backups/`. Daemon takes a snapshot every 24 h and keeps the last 14 by default; tunable from Settings.
+- Logging: `LUDEX_LOG=info` (or `debug`, `trace`). Defaults are `info` for the daemon, `warn` for the CLI. Under systemd: `systemctl --user edit ludex-daemon` and add `Environment="LUDEX_LOG=debug"`.
+
+ludex respects the XDG base-directory spec and never writes outside the user's own dirs.
+
+## Tests + lints
+
+Workspace-wide:
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+```
+
+Frontend:
+
+```sh
+cd app
+pnpm run check        # svelte-check (TypeScript + Svelte type-checking)
+pnpm run build        # static bundle
+```
+
+CI (`.github/workflows/`) runs the same set on every push.
 
 ## License
 
