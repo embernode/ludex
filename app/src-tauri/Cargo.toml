@@ -20,11 +20,17 @@ tauri-build = { version = "2", features = [] }
 anyhow = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
-tauri = { version = "2", features = ["tray-icon"] }
+# Linux-only app; the Tauri `tray-icon` feature pulls in the
+# abandoned libappindicator-rs crate (last commit 2022) that wraps
+# the deprecated libayatana-appindicator C library. We render the
+# tray through `ksni` (pure-Rust StatusNotifierItem) instead — see
+# `src/tray.rs` — so the feature stays off.
+tauri = { version = "2" }
 tauri-plugin-log = "2"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tracing = { workspace = true }
 zbus = { workspace = true }
+ksni = "0.3"
 
 ludex-dbus-types = { path = "../../crates/ludex-dbus-types" }
 

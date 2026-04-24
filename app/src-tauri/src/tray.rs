@@ -1,92 +1,189 @@
 //! System tray integration.
 //!
-//! Builds a status-area icon with a Show / Hide / Quit menu, wires
-//! left-click to toggle the main window, and intercepts close-window
-//! so the app minimises to the tray instead of exiting. Tooltip text
-//! flips between the idle state and "session active" based on the
-//! `ludex:session-started` / `ludex:session-ended` events that
-//! [`crate::bridge`] forwards from the daemon's D-Bus signals.
+//! Builds a StatusNotifierItem tray icon with a Show / Hide / Quit
+//! menu, wires left-click to toggle the main window, and intercepts
+//! close-window so the app minimises to the tray instead of exiting.
+//! Tooltip text flips between the idle state and "session active"
+//! based on the `ludex:session-started` / `ludex:session-ended`
+//! events that [`crate::bridge`] forwards from the daemon's D-Bus
+//! signals.
 //!
-//! On Linux this runs through `libayatana-appindicator3`, which is
-//! already required by the Tauri system-dep set.
+//! We use [`ksni`] rather than Tauri's built-in `tray-icon` because
+//! the latter pulls in the abandoned `libappindicator-rs` crate
+//! (last commit 2022) which wraps the deprecated
+//! `libayatana-appindicator` C library — producing a deprecation
+//! warning on every startup. `ksni` is a pure-Rust implementation
+//! of the StatusNotifierItem spec and talks directly to the D-Bus
+//! host (KDE Plasma, GNOME-with-extension, Cinnamon, Xfce, Budgie),
+//! so no C dependency is involved.
 //!
-//! The tooltip deliberately does *not* include the game's name — that
-//! would require a D-Bus RPC (`GetApplication`) for every
+//! The tooltip deliberately does *not* include the game's name —
+//! that would require a D-Bus `GetApplication` RPC for every
 //! `session-started` event, and Tauri's `listen_any` callback is
 //! synchronous. Adding name resolution is a follow-up behind a
 //! worker channel.
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use std::sync::{Arc, OnceLock};
+
+use ksni::menu::StandardItem;
+use ksni::{Handle, Icon, MenuItem, ToolTip, Tray, TrayMethods};
 use tauri::{AppHandle, Listener, Manager, Runtime, WindowEvent};
 
 use crate::bridge::{EVENT_SESSION_ENDED, EVENT_SESSION_STARTED};
 
-const TRAY_ID: &str = "main";
 const MAIN_WINDOW: &str = "main";
 const TOOLTIP_IDLE: &str = "ludex";
 const TOOLTIP_ACTIVE: &str = "ludex · session active";
 
-/// Build the tray icon, wire its menu + click behaviour, install the
-/// close-to-tray hook on the main window, and register listeners
-/// that flip the tooltip on session events.
-pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
-    let hide_item = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_item, &hide_item, &sep, &quit_item])?;
+struct LudexTray<R: Runtime> {
+    app: AppHandle<R>,
+    icon: Icon,
+    tooltip_title: String,
+}
 
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".to_owned()))?;
+impl<R: Runtime> Tray for LudexTray<R> {
+    fn id(&self) -> String {
+        env!("CARGO_PKG_NAME").into()
+    }
 
-    TrayIconBuilder::with_id(TRAY_ID)
-        .icon(icon)
-        .tooltip(TOOLTIP_IDLE)
-        .menu(&menu)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => show_main(app),
-            "hide" => hide_main(app),
-            "quit" => app.exit(0),
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                toggle_main(tray.app_handle());
+    fn title(&self) -> String {
+        "ludex".into()
+    }
+
+    fn icon_pixmap(&self) -> Vec<Icon> {
+        vec![self.icon.clone()]
+    }
+
+    fn tool_tip(&self) -> ToolTip {
+        ToolTip {
+            title: self.tooltip_title.clone(),
+            ..Default::default()
+        }
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        toggle_main(&self.app);
+    }
+
+    fn menu(&self) -> Vec<MenuItem<Self>> {
+        vec![
+            StandardItem {
+                label: "Show".into(),
+                activate: Box::new(|this: &mut Self| show_main(&this.app)),
+                ..Default::default()
             }
-        })
-        .build(app)?;
+            .into(),
+            StandardItem {
+                label: "Hide".into(),
+                activate: Box::new(|this: &mut Self| hide_main(&this.app)),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "Quit".into(),
+                activate: Box::new(|this: &mut Self| this.app.exit(0)),
+                ..Default::default()
+            }
+            .into(),
+        ]
+    }
+}
 
+/// Spawn the StatusNotifierItem service, install the close-to-tray
+/// hook on the main window, and register listeners that flip the
+/// tooltip on session events.
+pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
+    // Convert Tauri's default window icon to ksni's ARGB32 byte
+    // layout — Tauri stores RGBA8, the StatusNotifierItem spec
+    // wants ARGB32.
+    let tauri_icon = app
+        .default_window_icon()
+        .ok_or_else(|| anyhow::anyhow!("default window icon missing"))?;
+    let icon = to_ksni_icon(tauri_icon.rgba(), tauri_icon.width(), tauri_icon.height())?;
+
+    let tray = LudexTray {
+        app: app.clone(),
+        icon,
+        tooltip_title: TOOLTIP_IDLE.into(),
+    };
+
+    // Spawning is async; the handle is filled in once the service
+    // is up. Listener callbacks read the OnceLock; if it's empty
+    // (service hasn't finished starting yet, or failed), they no-op.
+    let handle_slot: Arc<OnceLock<Handle<LudexTray<R>>>> = Arc::new(OnceLock::new());
+    let handle_slot_for_spawn = Arc::clone(&handle_slot);
+    tauri::async_runtime::spawn(async move {
+        match tray.spawn().await {
+            Ok(handle) => {
+                let _ = handle_slot_for_spawn.set(handle);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "StatusNotifierItem tray failed to start; continuing without tray"
+                );
+            }
+        }
+    });
+
+    // Close on the main window hides rather than exits, leaving the
+    // tray as the remaining surface. "Show" from the menu, or a
+    // tray click, restores it.
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let window_for_close = window.clone();
         window.on_window_event(move |event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Prevent the window from closing the app. Hiding it
-                // leaves the tray icon as the only remaining surface
-                // — clicking it or the "Show" menu item restores.
                 api.prevent_close();
                 let _ = window_for_close.hide();
             }
         });
     }
 
-    let idle_handle = app.clone();
+    // Flip tooltip on session events. Callbacks are synchronous; we
+    // spawn the async update onto Tauri's runtime.
+    let slot_started = Arc::clone(&handle_slot);
     app.listen_any(EVENT_SESSION_STARTED, move |_event| {
-        set_tooltip(&idle_handle, TOOLTIP_ACTIVE);
+        update_tooltip(&slot_started, TOOLTIP_ACTIVE);
     });
-    let active_handle = app.clone();
+    let slot_ended = Arc::clone(&handle_slot);
     app.listen_any(EVENT_SESSION_ENDED, move |_event| {
-        set_tooltip(&active_handle, TOOLTIP_IDLE);
+        update_tooltip(&slot_ended, TOOLTIP_IDLE);
     });
 
     Ok(())
+}
+
+fn update_tooltip<R: Runtime>(slot: &Arc<OnceLock<Handle<LudexTray<R>>>>, text: &'static str) {
+    let Some(handle) = slot.get().cloned() else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        handle
+            .update(|t: &mut LudexTray<R>| {
+                text.clone_into(&mut t.tooltip_title);
+            })
+            .await;
+    });
+}
+
+fn to_ksni_icon(rgba: &[u8], width: u32, height: u32) -> anyhow::Result<Icon> {
+    let width = i32::try_from(width)?;
+    let height = i32::try_from(height)?;
+    if !rgba.len().is_multiple_of(4) {
+        anyhow::bail!("icon pixel buffer is not a multiple of 4 bytes");
+    }
+    let mut data = rgba.to_vec();
+    // RGBA8 → ARGB32 network byte order: rotate each pixel right by
+    // one byte so [R, G, B, A] becomes [A, R, G, B].
+    for pixel in data.chunks_exact_mut(4) {
+        pixel.rotate_right(1);
+    }
+    Ok(Icon {
+        width,
+        height,
+        data,
+    })
 }
 
 fn show_main<R: Runtime>(app: &AppHandle<R>) {
@@ -106,25 +203,13 @@ fn toggle_main<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
-    match window.is_visible() {
-        Ok(true) => {
-            let _ = window.hide();
-        }
-        Ok(false) => {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
-        Err(_) => {
-            // Unknown state — default to surfacing the window so the
-            // user isn't stuck with a hidden app that won't respond.
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
-    }
-}
-
-fn set_tooltip<R: Runtime>(app: &AppHandle<R>, text: &str) {
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(text));
+    // `is_visible` can in principle error; treat that as "show the
+    // window" so the user isn't stuck with a hidden app that won't
+    // respond to its own tray icon.
+    if let Ok(true) = window.is_visible() {
+        let _ = window.hide();
+    } else {
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
