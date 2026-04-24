@@ -144,13 +144,22 @@ pub(crate) fn install<R: Runtime>(
     };
 
     // Initial theme: ask the main window. Tauri's Linux backend
-    // returns the webview's reported color scheme, which follows
-    // the GTK / freedesktop portal setting. If the platform can't
-    // report it (returns Err or None), assume light.
-    let initial_is_dark = app
-        .get_webview_window(MAIN_WINDOW)
-        .and_then(|w| w.theme().ok())
-        .is_some_and(|t| matches!(t, Theme::Dark));
+    // returns the webview's reported colour scheme, which follows
+    // the GTK / freedesktop portal setting — but on KDE Plasma
+    // Wayland it frequently reports Light or returns Err even on
+    // a dark system. When detection is inconclusive we default to
+    // dark: it matches the embedded bundle icon (the dark-shape
+    // variant) and matches what the majority of KDE panels look
+    // like. A later `ThemeChanged(Light)` event will flip us back
+    // to the light-shape variant if the user really is on a
+    // light desktop.
+    let initial_is_dark = match app.get_webview_window(MAIN_WINDOW).and_then(|w| w.theme().ok()) {
+        Some(Theme::Light) => false,
+        // `Some(Theme::Dark)` → dark, `None`/`Err` → default dark
+        // (the Theme enum is #[non_exhaustive], so the wildcard
+        // below also covers any variant added upstream).
+        _ => true,
+    };
 
     let tray = LudexTray {
         app: app.clone(),
