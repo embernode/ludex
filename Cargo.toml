@@ -55,11 +55,15 @@ serde_json = "1"
 # PE parser (for Proton/Wine PE FileVersionInfo extraction)
 pelite = { version = "0.10", default-features = false, features = ["std"] }
 
-# XDG `.desktop` entry parser
-freedesktop-desktop-entry = "0.7"
+# XDG `.desktop` entry parser. Default features in 0.8 pull in
+# gettext-rs, which wraps libintl/libgettext to translate Name=. We
+# only read untranslated names (passing an empty locale list to
+# `entry.name(&[])`), so we keep default-features off and avoid the
+# C dep entirely.
+freedesktop-desktop-entry = { version = "0.8", default-features = false }
 
 # Filesystem watching (inotify on Linux)
-notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 # Stream combinators used by zbus property streams
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
