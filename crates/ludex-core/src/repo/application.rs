@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 use crate::application::{Application, IdentityUpdate, NewApplication, PlaybackDelta};
 use crate::error::{Error, Result};
 use crate::key::GameKey;
-use crate::types::LauncherType;
+use crate::types::{GraphicsPlatform, LauncherType, ProcessArchitecture};
 
 const SELECT_COLS: &str = "id, launcher_type, launcher_id, product_name, publisher, version, \
     executable_path, launcher_exe_path, wineprefix_path, installed_flatpak_ref, \
@@ -328,10 +328,11 @@ impl<'a> ApplicationRepo<'a> {
             .execute(&mut *tx)
             .await?;
 
-        // Fold src's aggregate + identity slots into dst. One big
-        // UPDATE so we hit the row once — and a CHECK violation on
-        // the summed totals would fail the whole transaction
-        // rather than leaving dst half-merged.
+        // Aggregates + timestamps. SQLite's MAX / MIN ignore NULL
+        // operands, so `last_played_at = MAX(last_played_at, ?)`
+        // does the right thing in every NULL-combo: both null →
+        // stays null, one side null → picks the non-null, both
+        // set → picks the later. No CASE needed.
         sqlx::query(
             "UPDATE applications SET \
              stat_run_count         = stat_run_count + ?, \
@@ -339,26 +340,7 @@ impl<'a> ApplicationRepo<'a> {
              stat_total_interactive = stat_total_interactive + ?, \
              stat_longest_full      = MAX(stat_longest_full, ?), \
              first_seen_at          = MIN(first_seen_at, ?), \
-             last_played_at         = CASE \
-                 WHEN last_played_at IS NULL THEN ? \
-                 WHEN ? IS NULL THEN last_played_at \
-                 ELSE MAX(last_played_at, ?) \
-             END, \
-             publisher              = COALESCE(publisher, ?), \
-             version                = COALESCE(version, ?), \
-             executable_path        = COALESCE(executable_path, ?), \
-             launcher_exe_path      = COALESCE(launcher_exe_path, ?), \
-             wineprefix_path        = COALESCE(wineprefix_path, ?), \
-             installed_flatpak_ref  = COALESCE(installed_flatpak_ref, ?), \
-             group_id               = COALESCE(group_id, ?), \
-             icon_16                = COALESCE(icon_16, ?), \
-             icon_32                = COALESCE(icon_32, ?), \
-             icon_48                = COALESCE(icon_48, ?), \
-             icon_256               = COALESCE(icon_256, ?), \
-             graphics_platform      = CASE WHEN graphics_platform = 'unknown' \
-                                           THEN ? ELSE graphics_platform END, \
-             process_architecture   = CASE WHEN process_architecture = 'unknown' \
-                                           THEN ? ELSE process_architecture END \
+             last_played_at         = MAX(last_played_at, ?) \
              WHERE id = ?",
         )
         .bind(src.stat_run_count)
@@ -367,24 +349,16 @@ impl<'a> ApplicationRepo<'a> {
         .bind(src.stat_longest_full)
         .bind(src.first_seen_at)
         .bind(src.last_played_at)
-        .bind(src.last_played_at)
-        .bind(src.last_played_at)
-        .bind(&src.publisher)
-        .bind(&src.version)
-        .bind(&src.executable_path)
-        .bind(&src.launcher_exe_path)
-        .bind(&src.wineprefix_path)
-        .bind(&src.installed_flatpak_ref)
-        .bind(src.group_id)
-        .bind(&src.icon_16)
-        .bind(&src.icon_32)
-        .bind(&src.icon_48)
-        .bind(&src.icon_256)
-        .bind(src.graphics_platform)
-        .bind(src.process_architecture)
         .bind(dst_id)
         .execute(&mut *tx)
         .await?;
+
+        // Metadata fill — each column name appears exactly once,
+        // emitted only when src has a value worth copying. Built
+        // with QueryBuilder so a future schema column is added in
+        // a single place (a new `fill!` call) with no risk of
+        // swapping positions in a 20-bind list.
+        apply_metadata_fill(&mut tx, dst_id, &src).await?;
 
         sqlx::query("DELETE FROM applications WHERE id = ?")
             .bind(src_id)
@@ -394,4 +368,64 @@ impl<'a> ApplicationRepo<'a> {
         tx.commit().await?;
         Ok(())
     }
+}
+
+/// Push one `UPDATE applications SET ... WHERE id = dst_id` carrying
+/// only the COALESCE/CASE fragments for fields `src` can contribute.
+/// When `src` has nothing to offer in any slot, emits nothing.
+async fn apply_metadata_fill(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    dst_id: i64,
+    src: &Application,
+) -> Result<()> {
+    let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("UPDATE applications SET ");
+    let mut sep = qb.separated(", ");
+    let mut any = false;
+
+    macro_rules! fill_nullable {
+        ($column:literal, $value:expr) => {
+            if let Some(v) = $value {
+                sep.push(concat!($column, " = COALESCE(", $column, ", "))
+                    .push_bind_unseparated(v);
+                sep.push_unseparated(")");
+                any = true;
+            }
+        };
+    }
+
+    fill_nullable!("publisher", src.publisher.clone());
+    fill_nullable!("version", src.version.clone());
+    fill_nullable!("executable_path", src.executable_path.clone());
+    fill_nullable!("launcher_exe_path", src.launcher_exe_path.clone());
+    fill_nullable!("wineprefix_path", src.wineprefix_path.clone());
+    fill_nullable!("installed_flatpak_ref", src.installed_flatpak_ref.clone());
+    fill_nullable!("group_id", src.group_id);
+    fill_nullable!("icon_16", src.icon_16.clone());
+    fill_nullable!("icon_32", src.icon_32.clone());
+    fill_nullable!("icon_48", src.icon_48.clone());
+    fill_nullable!("icon_256", src.icon_256.clone());
+
+    // Enum columns: only meaningful to fill when src isn't itself
+    // Unknown. `graphics_platform = 'unknown'` in SQL treats the
+    // stored string literal as "unset" — matches the sqlx Type
+    // serialisation for GraphicsPlatform::Unknown.
+    if src.graphics_platform != GraphicsPlatform::Unknown {
+        sep.push("graphics_platform = CASE WHEN graphics_platform = 'unknown' THEN ")
+            .push_bind_unseparated(src.graphics_platform)
+            .push_unseparated(" ELSE graphics_platform END");
+        any = true;
+    }
+    if src.process_architecture != ProcessArchitecture::Unknown {
+        sep.push("process_architecture = CASE WHEN process_architecture = 'unknown' THEN ")
+            .push_bind_unseparated(src.process_architecture)
+            .push_unseparated(" ELSE process_architecture END");
+        any = true;
+    }
+
+    if !any {
+        return Ok(());
+    }
+    qb.push(" WHERE id = ").push_bind(dst_id);
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
 }
