@@ -16,7 +16,12 @@
         onSessionStarted,
         type DailyPlaytime,
     } from '$lib/api';
-    import { formatSeconds } from '$lib/format';
+    import {
+        currentTimestampFormat,
+        formatSeconds,
+        observeTimestampFormat,
+        type TimestampFormat,
+    } from '$lib/format';
 
     // One fetch, 365 days. All three charts slice the same dataset —
     // the yearly span feeds the heatmap, the last 30 days feed the
@@ -25,6 +30,7 @@
     let loading = $state(true);
     let error = $state<string | null>(null);
     let theme = $state<Theme>('light');
+    let tsFormat = $state<TimestampFormat>(currentTimestampFormat());
 
     async function refresh() {
         try {
@@ -42,6 +48,9 @@
         const unlistenTheme = observeTheme((t) => {
             theme = t;
         });
+        const unlistenTs = observeTimestampFormat((f) => {
+            tsFormat = f;
+        });
         const unlisteners: Promise<UnlistenFn>[] = [
             onSessionStarted(refresh),
             onSessionEnded(refresh),
@@ -50,18 +59,20 @@
         ];
         return () => {
             unlistenTheme();
+            unlistenTs();
             for (const p of unlisteners) {
                 p.then((unlisten) => unlisten()).catch(() => {});
             }
         };
     });
 
-    // Derived options re-compute whenever `rows` or `theme` change,
-    // so the toggle button's theme swap and a signal-driven refresh
-    // both flow through the same path.
-    const dailyOption = $derived(buildDailyLineOption(rows, theme));
-    const heatmapOption = $derived(buildHeatmapOption(rows, theme));
-    const weekOption = $derived(buildWeekBarOption(rows, theme));
+    // Derived options re-compute whenever `rows`, `theme`, or
+    // `tsFormat` change — that covers the dark-mode toggle, a
+    // signal-driven refresh, and the user flipping the date format
+    // in Settings.
+    const dailyOption = $derived(buildDailyLineOption(rows, theme, tsFormat));
+    const heatmapOption = $derived(buildHeatmapOption(rows, theme, tsFormat));
+    const weekOption = $derived(buildWeekBarOption(rows, theme, tsFormat));
 
     // Small header stats to give the page something to read while
     // the eye skims over the charts.

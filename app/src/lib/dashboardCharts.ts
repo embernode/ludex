@@ -10,6 +10,33 @@ import type { EChartsCoreOption } from './echartsSetup';
 import type { DailyPlaytime } from './api';
 import { palette } from './chartPalette';
 import type { Theme } from './theme';
+import type { TimestampFormat } from './format';
+
+/**
+ * Short date label for a chart axis tick. The line chart's x-axis
+ * is a continuous run of YYYY-MM-DD strings; rendering each in
+ * full would be a wall of digits. Pick the day-month order from
+ * the user's timestamp-format preference (`dmy` flips to
+ * European-style); year is dropped because a 30-day window doesn't
+ * need it.
+ */
+function formatAxisDate(iso: string, fmt: TimestampFormat): string {
+    if (fmt === 'dmy') {
+        // iso is YYYY-MM-DD; split is cheap and locale-safe.
+        const parts = iso.split('-');
+        if (parts.length === 3) return `${parts[2]}.${parts[1]}`;
+    }
+    return iso.slice(5); // MM-DD
+}
+
+/** Full-date label for chart tooltips. Carries the year. */
+function formatTooltipDate(iso: string, fmt: TimestampFormat): string {
+    if (fmt === 'dmy') {
+        const parts = iso.split('-');
+        if (parts.length === 3) return `${parts[2]}.${parts[1]}.${parts[0]}`;
+    }
+    return iso; // YYYY-MM-DD covers iso, short, relative.
+}
 
 /** Seconds → hours with one decimal (tooltip precision). */
 function hoursOf(seconds: number): number {
@@ -57,6 +84,7 @@ function indexByDate(rows: readonly DailyPlaytime[]): Map<string, DailyPlaytime>
 export function buildDailyLineOption(
     rows: readonly DailyPlaytime[],
     theme: Theme,
+    tsFormat: TimestampFormat,
 ): EChartsCoreOption {
     const p = palette(theme);
     const byDate = indexByDate(rows);
@@ -90,7 +118,8 @@ export function buildDailyLineOption(
                 const f = rowSeconds(byDate, axisValue, 'full');
                 const i = rowSeconds(byDate, axisValue, 'interactive');
                 const c = sessions[idx] ?? 0;
-                return `<div style="font-weight:600">${axisValue}</div>
+                const dateLabel = formatTooltipDate(axisValue, tsFormat);
+                return `<div style="font-weight:600">${dateLabel}</div>
 <div>Full: ${formatDuration(f)}</div>
 <div>Interactive: ${formatDuration(i)}</div>
 <div>Sessions: ${c}</div>`;
@@ -102,7 +131,7 @@ export function buildDailyLineOption(
             axisLine: { lineStyle: { color: p.axis } },
             axisLabel: {
                 color: p.axisLabel,
-                formatter: (value: string) => value.slice(5), // MM-DD
+                formatter: (value: string) => formatAxisDate(value, tsFormat),
             },
             axisTick: { show: false },
         },
@@ -156,6 +185,7 @@ function rowSeconds(
 export function buildHeatmapOption(
     rows: readonly DailyPlaytime[],
     theme: Theme,
+    tsFormat: TimestampFormat,
 ): EChartsCoreOption {
     const p = palette(theme);
     const byDate = indexByDate(rows);
@@ -187,7 +217,8 @@ export function buildHeatmapOption(
                 const row = byDate.get(date);
                 const full = row?.full_runtime_seconds ?? 0;
                 const sessions = row?.session_count ?? 0;
-                return `<div style="font-weight:600">${date}</div>
+                const dateLabel = formatTooltipDate(date, tsFormat);
+                return `<div style="font-weight:600">${dateLabel}</div>
 <div>${formatDuration(full)} · ${sessions} session${sessions === 1 ? '' : 's'}</div>
 <div style="opacity:0.7">(${hours.toFixed(1)} h)</div>`;
             },
@@ -233,6 +264,7 @@ export function buildHeatmapOption(
 export function buildWeekBarOption(
     rows: readonly DailyPlaytime[],
     theme: Theme,
+    tsFormat: TimestampFormat,
 ): EChartsCoreOption {
     const p = palette(theme);
     const byDate = indexByDate(rows);
@@ -272,7 +304,8 @@ export function buildWeekBarOption(
                 const row = date ? byDate.get(date) : undefined;
                 const full = row?.full_runtime_seconds ?? 0;
                 const sessions = row?.session_count ?? 0;
-                return `<div style="font-weight:600">${labels[idx]} · ${date}</div>
+                const dateLabel = date ? formatTooltipDate(date, tsFormat) : '';
+                return `<div style="font-weight:600">${labels[idx]} · ${dateLabel}</div>
 <div>${formatDuration(full)} · ${sessions} session${sessions === 1 ? '' : 's'}</div>`;
             },
         },
