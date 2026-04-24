@@ -138,7 +138,11 @@ impl SteamSource {
             if flags & APP_RUNNING_FLAG != 0 {
                 let display_name = parse_vdf_top_level_string(&content, "name")
                     .unwrap_or_else(|| format!("AppID {appid}"));
-                info!(appid, %display_name, "cold-start: detected running game");
+                // Game title logged at debug only — journalctl and
+                // stderr capture go to info+ by default, and the
+                // title isn't needed for operational correlation.
+                debug!(appid, %display_name, "cold-start: detected running game");
+                info!(appid, "cold-start: detected running game");
                 running.insert(appid.to_owned());
                 if tx
                     .send(GameEvent::Started {
@@ -292,7 +296,8 @@ impl SteamSource {
                 let was_running = running.contains(appid);
                 if is_running && !was_running {
                     let display_name = self.resolve_name(appid).await;
-                    info!(appid, %display_name, "Steam: game started");
+                    debug!(appid, %display_name, "Steam: game started");
+                    info!(appid, "Steam: game started");
                     running.insert(appid.to_owned());
                     if tx
                         .send(GameEvent::Started {

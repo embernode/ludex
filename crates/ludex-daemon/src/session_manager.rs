@@ -23,7 +23,7 @@ use ludex_core::{
 use ludex_enrich::EnrichmentContext;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::{mpsc, watch, RwLock};
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Shared in-memory mirror of the `blocked_applications` table.
 ///
@@ -238,10 +238,18 @@ impl SessionManager {
         let session = self.db.sessions().begin(app.id, at).await?;
         let baseline_idle_seconds = self.idle_tracker.accumulated_idle_seconds();
         let baseline_suspended_seconds = self.sleep_tracker.accumulated_suspended_seconds();
-        info!(
+        // Game title logged at debug only; info keeps the numeric
+        // identifiers that are enough for correlation without
+        // leaking play history into journalctl / stderr captures.
+        debug!(
             app_id = app.id,
             session_id = session.id,
             product_name = %app.product_name,
+            "session opened"
+        );
+        info!(
+            app_id = app.id,
+            session_id = session.id,
             baseline_idle_seconds,
             baseline_suspended_seconds,
             "session opened"
