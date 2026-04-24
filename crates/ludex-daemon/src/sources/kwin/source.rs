@@ -8,15 +8,23 @@
 //! translated into `GameEvent::Started` / `GameEvent::Stopped` on the
 //! shared event channel.
 //!
+//! A grace window between "tracked game loses foreground" and "emit
+//! Stop" absorbs short alt-tabs — see [`transition`](super::transition)
+//! for the rationale.
+//!
 //! Requires KDE Plasma 6+. The script API is compatible across 6.x
 //! minor releases.
 
+use std::future::pending;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ludex_core::default_database_path;
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, watch};
+use tokio::time::Sleep;
 use tracing::{debug, info, instrument, warn};
 use zbus::Connection;
 
@@ -24,7 +32,10 @@ use crate::event::GameEvent;
 use crate::gate::{Gate, GateInput};
 use crate::proc::pidfd;
 
-use super::transition::{transition_for, AcceptedForeground, ForegroundMeta, Transition};
+use super::transition::{
+    next_action, on_grace_timeout, on_tracked_exit, FgState, ForegroundMeta, Outcome, TimerOp,
+    TransitionEvent,
+};
 
 const PLUGIN_NAME: &str = "ludex-foreground";
 // The KWin scripting sandbox in Plasma 6 silently drops callDBus to
@@ -107,13 +118,21 @@ trait KWinScripting {
 /// The foreground-window source itself.
 pub struct KWinForegroundSource {
     gate: Gate,
+    /// How long to wait after the tracked game loses foreground
+    /// before closing the session. Resolved from settings at daemon
+    /// startup; changing the setting requires a daemon restart.
+    grace_duration: Duration,
 }
 
 impl KWinForegroundSource {
-    /// Construct a source with the given gate configuration.
+    /// Construct a source with the given gate configuration and alt-
+    /// tab grace duration.
     #[must_use]
-    pub const fn new(gate: Gate) -> Self {
-        Self { gate }
+    pub const fn new(gate: Gate, grace_duration: Duration) -> Self {
+        Self {
+            gate,
+            grace_duration,
+        }
     }
 
     /// Return `true` if `org.kde.KWin` is present on the session bus,
@@ -167,69 +186,17 @@ impl KWinForegroundSource {
         install_script(&dbus).await.context("install KWin script")?;
         info!(plugin = PLUGIN_NAME, "KWin foreground script installed");
 
-        let mut current: Option<AcceptedForeground> = None;
-        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<u32>();
+        let final_state = self
+            .run_loop(&event_tx, &mut activation_rx, &mut shutdown, self_pid)
+            .await;
 
-        loop {
-            tokio::select! {
-                biased;
-                _ = shutdown.changed() => {
-                    if *shutdown.borrow() { break; }
-                }
-                Some(exited_pid) = exit_rx.recv() => {
-                    if current.as_ref().is_some_and(|c| c.pid == exited_pid) {
-                        let Some(prev) = current.take() else { continue };
-                        info!(pid = exited_pid, "tracked process exited; closing session");
-                        let _ = event_tx
-                            .send(GameEvent::Stopped {
-                                key: prev.key,
-                                at: OffsetDateTime::now_utc(),
-                            })
-                            .await;
-                    }
-                    // Else: a stale pidfd fired for a previously-tracked
-                    // process. The foreground is different now, so nothing
-                    // to do.
-                }
-                maybe = activation_rx.recv() => {
-                    let Some(activation) = maybe else { break; };
-                    debug!(
-                        pid = activation.pid,
-                        fullscreen = activation.is_fullscreen,
-                        resource_class = %activation.resource_class,
-                        caption = %activation.caption,
-                        "foreground window activated"
-                    );
-                    if activation.pid == self_pid {
-                        continue;
-                    }
-                    let decision = self.gate.decide(GateInput {
-                        pid: activation.pid,
-                        window_is_fullscreen: activation.is_fullscreen,
-                    }).await;
-                    debug!(pid = activation.pid, decision = ?decision, "gate decision");
-                    let meta = ForegroundMeta {
-                        pid: activation.pid,
-                        resource_class: activation.resource_class,
-                        caption: activation.caption,
-                    };
-                    apply_transition(
-                        transition_for(current.as_ref(), &meta, decision),
-                        activation.pid,
-                        &mut current,
-                        &event_tx,
-                        &exit_tx,
-                    )
-                    .await;
-                }
-            }
-        }
-
-        // On graceful shutdown, stop any currently-tracked foreground.
-        if let Some(prev) = current.take() {
+        // On graceful shutdown, stop any currently-tracked foreground
+        // (including one sitting in TrackedBackgrounded — the grace
+        // window is moot when the daemon is going away).
+        if let Some(af) = final_state.current() {
             let _ = event_tx
                 .send(GameEvent::Stopped {
-                    key: prev.key,
+                    key: af.key.clone(),
                     at: OffsetDateTime::now_utc(),
                 })
                 .await;
@@ -242,6 +209,127 @@ impl KWinForegroundSource {
         }
         drop(dbus);
         Ok(())
+    }
+
+    /// Run the activation → transition → event pipeline until
+    /// `shutdown` fires or the activation channel closes. Returns
+    /// the final tracked state so the caller can emit a closing
+    /// `Stopped` on graceful exit.
+    async fn run_loop(
+        &self,
+        event_tx: &mpsc::Sender<GameEvent>,
+        activation_rx: &mut mpsc::UnboundedReceiver<Activation>,
+        shutdown: &mut watch::Receiver<bool>,
+        self_pid: u32,
+    ) -> FgState {
+        let mut state = FgState::NotTracked;
+        let mut grace_timer: Option<Pin<Box<Sleep>>> = None;
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<u32>();
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() { break; }
+                }
+                Some(exited_pid) = exit_rx.recv() => {
+                    let outcome = on_tracked_exit(
+                        std::mem::replace(&mut state, FgState::NotTracked),
+                        exited_pid,
+                    );
+                    apply_outcome(
+                        outcome,
+                        &mut state,
+                        &mut grace_timer,
+                        self.grace_duration,
+                        event_tx,
+                        &exit_tx,
+                    )
+                    .await;
+                }
+                () = poll_grace_timer(&mut grace_timer) => {
+                    // Timer just fired; drop it so the next select
+                    // doesn't poll a completed future.
+                    grace_timer = None;
+                    let outcome = on_grace_timeout(
+                        std::mem::replace(&mut state, FgState::NotTracked),
+                    );
+                    apply_outcome(
+                        outcome,
+                        &mut state,
+                        &mut grace_timer,
+                        self.grace_duration,
+                        event_tx,
+                        &exit_tx,
+                    )
+                    .await;
+                }
+                maybe = activation_rx.recv() => {
+                    let Some(activation) = maybe else { break; };
+                    self.handle_activation(
+                        activation,
+                        self_pid,
+                        &mut state,
+                        &mut grace_timer,
+                        event_tx,
+                        &exit_tx,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        state
+    }
+
+    /// Drive a single KWin activation through the gate and the
+    /// transition state machine.
+    async fn handle_activation(
+        &self,
+        activation: Activation,
+        self_pid: u32,
+        state: &mut FgState,
+        grace_timer: &mut Option<Pin<Box<Sleep>>>,
+        event_tx: &mpsc::Sender<GameEvent>,
+        exit_tx: &mpsc::UnboundedSender<u32>,
+    ) {
+        debug!(
+            pid = activation.pid,
+            fullscreen = activation.is_fullscreen,
+            resource_class = %activation.resource_class,
+            caption = %activation.caption,
+            "foreground window activated"
+        );
+        if activation.pid == self_pid {
+            return;
+        }
+        let decision = self
+            .gate
+            .decide(GateInput {
+                pid: activation.pid,
+                window_is_fullscreen: activation.is_fullscreen,
+            })
+            .await;
+        debug!(pid = activation.pid, decision = ?decision, "gate decision");
+        let meta = ForegroundMeta {
+            pid: activation.pid,
+            resource_class: activation.resource_class,
+            caption: activation.caption,
+        };
+        let outcome = next_action(
+            std::mem::replace(state, FgState::NotTracked),
+            &meta,
+            decision,
+        );
+        apply_outcome(
+            outcome,
+            state,
+            grace_timer,
+            self.grace_duration,
+            event_tx,
+            exit_tx,
+        )
+        .await;
     }
 }
 
@@ -297,63 +385,70 @@ fn script_path() -> Result<PathBuf> {
     Ok(dir.join("kwin-foreground.js"))
 }
 
-/// Issue whatever events a computed transition calls for, and set up
-/// a pidfd-based exit watcher for any newly-tracked PID so the
-/// session closes promptly if the process exits without the
-/// foreground ever changing.
-async fn apply_transition(
-    transition: Transition,
-    new_pid: u32,
-    current: &mut Option<AcceptedForeground>,
+/// Wait for the grace timer to fire, if one is armed. When none is
+/// armed the future is pending forever, which is what we want in the
+/// `tokio::select!` loop — the branch is inert until a timer exists.
+async fn poll_grace_timer(timer: &mut Option<Pin<Box<Sleep>>>) {
+    match timer {
+        Some(sleep) => sleep.as_mut().await,
+        None => pending::<()>().await,
+    }
+}
+
+/// Process the events in `outcome`, roll forward `state`, and apply
+/// the timer op. A newly-emitted `Start` arms a pidfd watcher on the
+/// new pid so the session closes promptly if the process exits
+/// without the foreground ever changing.
+async fn apply_outcome(
+    outcome: Outcome,
+    state: &mut FgState,
+    grace_timer: &mut Option<Pin<Box<Sleep>>>,
+    grace_duration: Duration,
     events: &mpsc::Sender<GameEvent>,
     exit_tx: &mpsc::UnboundedSender<u32>,
 ) {
     let now = OffsetDateTime::now_utc();
-    match transition {
-        Transition::None => {}
-        Transition::Stop { key } => {
-            let _ = events.send(GameEvent::Stopped { key, at: now }).await;
-            *current = None;
+    let Outcome {
+        events: transition_events,
+        state: new_state,
+        timer,
+    } = outcome;
+
+    for ev in transition_events {
+        match ev {
+            TransitionEvent::Start {
+                key, display_name, ..
+            } => {
+                // The post-transition state is the one carrying the
+                // just-started pid; grab it while we still have a
+                // borrow on `new_state`.
+                let pid = new_state.current().map(|af| af.pid);
+                let _ = events
+                    .send(GameEvent::Started {
+                        key,
+                        display_name,
+                        at: now,
+                    })
+                    .await;
+                if let Some(pid) = pid {
+                    let _ = pidfd::watch(pid, exit_tx.clone());
+                }
+            }
+            TransitionEvent::Stop { key } => {
+                let _ = events.send(GameEvent::Stopped { key, at: now }).await;
+            }
         }
-        Transition::Start {
-            key,
-            executable_path,
-            display_name,
-        } => {
-            let _ = events
-                .send(GameEvent::Started {
-                    key: key.clone(),
-                    display_name,
-                    at: now,
-                })
-                .await;
-            let _ = pidfd::watch(new_pid, exit_tx.clone());
-            *current = Some(AcceptedForeground {
-                pid: new_pid,
-                key,
-                executable_path,
-            });
+    }
+
+    *state = new_state;
+
+    match timer {
+        TimerOp::NoChange => {}
+        TimerOp::Start => {
+            *grace_timer = Some(Box::pin(tokio::time::sleep(grace_duration)));
         }
-        Transition::Switch {
-            stop,
-            start,
-            executable_path,
-            display_name,
-        } => {
-            let _ = events.send(GameEvent::Stopped { key: stop, at: now }).await;
-            let _ = events
-                .send(GameEvent::Started {
-                    key: start.clone(),
-                    display_name,
-                    at: now,
-                })
-                .await;
-            let _ = pidfd::watch(new_pid, exit_tx.clone());
-            *current = Some(AcceptedForeground {
-                pid: new_pid,
-                key: start,
-                executable_path,
-            });
+        TimerOp::Cancel => {
+            *grace_timer = None;
         }
     }
 }

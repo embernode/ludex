@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ludex_core::{default_database_path, Database};
@@ -18,7 +19,10 @@ use crate::idle::{self, IdleTracker};
 use crate::session_manager::{SessionManager, SharedBlocklist};
 use crate::sleep::{self, SleepTracker};
 use crate::sources::{KWinForegroundSource, SteamSource};
-use ludex_core::repo::{DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, GPU_MEMORY_THRESHOLD_BYTES};
+use ludex_core::repo::{
+    ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
+    GPU_MEMORY_THRESHOLD_BYTES,
+};
 
 const EVENT_CHANNEL_CAPACITY: usize = 128;
 const NOTIFICATION_CHANNEL_CAPACITY: usize = 64;
@@ -53,6 +57,12 @@ pub async fn run() -> Result<()> {
     info!(
         gpu_memory_threshold_bytes = gate_config.gpu_memory_threshold_bytes,
         "gate configuration loaded"
+    );
+
+    let alt_tab_grace = resolve_alt_tab_grace(&db).await;
+    info!(
+        alt_tab_grace_seconds = alt_tab_grace.as_secs(),
+        "alt-tab grace window loaded"
     );
 
     let enrichment_ctx = Arc::new(EnrichmentContext::detect_from_env());
@@ -144,7 +154,8 @@ pub async fn run() -> Result<()> {
         tokio::spawn(async move { crate::backup::run_scheduler(db, sd).await })
     };
 
-    let source_handles = spawn_sources(event_tx, shutdown_rx.clone(), gate_config).await;
+    let source_handles =
+        spawn_sources(event_tx, shutdown_rx.clone(), gate_config, alt_tab_grace).await;
 
     // Session manager runs on its own task so the main task stays free
     // to handle the shutdown signal.
@@ -185,6 +196,7 @@ async fn spawn_sources(
     event_tx: mpsc::Sender<crate::event::GameEvent>,
     shutdown_rx: watch::Receiver<bool>,
     gate_config: GateConfig,
+    alt_tab_grace: Duration,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     let mut handles = Vec::new();
 
@@ -201,7 +213,7 @@ async fn spawn_sources(
     }
 
     if KWinForegroundSource::is_kwin_available().await {
-        let kwin = KWinForegroundSource::new(Gate::new(gate_config));
+        let kwin = KWinForegroundSource::new(Gate::new(gate_config), alt_tab_grace);
         let tx = event_tx.clone();
         let sd = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
@@ -243,6 +255,27 @@ async fn resolve_gate_config(db: &Database) -> GateConfig {
         }
     }
     config
+}
+
+/// Resolve the alt-tab grace window from the settings table,
+/// defaulting to the compiled-in value on missing row or read error.
+/// Read once at startup (same live-reload caveat as the gate config).
+async fn resolve_alt_tab_grace(db: &Database) -> Duration {
+    match db
+        .settings()
+        .get_u64(ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS)
+        .await
+    {
+        Ok(v) => Duration::from_secs(v),
+        Err(e) => {
+            warn!(
+                error = %e,
+                setting = ALT_TAB_GRACE_SECONDS,
+                "settings read failed; using compiled-in default"
+            );
+            Duration::from_secs(DEFAULT_ALT_TAB_GRACE_SECONDS)
+        }
+    }
 }
 
 async fn wait_for_shutdown() {

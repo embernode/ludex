@@ -33,6 +33,18 @@ pub const BACKUP_RETENTION_COUNT: &str = "backup_retention_count";
 /// Default for [`BACKUP_RETENTION_COUNT`]: two weeks of dailies.
 pub const DEFAULT_BACKUP_RETENTION_COUNT: u64 = 14;
 
+/// Key for the grace window (seconds) between the tracked game
+/// losing foreground and the session actually closing. Exists so
+/// alt-tabbing to a browser and back doesn't split one session into
+/// many and inflate the per-application run count.
+pub const ALT_TAB_GRACE_SECONDS: &str = "alt_tab_grace_seconds";
+
+/// Default for [`ALT_TAB_GRACE_SECONDS`]: fifteen seconds. Long
+/// enough to cover a quick look at a chat window; short enough that
+/// a real session end is recorded close to the user's perception of
+/// "I stopped playing".
+pub const DEFAULT_ALT_TAB_GRACE_SECONDS: u64 = 15;
+
 /// Typed access to the `settings` table.
 pub struct SettingsRepo<'a> {
     pool: &'a SqlitePool,
