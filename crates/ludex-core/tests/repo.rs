@@ -607,6 +607,76 @@ async fn settings_get_u64_rejects_non_numeric() {
     assert!(err.to_string().contains("u64"), "got: {err}");
 }
 
+/// Blocking an application removes its sessions from the
+/// dashboard aggregates — matches the behaviour users see in the
+/// Games + Recent GUI views. Covers the dashboard-shows-blocked
+/// bug the "hide blocked from views" commit didn't catch.
+#[tokio::test]
+async fn daily_playtime_since_excludes_sessions_from_blocked_apps() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+
+    // Two applications, each with a session on the same day.
+    let kept = apps.create(sample_new_app()).await.unwrap();
+    let mut blocked_new = sample_new_app();
+    blocked_new.launcher_id = "999".into();
+    blocked_new.product_name = "To Block".into();
+    let blocked = apps.create(blocked_new).await.unwrap();
+
+    let at = datetime!(2026-04-10 12:00:00 UTC);
+    for (app_id, seconds) in [(kept.id, 600_i64), (blocked.id, 3_600_i64)] {
+        let s = sessions.begin(app_id, at).await.unwrap();
+        sessions
+            .close_and_rollup(
+                s.id,
+                app_id,
+                RuntimeSnapshot {
+                    full_runtime_seconds: seconds,
+                    interactive_runtime_seconds: seconds,
+                    at: at + Duration::seconds(seconds),
+                },
+                ExitReason::Terminated,
+            )
+            .await
+            .unwrap();
+    }
+
+    // Baseline: both apps contribute.
+    let before = sessions
+        .daily_playtime_since(datetime!(2026-04-01 00:00:00 UTC))
+        .await
+        .unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].full_runtime_seconds, 4_200);
+    assert_eq!(before[0].session_count, 2);
+
+    // Block the noisier app; aggregate drops to just the kept one.
+    let blocked_key = GameKey::new(blocked.launcher_type, blocked.launcher_id.clone());
+    db.blocked()
+        .insert(&blocked_key, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+
+    let after = sessions
+        .daily_playtime_since(datetime!(2026-04-01 00:00:00 UTC))
+        .await
+        .unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].full_runtime_seconds, 600);
+    assert_eq!(after[0].session_count, 1);
+
+    // Unblocking brings it back on the next call — no cache to
+    // invalidate, the subquery re-runs.
+    db.blocked().remove(&blocked_key).await.unwrap();
+    let restored = sessions
+        .daily_playtime_since(datetime!(2026-04-01 00:00:00 UTC))
+        .await
+        .unwrap();
+    assert_eq!(restored[0].full_runtime_seconds, 4_200);
+    assert_eq!(restored[0].session_count, 2);
+}
+
 #[tokio::test]
 async fn daily_playtime_since_empty_when_no_sessions_match() {
     let db = Database::open_memory().await.unwrap();

@@ -150,3 +150,13 @@ export function onSessionEnded(
 export function onDaemonReconnected(cb: () => void): Promise<UnlistenFn> {
     return listen<null>('ludex:daemon-reconnected', () => cb());
 }
+
+/**
+ * Fires after a successful `blockApplication` / `unblockApplication`
+ * call. Filtered views (Games, Recent, Dashboard) subscribe so the
+ * blocklist change takes effect instantly instead of waiting for
+ * the next session event.
+ */
+export function onBlocklistChanged(cb: () => void): Promise<UnlistenFn> {
+    return listen<null>('ludex:blocklist-changed', () => cb());
+}

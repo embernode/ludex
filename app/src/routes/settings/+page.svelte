@@ -6,6 +6,7 @@
         getGpuMemoryThresholdBytes,
         listApplications,
         listBlockedApplicationIds,
+        onBlocklistChanged,
         onDaemonReconnected,
         setGpuMemoryThresholdBytes,
         unblockApplication,
@@ -85,9 +86,14 @@
 
     onMount(() => {
         load();
-        const unlisten: Promise<UnlistenFn> = onDaemonReconnected(load);
+        const unlisteners: Promise<UnlistenFn>[] = [
+            onDaemonReconnected(load),
+            onBlocklistChanged(load),
+        ];
         return () => {
-            unlisten.then((u) => u()).catch(() => {});
+            for (const p of unlisteners) {
+                p.then((u) => u()).catch(() => {});
+            }
         };
     });
 </script>

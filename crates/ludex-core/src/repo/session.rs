@@ -135,18 +135,31 @@ impl<'a> SessionRepo<'a> {
     /// (callers that need a continuous range fill zeros). Includes
     /// open sessions — their runtime is the most recent heartbeat
     /// value, which is good enough for a live dashboard.
+    ///
+    /// Sessions owned by applications present in the
+    /// `blocked_applications` table are excluded — the dashboard
+    /// should mirror the Games / Recent views, and hiding a game
+    /// shouldn't still have it contributing to the heatmap totals.
+    /// The subquery re-evaluates per call, so block/unblock changes
+    /// surface on the very next fetch with no cache to invalidate.
     pub async fn daily_playtime_since(&self, cutoff: OffsetDateTime) -> Result<Vec<DailyPlaytime>> {
         // CAST around SUM/COUNT pins the result type to SQLite
         // INTEGER so sqlx's i64 decoder doesn't complain about the
         // default NUMERIC affinity of aggregate columns.
-        let sql = "SELECT DATE(started_at) AS date, \
-            CAST(COALESCE(SUM(full_runtime_seconds), 0) AS INTEGER) AS full_runtime_seconds, \
-            CAST(COALESCE(SUM(interactive_runtime_seconds), 0) AS INTEGER) AS interactive_runtime_seconds, \
+        let sql = "SELECT DATE(s.started_at) AS date, \
+            CAST(COALESCE(SUM(s.full_runtime_seconds), 0) AS INTEGER) AS full_runtime_seconds, \
+            CAST(COALESCE(SUM(s.interactive_runtime_seconds), 0) AS INTEGER) AS interactive_runtime_seconds, \
             CAST(COUNT(*) AS INTEGER) AS session_count \
-            FROM sessions \
-            WHERE started_at >= ? \
-            GROUP BY DATE(started_at) \
-            ORDER BY DATE(started_at) ASC";
+            FROM sessions s \
+            WHERE s.started_at >= ? \
+              AND s.application_id NOT IN ( \
+                SELECT a.id FROM applications a \
+                JOIN blocked_applications b \
+                  ON b.launcher_type = a.launcher_type \
+                 AND b.launcher_id   = a.launcher_id \
+              ) \
+            GROUP BY DATE(s.started_at) \
+            ORDER BY DATE(s.started_at) ASC";
         sqlx::query_as::<_, DailyPlaytime>(sql)
             .bind(cutoff)
             .fetch_all(self.pool)

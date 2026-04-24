@@ -4,6 +4,7 @@
     import {
         listBlockedApplicationIds,
         listRecentSessions,
+        onBlocklistChanged,
         onDaemonReconnected,
         onSessionEnded,
         onSessionStarted,
@@ -44,6 +45,7 @@
             onSessionStarted(refresh),
             onSessionEnded(refresh),
             onDaemonReconnected(refresh),
+            onBlocklistChanged(refresh),
         ];
         return () => {
             for (const p of unlisteners) {

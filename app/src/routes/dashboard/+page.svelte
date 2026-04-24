@@ -10,6 +10,7 @@
     import { observeTheme, type Theme } from '$lib/theme';
     import {
         listDailyPlaytime,
+        onBlocklistChanged,
         onDaemonReconnected,
         onSessionEnded,
         onSessionStarted,
@@ -45,6 +46,7 @@
             onSessionStarted(refresh),
             onSessionEnded(refresh),
             onDaemonReconnected(refresh),
+            onBlocklistChanged(refresh),
         ];
         return () => {
             unlistenTheme();

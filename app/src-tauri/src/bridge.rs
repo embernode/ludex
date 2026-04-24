@@ -46,6 +46,15 @@ pub(crate) const EVENT_SESSION_ENDED: &str = "ludex:session-ended";
 /// data they cached may be stale. Not emitted on the first-ever
 /// connect (the page's own `onMount` fetch handles that case).
 pub(crate) const EVENT_DAEMON_RECONNECTED: &str = "ludex:daemon-reconnected";
+/// Tauri event emitted after a successful `block_application` /
+/// `unblock_application`. Listeners refresh so filtered views
+/// (Games, Recent, Dashboard) reflect the new blocklist without
+/// waiting for a session event. Emitted from the bridge rather
+/// than as a D-Bus signal from the daemon because every block
+/// path today goes through these Tauri commands — a future CLI
+/// `ludex block` would need the daemon-side signal, but we don't
+/// have one yet.
+pub(crate) const EVENT_BLOCKLIST_CHANGED: &str = "ludex:blocklist-changed";
 
 /// Payload for the `ludex:session-ended` Tauri event.
 #[derive(Debug, Clone, Serialize)]
@@ -199,21 +208,38 @@ pub(crate) async fn list_blocked_application_ids(
         .map_err(|e| friendly(&e))
 }
 
-/// `invoke('block_application', { id })`.
+/// `invoke('block_application', { id })`. On success emits
+/// `EVENT_BLOCKLIST_CHANGED` so every open page can refresh.
 #[tauri::command]
-pub(crate) async fn block_application(bridge: BridgeState<'_>, id: i64) -> Result<(), String> {
+pub(crate) async fn block_application(
+    app: AppHandle,
+    bridge: BridgeState<'_>,
+    id: i64,
+) -> Result<(), String> {
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
-    proxy.block_application(id).await.map_err(|e| friendly(&e))
+    proxy
+        .block_application(id)
+        .await
+        .map_err(|e| friendly(&e))?;
+    let _ = app.emit(EVENT_BLOCKLIST_CHANGED, ());
+    Ok(())
 }
 
-/// `invoke('unblock_application', { id })`.
+/// `invoke('unblock_application', { id })`. On success emits
+/// `EVENT_BLOCKLIST_CHANGED` so every open page can refresh.
 #[tauri::command]
-pub(crate) async fn unblock_application(bridge: BridgeState<'_>, id: i64) -> Result<(), String> {
+pub(crate) async fn unblock_application(
+    app: AppHandle,
+    bridge: BridgeState<'_>,
+    id: i64,
+) -> Result<(), String> {
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
     proxy
         .unblock_application(id)
         .await
-        .map_err(|e| friendly(&e))
+        .map_err(|e| friendly(&e))?;
+    let _ = app.emit(EVENT_BLOCKLIST_CHANGED, ());
+    Ok(())
 }
 
 /// `invoke('get_gpu_memory_threshold_bytes')`.
