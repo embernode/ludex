@@ -116,7 +116,6 @@
 <main>
     <header>
         <h1>Games</h1>
-        <button onclick={refresh} disabled={loading}>Refresh</button>
     </header>
 
     {#if loading && apps.length === 0}

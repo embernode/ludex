@@ -66,7 +66,6 @@
 <main>
     <header>
         <h1>Recent sessions</h1>
-        <button onclick={refresh} disabled={loading}>Refresh</button>
     </header>
 
     {#if loading && sessions.length === 0}
