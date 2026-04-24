@@ -41,7 +41,7 @@ pub fn run() {
             // is registered so `get_webview_window("main")` resolves.
             // The bridge handle lets the tray's tooltip worker call
             // GetApplication(id) to resolve the active game's name.
-            tray::install(app.handle(), Arc::clone(&bridge))?;
+            tray::install(app.handle(), &bridge)?;
 
             Ok(())
         })

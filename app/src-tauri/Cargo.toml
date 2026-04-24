@@ -25,7 +25,10 @@ serde = { workspace = true }
 # the deprecated libayatana-appindicator C library. We render the
 # tray through `ksni` (pure-Rust StatusNotifierItem) instead — see
 # `src/tray.rs` — so the feature stays off.
-tauri = { version = "2" }
+# `image-png` enables the PNG decoder inside `tauri::image::Image`,
+# which `src/tray.rs` uses to decode both icon variants at runtime
+# for the theme-aware tray + window icon.
+tauri = { version = "2", features = ["image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
