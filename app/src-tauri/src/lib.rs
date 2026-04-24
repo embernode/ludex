@@ -32,14 +32,16 @@ pub fn run() {
             // so D-Bus signals from the daemon surface as Tauri
             // events the frontend can listen for.
             let handle = app.handle().clone();
-            let bridge = Arc::clone(&bridge);
+            let forwarder_bridge = Arc::clone(&bridge);
             tauri::async_runtime::spawn(async move {
-                bridge::run_signal_forwarder(handle, bridge).await;
+                bridge::run_signal_forwarder(handle, forwarder_bridge).await;
             });
 
             // Install the tray icon. Must run after the main window
             // is registered so `get_webview_window("main")` resolves.
-            tray::install(app.handle())?;
+            // The bridge handle lets the tray's tooltip worker call
+            // GetApplication(id) to resolve the active game's name.
+            tray::install(app.handle(), Arc::clone(&bridge))?;
 
             Ok(())
         })

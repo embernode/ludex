@@ -3,37 +3,41 @@
 //! Builds a StatusNotifierItem tray icon with a Show / Hide / Quit
 //! menu, wires left-click to toggle the main window, and intercepts
 //! close-window so the app minimises to the tray instead of exiting.
-//! Tooltip text flips between the idle state and "session active"
-//! based on the `ludex:session-started` / `ludex:session-ended`
-//! events that [`crate::bridge`] forwards from the daemon's D-Bus
-//! signals.
+//! Tooltip text reflects the currently-active session — idle shows
+//! `ludex`, a running session shows `ludex · <game name>`. The name
+//! comes from a `GetApplication(id)` D-Bus call driven by the
+//! `ludex:session-started` / `ludex:session-ended` Tauri events
+//! that [`crate::bridge`] forwards.
 //!
 //! We use [`ksni`] rather than Tauri's built-in `tray-icon` because
 //! the latter pulls in the abandoned `libappindicator-rs` crate
-//! (last commit 2022) which wraps the deprecated
-//! `libayatana-appindicator` C library — producing a deprecation
-//! warning on every startup. `ksni` is a pure-Rust implementation
-//! of the StatusNotifierItem spec and talks directly to the D-Bus
-//! host (KDE Plasma, GNOME-with-extension, Cinnamon, Xfce, Budgie),
-//! so no C dependency is involved.
+//! which wraps the deprecated `libayatana-appindicator` C library.
+//! `ksni` is a pure-Rust implementation of the StatusNotifierItem
+//! spec and talks directly to the D-Bus host, so no C dependency
+//! is involved.
 //!
-//! The tooltip deliberately does *not* include the game's name —
-//! that would require a D-Bus `GetApplication` RPC for every
-//! `session-started` event, and Tauri's `listen_any` callback is
-//! synchronous. Adding name resolution is a follow-up behind a
-//! worker channel.
+//! The Tauri listener callback is synchronous while the name-
+//! resolution RPC is async, so the listener only pushes a
+//! [`TooltipUpdate`] onto an unbounded channel — the worker task
+//! owned by this module picks it up, calls the bridge's proxy, and
+//! updates the tray via the ksni [`Handle`].
 
 use std::sync::{Arc, OnceLock};
 
 use ksni::menu::StandardItem;
 use ksni::{Handle, Icon, MenuItem, ToolTip, Tray, TrayMethods};
 use tauri::{AppHandle, Listener, Manager, Runtime, WindowEvent};
+use tokio::sync::mpsc;
 
-use crate::bridge::{EVENT_SESSION_ENDED, EVENT_SESSION_STARTED};
+use crate::bridge::{TrackerBridge, EVENT_SESSION_ENDED, EVENT_SESSION_STARTED};
 
 const MAIN_WINDOW: &str = "main";
 const TOOLTIP_IDLE: &str = "ludex";
-const TOOLTIP_ACTIVE: &str = "ludex · session active";
+/// Shown between `session-started` and the moment `GetApplication`
+/// resolves the name — usually a single D-Bus round trip, but we
+/// flash something rather than the idle text so the user sees the
+/// session is being tracked.
+const TOOLTIP_ACTIVE_UNRESOLVED: &str = "ludex · session active";
 
 struct LudexTray<R: Runtime> {
     app: AppHandle<R>,
@@ -90,10 +94,22 @@ impl<R: Runtime> Tray for LudexTray<R> {
     }
 }
 
+/// Message pushed by the D-Bus event listeners onto the tooltip
+/// worker's channel. Synchronous listeners can't await the name
+/// lookup themselves, so they delegate via this.
+#[derive(Debug)]
+enum TooltipUpdate {
+    Started(i64),
+    Ended,
+}
+
 /// Spawn the StatusNotifierItem service, install the close-to-tray
-/// hook on the main window, and register listeners that flip the
-/// tooltip on session events.
-pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
+/// hook on the main window, spawn the tooltip worker, and register
+/// listeners that push session events onto the worker's channel.
+pub(crate) fn install<R: Runtime>(
+    app: &AppHandle<R>,
+    bridge: Arc<TrackerBridge>,
+) -> anyhow::Result<()> {
     // Convert Tauri's default window icon to ksni's ARGB32 byte
     // layout — Tauri stores RGBA8, the StatusNotifierItem spec
     // wants ARGB32.
@@ -109,8 +125,9 @@ pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
     };
 
     // Spawning is async; the handle is filled in once the service
-    // is up. Listener callbacks read the OnceLock; if it's empty
-    // (service hasn't finished starting yet, or failed), they no-op.
+    // is up. The tooltip worker and the listeners both share the
+    // same OnceLock — they see the handle as soon as the spawn
+    // finishes, and no-op before then.
     let handle_slot: Arc<OnceLock<Handle<LudexTray<R>>>> = Arc::new(OnceLock::new());
     let handle_slot_for_spawn = Arc::clone(&handle_slot);
     tauri::async_runtime::spawn(async move {
@@ -140,31 +157,89 @@ pub(crate) fn install<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
         });
     }
 
-    // Flip tooltip on session events. Callbacks are synchronous; we
-    // spawn the async update onto Tauri's runtime.
-    let slot_started = Arc::clone(&handle_slot);
-    app.listen_any(EVENT_SESSION_STARTED, move |_event| {
-        update_tooltip(&slot_started, TOOLTIP_ACTIVE);
+    // The worker owns the bridge handle and serialises tooltip
+    // updates, so rapid session-started / session-ended events stay
+    // in order even though the D-Bus round-trips are async.
+    let (tooltip_tx, tooltip_rx) = mpsc::unbounded_channel::<TooltipUpdate>();
+    let handle_slot_for_worker = Arc::clone(&handle_slot);
+    tauri::async_runtime::spawn(async move {
+        run_tooltip_worker::<R>(tooltip_rx, handle_slot_for_worker, bridge).await;
     });
-    let slot_ended = Arc::clone(&handle_slot);
+
+    // Payload shape: session-started carries a JSON-encoded i64
+    // (just the number as a string); session-ended carries a JSON
+    // object but we only need the transition, not the id.
+    let tx_started = tooltip_tx.clone();
+    app.listen_any(EVENT_SESSION_STARTED, move |event| {
+        let Ok(id) = event.payload().parse::<i64>() else {
+            return;
+        };
+        let _ = tx_started.send(TooltipUpdate::Started(id));
+    });
+    let tx_ended = tooltip_tx;
     app.listen_any(EVENT_SESSION_ENDED, move |_event| {
-        update_tooltip(&slot_ended, TOOLTIP_IDLE);
+        let _ = tx_ended.send(TooltipUpdate::Ended);
     });
 
     Ok(())
 }
 
-fn update_tooltip<R: Runtime>(slot: &Arc<OnceLock<Handle<LudexTray<R>>>>, text: &'static str) {
-    let Some(handle) = slot.get().cloned() else {
+/// Drain [`TooltipUpdate`]s from the listener channel. On every
+/// `Started(id)` we optimistically set the unresolved tooltip so the
+/// user has feedback immediately, then look up the name and land
+/// the final text. On `Ended` we reset to idle.
+async fn run_tooltip_worker<R: Runtime>(
+    mut rx: mpsc::UnboundedReceiver<TooltipUpdate>,
+    handle_slot: Arc<OnceLock<Handle<LudexTray<R>>>>,
+    bridge: Arc<TrackerBridge>,
+) {
+    while let Some(update) = rx.recv().await {
+        match update {
+            TooltipUpdate::Started(id) => {
+                apply_tooltip(&handle_slot, TOOLTIP_ACTIVE_UNRESOLVED.to_owned()).await;
+                let name = resolve_app_name(&bridge, id).await;
+                let text = match name {
+                    Some(n) if !n.trim().is_empty() => format!("ludex · {n}"),
+                    _ => TOOLTIP_ACTIVE_UNRESOLVED.to_owned(),
+                };
+                apply_tooltip(&handle_slot, text).await;
+            }
+            TooltipUpdate::Ended => {
+                apply_tooltip(&handle_slot, TOOLTIP_IDLE.to_owned()).await;
+            }
+        }
+    }
+}
+
+async fn resolve_app_name(bridge: &Arc<TrackerBridge>, id: i64) -> Option<String> {
+    let proxy = match bridge.proxy().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!(error = %e, "tooltip worker: bridge proxy unavailable");
+            return None;
+        }
+    };
+    match proxy.get_application(id).await {
+        Ok(apps) => apps.into_iter().next().map(|a| a.product_name),
+        Err(e) => {
+            tracing::debug!(error = %e, id, "tooltip worker: GetApplication failed");
+            None
+        }
+    }
+}
+
+async fn apply_tooltip<R: Runtime>(
+    handle_slot: &Arc<OnceLock<Handle<LudexTray<R>>>>,
+    text: String,
+) {
+    let Some(handle) = handle_slot.get().cloned() else {
         return;
     };
-    tauri::async_runtime::spawn(async move {
-        handle
-            .update(|t: &mut LudexTray<R>| {
-                text.clone_into(&mut t.tooltip_title);
-            })
-            .await;
-    });
+    handle
+        .update(move |t: &mut LudexTray<R>| {
+            t.tooltip_title = text;
+        })
+        .await;
 }
 
 fn to_ksni_icon(rgba: &[u8], width: u32, height: u32) -> anyhow::Result<Icon> {
