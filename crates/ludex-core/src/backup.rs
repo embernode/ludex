@@ -205,12 +205,15 @@ pub async fn restore(source: &Path, dst: &Path) -> Result<()> {
         db.close().await;
     }
 
-    // Tear down the live DB's files before the rename so SQLite
-    // doesn't re-apply stale WAL against the restored main file on
-    // the daemon's next startup.
+    // Tear down the live DB's WAL + shm sidecars before the
+    // rename so SQLite doesn't replay stale WAL against the
+    // restored main file on the daemon's next startup. The main
+    // file itself doesn't need an explicit remove — POSIX
+    // rename(2) overwrites `dst` atomically, which avoids the
+    // brief "no live DB exists" window a separate remove would
+    // open.
     let dst_wal = sibling_with_suffix(dst, "-wal");
     let dst_shm = sibling_with_suffix(dst, "-shm");
-    let _ = fs::remove_file(dst);
     let _ = fs::remove_file(&dst_wal);
     let _ = fs::remove_file(&dst_shm);
     // And any sidecars that the migration run on the staging file
