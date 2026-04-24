@@ -6,6 +6,28 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
+/**
+ * Whether we're running inside a Tauri webview. Detected at module
+ * load via the presence of `__TAURI_INTERNALS__`, which Tauri
+ * injects into `window` before any script runs. Outside Tauri — e.g.
+ * `pnpm run dev` opened in a regular browser to bisect a styling
+ * issue — we skip the event-listener wiring so the page loads
+ * cleanly instead of logging `transformCallback` errors.
+ */
+const IN_TAURI =
+    typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+/** `listen()` that returns a no-op unlisten when not in Tauri. */
+function safeListen<T>(
+    event: string,
+    handler: (event: { payload: T }) => void,
+): Promise<UnlistenFn> {
+    if (!IN_TAURI) {
+        return Promise.resolve(() => {});
+    }
+    return listen<T>(event, handler);
+}
+
 /** An application row sourced from `net.ludex.Tracker1.ListApplications`. */
 export interface ApplicationSummary {
     id: number;
@@ -145,19 +167,19 @@ export async function setPauseWhenBackgrounded(pause: boolean): Promise<void> {
 export function onApplicationAdded(
     cb: (applicationId: number) => void,
 ): Promise<UnlistenFn> {
-    return listen<number>('ludex:application-added', (event) => cb(event.payload));
+    return safeListen<number>('ludex:application-added', (event) => cb(event.payload));
 }
 
 export function onSessionStarted(
     cb: (applicationId: number) => void,
 ): Promise<UnlistenFn> {
-    return listen<number>('ludex:session-started', (event) => cb(event.payload));
+    return safeListen<number>('ludex:session-started', (event) => cb(event.payload));
 }
 
 export function onSessionEnded(
     cb: (payload: SessionEndedPayload) => void,
 ): Promise<UnlistenFn> {
-    return listen<SessionEndedPayload>('ludex:session-ended', (event) =>
+    return safeListen<SessionEndedPayload>('ludex:session-ended', (event) =>
         cb(event.payload),
     );
 }
@@ -172,7 +194,7 @@ export function onSessionEnded(
  * fetch already covers that case.
  */
 export function onDaemonReconnected(cb: () => void): Promise<UnlistenFn> {
-    return listen<null>('ludex:daemon-reconnected', () => cb());
+    return safeListen<null>('ludex:daemon-reconnected', () => cb());
 }
 
 /**
@@ -182,5 +204,5 @@ export function onDaemonReconnected(cb: () => void): Promise<UnlistenFn> {
  * the next session event.
  */
 export function onBlocklistChanged(cb: () => void): Promise<UnlistenFn> {
-    return listen<null>('ludex:blocklist-changed', () => cb());
+    return safeListen<null>('ludex:blocklist-changed', () => cb());
 }
