@@ -46,14 +46,13 @@ crates/
       session/             # lifecycle + persistence
       dbus/                # Tracker1 service
   ludex-cli/               # CLI client (binary) — talks to daemon over D-Bus
-  xtask/                   # cargo xtask helpers (packaging, lint, release)
-app/                       # Tauri + SvelteKit frontend (post-M5)
+app/                       # Tauri + SvelteKit frontend
   src/
   src-tauri/
 packaging/
-  systemd/ludex-daemon.service
-  PKGBUILD                 # AUR
-docs/                      # this file, architecture.md
+  ludex-daemon.service     # systemd --user unit (shipped)
+  PKGBUILD                 # AUR — planned
+docs/                      # this file, architecture.md, cli.md
 ```
 
 ## Milestones
@@ -194,14 +193,6 @@ they become user-visible or when neighbouring work lands.
 
 ### Post-M6 (unscheduled)
 
-- `systemd --user` packaging. `packaging/ludex-daemon.service`
-  so users can `systemctl --user enable --now ludex-daemon`
-  instead of launching the binary by hand. Shape: ExecStart the
-  installed `ludex-daemon`, `Restart=on-failure`, `Type=simple`,
-  runs unprivileged. Pair with the PKGBUILD the roadmap's M0
-  already named as the packaging priority. Not shipped yet —
-  today's CLI docs (`docs/cli.md`) reference `systemctl --user
-  stop ludex-daemon` aspirationally.
 - Overlay or transient notifications.
 - Localisation via `gettext`.
 - `ludex migrate` — optional importer for users with per-game time data in other formats.

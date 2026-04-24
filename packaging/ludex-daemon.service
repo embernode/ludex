@@ -1,0 +1,32 @@
+[Unit]
+Description=ludex gameplay-time tracker daemon
+Documentation=https://github.com/embernode/ludex
+# Start after the user session's graphical target is up — KWin has
+# to be running before the foreground-window source can register
+# its script. The daemon also tolerates a missing compositor
+# (logs a warning, foreground source disabled), but the common
+# case is a KDE login.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# Default to the cargo-install location the README documents.
+# Package builds (e.g. the AUR PKGBUILD) that drop the binary at
+# /usr/bin/ludex-daemon install a copy of this unit with that
+# path substituted.
+ExecStart=%h/.cargo/bin/ludex-daemon
+
+# On crash, wait five seconds then restart. Don't restart on a
+# clean shutdown (SIGTERM at logout) — that's the user asking us
+# to go away.
+Restart=on-failure
+RestartSec=5s
+
+# Soft hardening for an unprivileged user daemon. These don't
+# break the XDG paths the daemon reads / writes.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

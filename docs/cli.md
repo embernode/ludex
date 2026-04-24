@@ -20,6 +20,28 @@ drops `ludex` into `~/.cargo/bin`. Make sure that directory is on your
 Without the install step every command below works as
 `cargo run -p ludex-cli -- <subcommand>` from inside the repository.
 
+## Running the daemon
+
+`ludex-daemon` is the sibling binary that actually records
+sessions. The CLI talks to whatever instance of it the session
+bus exposes as `net.ludex.Tracker1`.
+
+The packaged systemd `--user` unit at `packaging/ludex-daemon.service`
+is the supported long-running setup — see
+[`packaging/README.md`](../packaging/README.md) for the
+install-and-enable steps. Short version:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp packaging/ludex-daemon.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now ludex-daemon
+```
+
+The `ludex backup restore` and `ludex merge` commands below both
+need the daemon stopped first; the examples use the
+`systemctl --user stop/start` pair that the unit file provides.
+
 ## Logging
 
 Every command honours the `LUDEX_LOG` environment variable, routed through

@@ -87,11 +87,22 @@ pnpm run build        # static bundle for Tauri
 
 ### Running the daemon
 
+For quick experimentation:
+
 ```sh
 cargo run -p ludex-daemon            # runs in the foreground
-# or build-then-run for longer sessions:
-cargo build --release -p ludex-daemon
-./target/release/ludex-daemon
+```
+
+For a long-running install, use the packaged systemd `--user`
+unit — see [`packaging/README.md`](packaging/README.md):
+
+```sh
+cargo install --path crates/ludex-daemon
+mkdir -p ~/.config/systemd/user
+cp packaging/ludex-daemon.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now ludex-daemon
+journalctl --user -u ludex-daemon -f
 ```
 
 Data lands at `$XDG_DATA_HOME/ludex/ludex.sqlite` (or
@@ -100,7 +111,9 @@ periodic database snapshots at
 `$XDG_DATA_HOME/ludex/backups/` by default.
 
 Control logging via `LUDEX_LOG=info` (or `debug`, `trace`;
-defaults to `info` for the daemon, `warn` for the CLI).
+defaults to `info` for the daemon, `warn` for the CLI). Under
+systemd, create a drop-in with `systemctl --user edit ludex-daemon`
+to set `Environment="LUDEX_LOG=debug"`.
 
 ### Running the UI in dev mode
 
