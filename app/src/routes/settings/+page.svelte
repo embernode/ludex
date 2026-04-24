@@ -241,28 +241,6 @@
         </section>
 
         <section>
-            <h2>Date & time format</h2>
-            <p class="description">
-                How timestamps are rendered in the Games, Recent, and
-                app-detail views. Short follows your system locale; ISO is
-                tabular and unambiguous; Relative reads as "2 hours ago".
-                Stored in-app only — no daemon round-trip.
-            </p>
-            <label class="field">
-                <span class="field-label">Format</span>
-                <select bind:value={tsFormat} onchange={saveTimestampFormat}>
-                    <option value="short">Short (locale)</option>
-                    <option value="iso">ISO (2026-04-24 18:30)</option>
-                    <option value="dmy">Day-first (24.04.2026 18:30)</option>
-                    <option value="relative">Relative (2 hours ago)</option>
-                </select>
-            </label>
-            <p class="hint">
-                Preview: {formatTimestamp(TS_SAMPLE, tsFormat)}
-            </p>
-        </section>
-
-        <section>
             <h2>Alt-tab grace window</h2>
             <p class="description">
                 Seconds to wait after a tracked game loses focus before closing
@@ -295,6 +273,28 @@
                     <span class="hint">Unsaved change.</span>
                 {/if}
             </div>
+        </section>
+
+        <section>
+            <h2>Date & time format</h2>
+            <p class="description">
+                How timestamps are rendered in the Games, Recent, and
+                app-detail views. Short follows your system locale; ISO is
+                tabular and unambiguous; Relative reads as "2 hours ago".
+                Stored in-app only — no daemon round-trip.
+            </p>
+            <label class="field">
+                <span class="field-label">Format</span>
+                <select bind:value={tsFormat} onchange={saveTimestampFormat}>
+                    <option value="short">Short (locale)</option>
+                    <option value="iso">ISO (2026-04-24 18:30)</option>
+                    <option value="dmy">Day-first (24.04.2026 18:30)</option>
+                    <option value="relative">Relative (2 hours ago)</option>
+                </select>
+            </label>
+            <p class="hint">
+                Preview: {formatTimestamp(TS_SAMPLE, tsFormat)}
+            </p>
         </section>
 
         <section class="blocked-section">
