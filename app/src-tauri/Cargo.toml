@@ -27,6 +27,7 @@ serde = { workspace = true }
 # `src/tray.rs` — so the feature stays off.
 tauri = { version = "2" }
 tauri-plugin-log = "2"
+tauri-plugin-opener = "2"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tracing = { workspace = true }
 zbus = { workspace = true }

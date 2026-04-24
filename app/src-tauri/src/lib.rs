@@ -22,6 +22,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
+        // Opens the repo link in the user's default browser via xdg-
+        // open; no network egress from ludex itself. The matching JS
+        // binding is `@tauri-apps/plugin-opener::openUrl`.
+        .plugin(tauri_plugin_opener::init())
         .manage(Arc::clone(&bridge))
         .setup(move |app| {
             // Spawn the signal forwarder on Tauri's async runtime

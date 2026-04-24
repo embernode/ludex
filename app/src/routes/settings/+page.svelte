@@ -1,6 +1,8 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import { getVersion } from '@tauri-apps/api/app';
     import type { UnlistenFn } from '@tauri-apps/api/event';
+    import { openUrl } from '@tauri-apps/plugin-opener';
     import {
         blockApplication,
         getAltTabGraceSeconds,
@@ -50,6 +52,21 @@
 
     /** A reference timestamp so the user can see each format in action. */
     const TS_SAMPLE = new Date(Date.now() - 2 * 3_600_000).toISOString();
+
+    /** Version resolved from tauri.conf.json on mount. Empty until
+     *  the Tauri API hands us the string. */
+    let appVersion = $state<string>('');
+    /** Public repo URL — kept in sync with `repository` in the
+     *  workspace Cargo.toml. */
+    const REPO_URL = 'https://github.com/embernode/ludex';
+
+    async function openRepo() {
+        try {
+            await openUrl(REPO_URL);
+        } catch (e) {
+            error = String(e);
+        }
+    }
 
     /** Blocked-games list filter. Case-insensitive substring match
      *  against product name and publisher. */
@@ -156,6 +173,13 @@
 
     onMount(() => {
         load();
+        // Version read is fire-and-forget; an old Tauri without
+        // this API just leaves the field blank.
+        getVersion()
+            .then((v) => {
+                appVersion = v;
+            })
+            .catch(() => {});
         const unlisteners: Promise<UnlistenFn>[] = [
             onDaemonReconnected(load),
             onBlocklistChanged(load),
@@ -326,6 +350,31 @@
                 {/if}
             </details>
         </section>
+
+        <section class="about">
+            <h2>About</h2>
+            <p class="about-tagline">Linux gameplay time tracker.</p>
+            <dl class="about-facts">
+                <dt>Version</dt>
+                <dd>{appVersion || '—'}</dd>
+                <dt>License</dt>
+                <dd>MIT OR Apache-2.0</dd>
+                <dt>Repository</dt>
+                <dd>
+                    <button
+                        type="button"
+                        class="link-button"
+                        onclick={openRepo}
+                    >
+                        {REPO_URL}
+                    </button>
+                </dd>
+            </dl>
+            <p class="about-privacy">
+                No telemetry. No network egress. Data stays under
+                <code>$XDG_DATA_HOME/ludex/</code>.
+            </p>
+        </section>
     {/if}
 </main>
 
@@ -363,6 +412,66 @@
         border-radius: 8px;
         padding: 1.25rem 1.5rem;
         margin-bottom: 1rem;
+    }
+
+    .about h2 {
+        margin-bottom: 0.75rem;
+    }
+
+    .about-tagline {
+        color: var(--text-secondary);
+        margin: 0 0 1rem;
+    }
+
+    .about-facts {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.25rem 1rem;
+        margin: 0 0 1rem;
+        font-size: 0.88rem;
+    }
+
+    .about-facts dt {
+        color: var(--text-subtle);
+        text-transform: uppercase;
+        font-size: 0.75rem;
+        letter-spacing: 0.03em;
+        align-self: center;
+    }
+
+    .about-facts dd {
+        margin: 0;
+        color: var(--text-secondary);
+    }
+
+    .link-button {
+        background: none;
+        border: none;
+        padding: 0;
+        color: var(--accent);
+        font: inherit;
+        cursor: pointer;
+        text-align: left;
+    }
+
+    .link-button:hover {
+        text-decoration: underline;
+    }
+
+    .about-privacy {
+        color: var(--text-muted);
+        font-size: 0.82rem;
+        margin: 0;
+        line-height: 1.5;
+    }
+
+    .about-privacy code {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        background: var(--code-bg);
+        color: var(--code-text);
+        padding: 0.1rem 0.35rem;
+        border-radius: 4px;
+        font-size: 0.8rem;
     }
 
     /* Collapsed section for the (potentially long) blocked-games
