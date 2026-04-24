@@ -44,6 +44,37 @@ ludex merge <src> <dst>
 systemctl --user start ludex-daemon
 ```
 
+## Updating the daemon during development
+
+`cargo install --path crates/ludex-daemon` atomically replaces the
+binary on disk, but the already-running systemd-managed process
+keeps its old mapping — so rebuilds don't take effect until the
+service cycles. The one-liner:
+
+```sh
+cargo install --path crates/ludex-daemon \
+  && systemctl --user restart ludex-daemon
+```
+
+On restart the daemon closes any in-flight sessions cleanly with
+`exit_reason = 'terminated'`, applies any pending SQLite
+migrations, and resumes — no data loss, but you do pay a
+session-boundary's worth of churn on each cycle.
+
+For tight iteration on the daemon itself, **stop the service and
+run the daemon in the foreground** instead:
+
+```sh
+systemctl --user stop ludex-daemon
+cargo run -p ludex-daemon          # Ctrl-C to exit
+# ... iterate ...
+systemctl --user start ludex-daemon
+```
+
+Foreground mode gives you inline stderr logs and a faster edit-
+compile loop; the service is the better answer once you're
+confident a build is stable.
+
 Logs go to the user journal by default. `LUDEX_LOG=debug` tuned
 via `systemctl --user edit ludex-daemon` (it creates a drop-in)
 if you need finer verbosity:
