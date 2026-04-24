@@ -131,6 +131,17 @@ export async function setAltTabGraceSeconds(seconds: number): Promise<void> {
     return invoke<void>('set_alt_tab_grace_seconds', { seconds });
 }
 
+/** Whether losing focus pauses the session. When false the session runs
+ *  until the game process exits. */
+export async function getPauseWhenBackgrounded(): Promise<boolean> {
+    return invoke<boolean>('get_pause_when_backgrounded');
+}
+
+/** Persist the focus-pause toggle. Live-reloaded. */
+export async function setPauseWhenBackgrounded(pause: boolean): Promise<void> {
+    return invoke<void>('set_pause_when_backgrounded', { pause });
+}
+
 export function onApplicationAdded(
     cb: (applicationId: number) => void,
 ): Promise<UnlistenFn> {

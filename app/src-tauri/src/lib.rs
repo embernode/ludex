@@ -58,6 +58,8 @@ pub fn run() {
             bridge::set_gpu_memory_threshold_bytes,
             bridge::get_alt_tab_grace_seconds,
             bridge::set_alt_tab_grace_seconds,
+            bridge::get_pause_when_backgrounded,
+            bridge::set_pause_when_backgrounded,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

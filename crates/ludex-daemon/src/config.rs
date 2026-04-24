@@ -30,6 +30,11 @@ pub struct TrackerConfig {
     /// a session actually closing. Read by the KWin source when
     /// arming its alt-tab grace timer.
     pub alt_tab_grace: Duration,
+    /// Whether losing focus should pause the session at all. When
+    /// `false`, the foreground source ignores background windows
+    /// entirely — sessions only end on process exit. When `true`
+    /// (default), the grace window above applies.
+    pub pause_when_backgrounded: bool,
 }
 
 /// Shared handle to the tunable config. Clone the `Arc` — the

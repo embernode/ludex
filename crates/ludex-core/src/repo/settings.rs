@@ -45,6 +45,19 @@ pub const ALT_TAB_GRACE_SECONDS: &str = "alt_tab_grace_seconds";
 /// "I stopped playing".
 pub const DEFAULT_ALT_TAB_GRACE_SECONDS: u64 = 15;
 
+/// Key for whether losing foreground focus should pause the session
+/// at all. When `true`, the foreground source enters the grace
+/// window described above and eventually closes the session. When
+/// `false`, background focus is ignored entirely — sessions only
+/// end on process exit. Mirrors the "do not pause when out of
+/// focus" toggle users asked for to match prior tools.
+pub const PAUSE_WHEN_BACKGROUNDED: &str = "pause_when_backgrounded";
+
+/// Default for [`PAUSE_WHEN_BACKGROUNDED`]: `true`, matching the
+/// pre-existing behaviour. Opt in to the "always count as
+/// playing" mode rather than changing what existing users see.
+pub const DEFAULT_PAUSE_WHEN_BACKGROUNDED: bool = true;
+
 /// Typed access to the `settings` table.
 pub struct SettingsRepo<'a> {
     pool: &'a SqlitePool,
@@ -110,5 +123,26 @@ impl<'a> SettingsRepo<'a> {
     /// Store a `u64` setting.
     pub async fn set_u64(&self, key: &str, value: u64) -> Result<()> {
         self.set_raw(key, &value.to_string()).await
+    }
+
+    /// Get a `bool` setting, returning `fallback` when the row is
+    /// absent. Accepts both numeric (`"0"` / `"1"`) and textual
+    /// (`"true"` / `"false"`) representations so a value written
+    /// by hand into the DB is still honoured.
+    pub async fn get_bool(&self, key: &str, fallback: bool) -> Result<bool> {
+        match self.get_raw(key).await? {
+            None => Ok(fallback),
+            Some(s) => match s.as_str() {
+                "1" | "true" => Ok(true),
+                "0" | "false" => Ok(false),
+                _ => Err(Error::Invariant("settings value is not a valid bool")),
+            },
+        }
+    }
+
+    /// Store a `bool` setting. Written as `"1"` / `"0"` for a
+    /// compact, locale-agnostic on-disk form.
+    pub async fn set_bool(&self, key: &str, value: bool) -> Result<()> {
+        self.set_raw(key, if value { "1" } else { "0" }).await
     }
 }

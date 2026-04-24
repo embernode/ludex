@@ -22,7 +22,7 @@ use crate::sleep::{self, SleepTracker};
 use crate::sources::{KWinForegroundSource, SteamSource};
 use ludex_core::repo::{
     ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
-    GPU_MEMORY_THRESHOLD_BYTES,
+    DEFAULT_PAUSE_WHEN_BACKGROUNDED, GPU_MEMORY_THRESHOLD_BYTES, PAUSE_WHEN_BACKGROUNDED,
 };
 
 const EVENT_CHANNEL_CAPACITY: usize = 128;
@@ -261,14 +261,31 @@ async fn resolve_tracker_config(db: &Database) -> TrackerConfig {
             Duration::from_secs(DEFAULT_ALT_TAB_GRACE_SECONDS)
         }
     };
+    let pause_when_backgrounded = match db
+        .settings()
+        .get_bool(PAUSE_WHEN_BACKGROUNDED, DEFAULT_PAUSE_WHEN_BACKGROUNDED)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                error = %e,
+                setting = PAUSE_WHEN_BACKGROUNDED,
+                "settings read failed; using compiled-in default"
+            );
+            DEFAULT_PAUSE_WHEN_BACKGROUNDED
+        }
+    };
     info!(
         gpu_memory_threshold_bytes = gate.gpu_memory_threshold_bytes,
         alt_tab_grace_seconds = alt_tab_grace.as_secs(),
+        pause_when_backgrounded,
         "tracker configuration loaded"
     );
     TrackerConfig {
         gate,
         alt_tab_grace,
+        pause_when_backgrounded,
     }
 }
 

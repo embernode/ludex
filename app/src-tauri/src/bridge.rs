@@ -89,6 +89,8 @@ pub(crate) trait Tracker {
     fn set_gpu_memory_threshold_bytes(&self, bytes: u64) -> zbus::Result<()>;
     fn get_alt_tab_grace_seconds(&self) -> zbus::Result<u64>;
     fn set_alt_tab_grace_seconds(&self, seconds: u64) -> zbus::Result<()>;
+    fn get_pause_when_backgrounded(&self) -> zbus::Result<bool>;
+    fn set_pause_when_backgrounded(&self, pause: bool) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn application_added(&self, application_id: i64) -> zbus::Result<()>;
@@ -289,6 +291,30 @@ pub(crate) async fn set_alt_tab_grace_seconds(
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
     proxy
         .set_alt_tab_grace_seconds(seconds)
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('get_pause_when_backgrounded')`.
+#[tauri::command]
+pub(crate) async fn get_pause_when_backgrounded(bridge: BridgeState<'_>) -> Result<bool, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .get_pause_when_backgrounded()
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('set_pause_when_backgrounded', { pause })`. Live-reloaded
+/// — the next activation or grace-timer tick reads the new value.
+#[tauri::command]
+pub(crate) async fn set_pause_when_backgrounded(
+    bridge: BridgeState<'_>,
+    pause: bool,
+) -> Result<(), String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .set_pause_when_backgrounded(pause)
         .await
         .map_err(|e| friendly(&e))
 }

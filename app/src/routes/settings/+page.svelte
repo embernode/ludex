@@ -7,12 +7,14 @@
         blockApplication,
         getAltTabGraceSeconds,
         getGpuMemoryThresholdBytes,
+        getPauseWhenBackgrounded,
         listApplications,
         listBlockedApplicationIds,
         onBlocklistChanged,
         onDaemonReconnected,
         setAltTabGraceSeconds,
         setGpuMemoryThresholdBytes,
+        setPauseWhenBackgrounded,
         unblockApplication,
         type ApplicationSummary,
     } from '$lib/api';
@@ -41,6 +43,10 @@
     /** Seconds, edit-in-progress value bound to the input. */
     let graceSeconds = $state<number>(15);
     let graceStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+    /** Whether losing focus should pause the session. Saves
+     *  immediately on toggle — no dirty-check / save button. */
+    let pauseWhenBackgrounded = $state<boolean>(true);
 
     /**
      * Timestamp format preference. Stored in `localStorage` and
@@ -84,11 +90,12 @@
     async function load() {
         loading = true;
         try {
-            const [a, ids, threshold, grace] = await Promise.all([
+            const [a, ids, threshold, grace, pause] = await Promise.all([
                 listApplications(),
                 listBlockedApplicationIds(),
                 getGpuMemoryThresholdBytes(),
                 getAltTabGraceSeconds(),
+                getPauseWhenBackgrounded(),
             ]);
             apps = a;
             blocked = new Set(ids);
@@ -96,11 +103,25 @@
             thresholdMib = Math.max(1, Math.round(threshold / MIB));
             savedGraceSeconds = grace;
             graceSeconds = Math.max(0, Math.round(grace));
+            pauseWhenBackgrounded = pause;
             error = null;
         } catch (e) {
             error = String(e);
         } finally {
             loading = false;
+        }
+    }
+
+    async function togglePauseWhenBackgrounded() {
+        // Toggle: the bind:checked on the input has already flipped
+        // the state variable for us before this onchange fires.
+        try {
+            await setPauseWhenBackgrounded(pauseWhenBackgrounded);
+            error = null;
+        } catch (e) {
+            // Revert on failure so the UI reflects reality.
+            pauseWhenBackgrounded = !pauseWhenBackgrounded;
+            error = String(e);
         }
     }
 
@@ -247,8 +268,17 @@
                 the session. Short alt-tabs to a browser or chat window stay
                 inside one session; leaving the game for longer than the grace
                 period ends it. Set to 0 to close sessions immediately on focus
-                loss.
+                loss. Turn the toggle below off to never pause on focus loss —
+                sessions will only end when the game process exits.
             </p>
+            <label class="toggle">
+                <input
+                    type="checkbox"
+                    bind:checked={pauseWhenBackgrounded}
+                    onchange={togglePauseWhenBackgrounded}
+                />
+                <span>Pause session when the game loses focus</span>
+            </label>
             <label class="field">
                 <span class="field-label">Grace window (seconds)</span>
                 <input
@@ -257,13 +287,16 @@
                     max="600"
                     step="1"
                     bind:value={graceSeconds}
+                    disabled={!pauseWhenBackgrounded}
                 />
             </label>
             <div class="actions">
                 <button
                     type="button"
                     onclick={saveGrace}
-                    disabled={!graceDirty || graceStatus === 'saving'}
+                    disabled={!graceDirty ||
+                        graceStatus === 'saving' ||
+                        !pauseWhenBackgrounded}
                 >
                     {#if graceStatus === 'saving'}Saving…{:else}Save grace window{/if}
                 </button>
@@ -547,6 +580,26 @@
     select:focus {
         outline: 2px solid var(--accent);
         outline-offset: -1px;
+    }
+
+    input[type='number']:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+
+    .toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin-bottom: 1rem;
+        font-size: 0.88rem;
+        color: var(--text-body);
+        cursor: pointer;
+    }
+
+    .toggle input[type='checkbox'] {
+        margin: 0;
+        accent-color: var(--accent);
     }
 
     .search {

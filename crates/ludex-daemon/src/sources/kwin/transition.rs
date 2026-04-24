@@ -140,10 +140,18 @@ impl Outcome {
 
 /// Handle a KWin foreground-window activation. Returns the
 /// events to emit, the new state, and the timer action.
+///
+/// `pause_when_backgrounded` is read per-call so live-reload works:
+/// when `false`, a reject decision doesn't transition a tracked
+/// game into the backgrounded state at all, so the grace timer
+/// never arms and sessions only end on process exit. When `true`
+/// (default) the grace window described at the top of the module
+/// applies.
 pub(super) fn next_action(
     state: FgState,
     meta: &ForegroundMeta,
     decision: GateDecision,
+    pause_when_backgrounded: bool,
 ) -> Outcome {
     // Activation for the same pid we're already tracking is a no-
     // op while foreground, and is "return to foreground" while
@@ -218,12 +226,21 @@ pub(super) fn next_action(
             // Tracked → TrackedBackgrounded: start the grace timer.
             // If the tracked window returns within the grace
             // period, the same-pid path above cancels the timer
-            // and session continues uninterrupted.
-            FgState::Tracked(af) => Outcome {
-                events: Vec::new(),
-                state: FgState::TrackedBackgrounded(af),
-                timer: TimerOp::Start,
-            },
+            // and session continues uninterrupted. When pause-on-
+            // focus-loss is disabled, the tracked window losing
+            // focus is not a session-end signal at all — stay in
+            // Tracked and let the session run until process exit.
+            FgState::Tracked(af) => {
+                if pause_when_backgrounded {
+                    Outcome {
+                        events: Vec::new(),
+                        state: FgState::TrackedBackgrounded(af),
+                        timer: TimerOp::Start,
+                    }
+                } else {
+                    Outcome::noop(FgState::Tracked(af))
+                }
+            }
             // Already backgrounded + another non-game activation:
             // don't reset the timer. The grace period is about how
             // long the tracked window has been absent, not how
@@ -237,9 +254,15 @@ pub(super) fn next_action(
 /// meaningful when the state is TrackedBackgrounded; other states
 /// no-op (the runner shouldn't be polling the timer in those
 /// states, but defensive behaviour is free).
-pub(super) fn on_grace_timeout(state: FgState) -> Outcome {
+///
+/// `pause_when_backgrounded` is consulted here too: if the user
+/// toggled the setting off while a timer was already armed (from
+/// a previous Tracked → TrackedBackgrounded transition), honour
+/// the new intent and resume Tracked rather than closing the
+/// session when the leftover timer fires.
+pub(super) fn on_grace_timeout(state: FgState, pause_when_backgrounded: bool) -> Outcome {
     match state {
-        FgState::TrackedBackgrounded(af) => {
+        FgState::TrackedBackgrounded(af) if pause_when_backgrounded => {
             let key = af.key.clone();
             Outcome {
                 events: vec![TransitionEvent::Stop { key }],
@@ -247,6 +270,15 @@ pub(super) fn on_grace_timeout(state: FgState) -> Outcome {
                 timer: TimerOp::NoChange,
             }
         }
+        // Pause setting turned off while a leftover timer was
+        // still armed from a previous Tracked → Backgrounded
+        // transition: collapse back to Tracked silently so the
+        // session keeps running.
+        FgState::TrackedBackgrounded(af) => Outcome {
+            events: Vec::new(),
+            state: FgState::Tracked(af),
+            timer: TimerOp::NoChange,
+        },
         _ => Outcome::noop(state),
     }
 }
@@ -324,9 +356,17 @@ mod tests {
         }
     }
 
+    /// Default: the historical alt-tab pause behaviour is on.
+    const PAUSE: bool = true;
+
     #[test]
     fn not_tracked_plus_reject_stays_not_tracked() {
-        let o = next_action(FgState::NotTracked, &meta(100, "Firefox", ""), rejected());
+        let o = next_action(
+            FgState::NotTracked,
+            &meta(100, "Firefox", ""),
+            rejected(),
+            PAUSE,
+        );
         assert_eq!(o.events, vec![]);
         assert_eq!(o.state, FgState::NotTracked);
         assert_eq!(o.timer, TimerOp::NoChange);
@@ -338,6 +378,7 @@ mod tests {
             FgState::NotTracked,
             &meta(100, "Celeste", "Celeste"),
             accepted("/opt/celeste/Celeste"),
+            PAUSE,
         );
         assert_eq!(o.events.len(), 1);
         assert!(matches!(
@@ -355,6 +396,7 @@ mod tests {
             FgState::Tracked(prev.clone()),
             &meta(100, "Celeste", "Chapter 1"),
             accepted("/opt/celeste/Celeste"),
+            PAUSE,
         );
         assert_eq!(o.events, vec![]);
         assert_eq!(o.state, FgState::Tracked(prev));
@@ -368,10 +410,29 @@ mod tests {
             FgState::Tracked(prev.clone()),
             &meta(200, "Firefox", ""),
             rejected(),
+            PAUSE,
         );
         assert_eq!(o.events, vec![]);
         assert_eq!(o.state, FgState::TrackedBackgrounded(prev));
         assert_eq!(o.timer, TimerOp::Start);
+    }
+
+    #[test]
+    fn tracked_plus_reject_stays_tracked_when_pause_disabled() {
+        // Pause-on-focus-loss disabled: the tracked window going
+        // out of focus does not transition to Backgrounded and
+        // does not start a grace timer. Session persists until
+        // the process exits.
+        let prev = af(100, "/opt/celeste/Celeste");
+        let o = next_action(
+            FgState::Tracked(prev.clone()),
+            &meta(200, "Firefox", ""),
+            rejected(),
+            false,
+        );
+        assert_eq!(o.events, vec![]);
+        assert_eq!(o.state, FgState::Tracked(prev));
+        assert_eq!(o.timer, TimerOp::NoChange);
     }
 
     #[test]
@@ -381,6 +442,7 @@ mod tests {
             FgState::Tracked(prev.clone()),
             &meta(200, "Factorio", "Factorio"),
             accepted("/opt/factorio/factorio"),
+            PAUSE,
         );
         assert_eq!(o.events.len(), 2);
         assert!(matches!(
@@ -399,6 +461,7 @@ mod tests {
             FgState::TrackedBackgrounded(prev.clone()),
             &meta(100, "Celeste", "Chapter 1"),
             accepted("/opt/celeste/Celeste"),
+            PAUSE,
         );
         assert_eq!(o.events, vec![]);
         assert_eq!(o.state, FgState::Tracked(prev));
@@ -412,6 +475,7 @@ mod tests {
             FgState::TrackedBackgrounded(prev.clone()),
             &meta(300, "Telegram", ""),
             rejected(),
+            PAUSE,
         );
         assert_eq!(o.events, vec![]);
         assert_eq!(o.state, FgState::TrackedBackgrounded(prev));
@@ -425,6 +489,7 @@ mod tests {
             FgState::TrackedBackgrounded(prev.clone()),
             &meta(200, "Factorio", ""),
             accepted("/opt/factorio/factorio"),
+            PAUSE,
         );
         assert_eq!(o.events.len(), 2);
         assert!(matches!(
@@ -438,7 +503,7 @@ mod tests {
     #[test]
     fn grace_timeout_from_backgrounded_emits_stop() {
         let prev = af(100, "/opt/celeste/Celeste");
-        let o = on_grace_timeout(FgState::TrackedBackgrounded(prev.clone()));
+        let o = on_grace_timeout(FgState::TrackedBackgrounded(prev.clone()), PAUSE);
         assert_eq!(
             o.events,
             vec![TransitionEvent::Stop {
@@ -449,13 +514,25 @@ mod tests {
     }
 
     #[test]
+    fn grace_timeout_with_pause_disabled_resumes_tracked() {
+        // User toggled pause off after a Tracked → Backgrounded
+        // transition already armed the timer. When it fires we
+        // should honour the new intent and resume, not close.
+        let prev = af(100, "/opt/celeste/Celeste");
+        let o = on_grace_timeout(FgState::TrackedBackgrounded(prev.clone()), false);
+        assert_eq!(o.events, vec![]);
+        assert_eq!(o.state, FgState::Tracked(prev));
+        assert_eq!(o.timer, TimerOp::NoChange);
+    }
+
+    #[test]
     fn grace_timeout_from_other_states_is_noop() {
-        let o = on_grace_timeout(FgState::NotTracked);
+        let o = on_grace_timeout(FgState::NotTracked, PAUSE);
         assert_eq!(o.events, vec![]);
         assert_eq!(o.state, FgState::NotTracked);
 
         let af = af(100, "/opt/celeste/Celeste");
-        let o = on_grace_timeout(FgState::Tracked(af.clone()));
+        let o = on_grace_timeout(FgState::Tracked(af.clone()), PAUSE);
         assert_eq!(o.events, vec![]);
         assert_eq!(o.state, FgState::Tracked(af));
     }
@@ -506,6 +583,7 @@ mod tests {
             FgState::NotTracked,
             &meta(100, "", "Window Caption"),
             accepted("/opt/foo/foo"),
+            PAUSE,
         );
         assert!(matches!(
             &o.events[0],
@@ -516,6 +594,7 @@ mod tests {
             FgState::NotTracked,
             &meta(100, "", ""),
             accepted("/opt/foo/foo_bin"),
+            PAUSE,
         );
         assert!(matches!(
             &o2.events[0],

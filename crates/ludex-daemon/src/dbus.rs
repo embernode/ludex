@@ -39,7 +39,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use ludex_core::repo::{
     ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
-    GPU_MEMORY_THRESHOLD_BYTES,
+    DEFAULT_PAUSE_WHEN_BACKGROUNDED, GPU_MEMORY_THRESHOLD_BYTES, PAUSE_WHEN_BACKGROUNDED,
 };
 use ludex_core::{Database, LauncherType, Session};
 pub use ludex_dbus_types::{
@@ -340,6 +340,30 @@ impl Tracker {
             .map_err(|e| into_fdo(&e))?;
         self.config.write().await.alt_tab_grace = std::time::Duration::from_secs(seconds);
         info!(alt_tab_grace_seconds = seconds, "setting updated");
+        Ok(())
+    }
+
+    /// Whether losing focus pauses the session. When `false`,
+    /// sessions only end on process exit (GTT-parity behaviour).
+    async fn get_pause_when_backgrounded(&self) -> zbus::fdo::Result<bool> {
+        self.db
+            .settings()
+            .get_bool(PAUSE_WHEN_BACKGROUNDED, DEFAULT_PAUSE_WHEN_BACKGROUNDED)
+            .await
+            .map_err(|e| into_fdo(&e))
+    }
+
+    /// Update whether focus-loss pauses the session. DB first,
+    /// then the shared config so the next activation reads the
+    /// new value.
+    async fn set_pause_when_backgrounded(&self, pause: bool) -> zbus::fdo::Result<()> {
+        self.db
+            .settings()
+            .set_bool(PAUSE_WHEN_BACKGROUNDED, pause)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        self.config.write().await.pause_when_backgrounded = pause;
+        info!(pause_when_backgrounded = pause, "setting updated");
         Ok(())
     }
 

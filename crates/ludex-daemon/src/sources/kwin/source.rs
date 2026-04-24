@@ -247,8 +247,11 @@ impl KWinForegroundSource {
                     // Timer just fired; drop it so the next select
                     // doesn't poll a completed future.
                     grace_timer = None;
+                    let pause_when_backgrounded =
+                        self.config.read().await.pause_when_backgrounded;
                     let outcome = on_grace_timeout(
                         std::mem::replace(&mut state, FgState::NotTracked),
+                        pause_when_backgrounded,
                     );
                     apply_outcome(
                         outcome,
@@ -312,10 +315,12 @@ impl KWinForegroundSource {
             resource_class: activation.resource_class,
             caption: activation.caption,
         };
+        let pause_when_backgrounded = self.config.read().await.pause_when_backgrounded;
         let outcome = next_action(
             std::mem::replace(state, FgState::NotTracked),
             &meta,
             decision,
+            pause_when_backgrounded,
         );
         apply_outcome(outcome, state, grace_timer, &self.config, event_tx, exit_tx).await;
     }

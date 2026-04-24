@@ -659,6 +659,7 @@ mod tests {
         let config = Arc::new(RwLock::new(TrackerConfig {
             gate: GateConfig::default(),
             alt_tab_grace: Duration::from_secs(15),
+            pause_when_backgrounded: true,
         }));
         let gate = Gate::new(config);
         let decision = gate
