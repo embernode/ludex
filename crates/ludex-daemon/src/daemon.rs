@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+use crate::config::{SharedConfig, TrackerConfig};
 use crate::dbus::{self, TrackerNotification};
 use crate::gate::{Gate, GateConfig};
 use crate::idle::{self, IdleTracker};
@@ -47,23 +48,12 @@ pub async fn run() -> Result<()> {
         .await
         .with_context(|| format!("open database at {}", db_path.display()))?;
 
-    // Resolve the gate configuration from persisted settings,
-    // falling back to compiled-in defaults when the row is absent.
-    // Kept read-once at startup: the live-reload path (change the
-    // value from the GUI and have running sources pick it up) is a
-    // follow-up tranche that needs a shared Arc<RwLock<GateConfig>>;
-    // for now the user restarts the daemon after editing settings.
-    let gate_config = resolve_gate_config(&db).await;
-    info!(
-        gpu_memory_threshold_bytes = gate_config.gpu_memory_threshold_bytes,
-        "gate configuration loaded"
-    );
-
-    let alt_tab_grace = resolve_alt_tab_grace(&db).await;
-    info!(
-        alt_tab_grace_seconds = alt_tab_grace.as_secs(),
-        "alt-tab grace window loaded"
-    );
+    // Resolve the tunable tracker configuration from persisted
+    // settings, falling back to compiled-in defaults when a row is
+    // absent. The shared handle below is cloned into every consumer
+    // (gate, foreground source, D-Bus setter) so a GUI-driven
+    // update takes effect without a daemon restart.
+    let shared_config: SharedConfig = Arc::new(RwLock::new(resolve_tracker_config(&db).await));
 
     let enrichment_ctx = Arc::new(EnrichmentContext::detect_from_env());
     // Only log the sources whose enrichers are wired up today. Heroic
@@ -94,9 +84,13 @@ pub async fn run() -> Result<()> {
     // (distinct from the KWin callback's org.kde.ludex.Tracker1)
     // so each service's lifecycle is independent.
     let shared_db = Arc::new(db.clone());
-    let tracker_conn = dbus::serve(Arc::clone(&shared_db), Arc::clone(&blocklist))
-        .await
-        .context("register net.ludex.Tracker1 service")?;
+    let tracker_conn = dbus::serve(
+        Arc::clone(&shared_db),
+        Arc::clone(&blocklist),
+        Arc::clone(&shared_config),
+    )
+    .await
+    .context("register net.ludex.Tracker1 service")?;
     let (notif_tx, notif_rx) = mpsc::channel::<TrackerNotification>(NOTIFICATION_CHANNEL_CAPACITY);
 
     let manager = SessionManager::new(
@@ -155,7 +149,7 @@ pub async fn run() -> Result<()> {
     };
 
     let source_handles =
-        spawn_sources(event_tx, shutdown_rx.clone(), gate_config, alt_tab_grace).await;
+        spawn_sources(event_tx, shutdown_rx.clone(), Arc::clone(&shared_config)).await;
 
     // Session manager runs on its own task so the main task stays free
     // to handle the shutdown signal.
@@ -195,8 +189,7 @@ pub async fn run() -> Result<()> {
 async fn spawn_sources(
     event_tx: mpsc::Sender<crate::event::GameEvent>,
     shutdown_rx: watch::Receiver<bool>,
-    gate_config: GateConfig,
-    alt_tab_grace: Duration,
+    shared_config: SharedConfig,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     let mut handles = Vec::new();
 
@@ -213,7 +206,8 @@ async fn spawn_sources(
     }
 
     if KWinForegroundSource::is_kwin_available().await {
-        let kwin = KWinForegroundSource::new(Gate::new(gate_config), alt_tab_grace);
+        let gate = Gate::new(Arc::clone(&shared_config));
+        let kwin = KWinForegroundSource::new(gate, shared_config);
         let tx = event_tx.clone();
         let sd = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
@@ -231,12 +225,12 @@ async fn spawn_sources(
     handles
 }
 
-/// Build a [`GateConfig`] from the `settings` table, defaulting each
-/// missing or unparseable value to the compiled-in default. Errors
-/// reading the row fall through to the default too — a transient DB
-/// read error must not stop the daemon from starting.
-async fn resolve_gate_config(db: &Database) -> GateConfig {
-    let mut config = GateConfig::default();
+/// Assemble a [`TrackerConfig`] from persisted settings, falling
+/// back to compiled-in defaults when a row is absent or a read
+/// errors. A transient DB read error must never stop the daemon
+/// from starting — log it and use the default.
+async fn resolve_tracker_config(db: &Database) -> TrackerConfig {
+    let mut gate = GateConfig::default();
     match db
         .settings()
         .get_u64(
@@ -245,23 +239,14 @@ async fn resolve_gate_config(db: &Database) -> GateConfig {
         )
         .await
     {
-        Ok(v) => config.gpu_memory_threshold_bytes = v,
-        Err(e) => {
-            warn!(
-                error = %e,
-                setting = GPU_MEMORY_THRESHOLD_BYTES,
-                "settings read failed; using compiled-in default"
-            );
-        }
+        Ok(v) => gate.gpu_memory_threshold_bytes = v,
+        Err(e) => warn!(
+            error = %e,
+            setting = GPU_MEMORY_THRESHOLD_BYTES,
+            "settings read failed; using compiled-in default"
+        ),
     }
-    config
-}
-
-/// Resolve the alt-tab grace window from the settings table,
-/// defaulting to the compiled-in value on missing row or read error.
-/// Read once at startup (same live-reload caveat as the gate config).
-async fn resolve_alt_tab_grace(db: &Database) -> Duration {
-    match db
+    let alt_tab_grace = match db
         .settings()
         .get_u64(ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS)
         .await
@@ -275,6 +260,15 @@ async fn resolve_alt_tab_grace(db: &Database) -> Duration {
             );
             Duration::from_secs(DEFAULT_ALT_TAB_GRACE_SECONDS)
         }
+    };
+    info!(
+        gpu_memory_threshold_bytes = gate.gpu_memory_threshold_bytes,
+        alt_tab_grace_seconds = alt_tab_grace.as_secs(),
+        "tracker configuration loaded"
+    );
+    TrackerConfig {
+        gate,
+        alt_tab_grace,
     }
 }
 

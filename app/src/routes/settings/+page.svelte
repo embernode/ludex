@@ -3,11 +3,13 @@
     import type { UnlistenFn } from '@tauri-apps/api/event';
     import {
         blockApplication,
+        getAltTabGraceSeconds,
         getGpuMemoryThresholdBytes,
         listApplications,
         listBlockedApplicationIds,
         onBlocklistChanged,
         onDaemonReconnected,
+        setAltTabGraceSeconds,
         setGpuMemoryThresholdBytes,
         unblockApplication,
         type ApplicationSummary,
@@ -25,20 +27,29 @@
     let savedThresholdBytes = $state<number>(0);
     /** MiB, edit-in-progress value bound to the input. */
     let thresholdMib = $state<number>(50);
-    let saveStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
+    let thresholdStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+    /** Seconds currently persisted, for dirty-check. */
+    let savedGraceSeconds = $state<number>(0);
+    /** Seconds, edit-in-progress value bound to the input. */
+    let graceSeconds = $state<number>(15);
+    let graceStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
     async function load() {
         loading = true;
         try {
-            const [a, ids, threshold] = await Promise.all([
+            const [a, ids, threshold, grace] = await Promise.all([
                 listApplications(),
                 listBlockedApplicationIds(),
                 getGpuMemoryThresholdBytes(),
+                getAltTabGraceSeconds(),
             ]);
             apps = a;
             blocked = new Set(ids);
             savedThresholdBytes = threshold;
             thresholdMib = Math.max(1, Math.round(threshold / MIB));
+            savedGraceSeconds = grace;
+            graceSeconds = Math.max(0, Math.round(grace));
             error = null;
         } catch (e) {
             error = String(e);
@@ -66,22 +77,42 @@
 
     async function saveThreshold() {
         const bytes = Math.max(1, Math.floor(thresholdMib * MIB));
-        saveStatus = 'saving';
+        thresholdStatus = 'saving';
         try {
             await setGpuMemoryThresholdBytes(bytes);
             savedThresholdBytes = bytes;
-            saveStatus = 'saved';
+            thresholdStatus = 'saved';
             setTimeout(() => {
-                if (saveStatus === 'saved') saveStatus = 'idle';
+                if (thresholdStatus === 'saved') thresholdStatus = 'idle';
             }, 2500);
         } catch (e) {
             error = String(e);
-            saveStatus = 'error';
+            thresholdStatus = 'error';
+        }
+    }
+
+    async function saveGrace() {
+        const seconds = Math.max(0, Math.floor(graceSeconds));
+        graceStatus = 'saving';
+        try {
+            await setAltTabGraceSeconds(seconds);
+            savedGraceSeconds = seconds;
+            graceStatus = 'saved';
+            setTimeout(() => {
+                if (graceStatus === 'saved') graceStatus = 'idle';
+            }, 2500);
+        } catch (e) {
+            error = String(e);
+            graceStatus = 'error';
         }
     }
 
     const thresholdDirty = $derived(
         Math.max(1, Math.round(savedThresholdBytes / MIB)) !== thresholdMib,
+    );
+
+    const graceDirty = $derived(
+        Math.max(0, Math.round(savedGraceSeconds)) !== graceSeconds,
     );
 
     onMount(() => {
@@ -134,16 +165,49 @@
                 <button
                     type="button"
                     onclick={saveThreshold}
-                    disabled={!thresholdDirty || saveStatus === 'saving'}
+                    disabled={!thresholdDirty || thresholdStatus === 'saving'}
                 >
-                    {#if saveStatus === 'saving'}Saving…{:else}Save threshold{/if}
+                    {#if thresholdStatus === 'saving'}Saving…{:else}Save threshold{/if}
                 </button>
-                {#if saveStatus === 'saved'}
-                    <span class="hint">Saved — takes effect on next daemon restart.</span>
+                {#if thresholdStatus === 'saved'}
+                    <span class="hint">Saved.</span>
                 {:else if thresholdDirty}
-                    <span class="hint"
-                        >Unsaved change — takes effect after daemon restart.</span
-                    >
+                    <span class="hint">Unsaved change.</span>
+                {/if}
+            </div>
+        </section>
+
+        <section>
+            <h2>Alt-tab grace window</h2>
+            <p class="description">
+                Seconds to wait after a tracked game loses focus before closing
+                the session. Short alt-tabs to a browser or chat window stay
+                inside one session; leaving the game for longer than the grace
+                period ends it. Set to 0 to close sessions immediately on focus
+                loss.
+            </p>
+            <label class="field">
+                <span class="field-label">Grace window (seconds)</span>
+                <input
+                    type="number"
+                    min="0"
+                    max="600"
+                    step="1"
+                    bind:value={graceSeconds}
+                />
+            </label>
+            <div class="actions">
+                <button
+                    type="button"
+                    onclick={saveGrace}
+                    disabled={!graceDirty || graceStatus === 'saving'}
+                >
+                    {#if graceStatus === 'saving'}Saving…{:else}Save grace window{/if}
+                </button>
+                {#if graceStatus === 'saved'}
+                    <span class="hint">Saved.</span>
+                {:else if graceDirty}
+                    <span class="hint">Unsaved change.</span>
                 {/if}
             </div>
         </section>

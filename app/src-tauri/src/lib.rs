@@ -50,6 +50,8 @@ pub fn run() {
             bridge::unblock_application,
             bridge::get_gpu_memory_threshold_bytes,
             bridge::set_gpu_memory_threshold_bytes,
+            bridge::get_alt_tab_grace_seconds,
+            bridge::set_alt_tab_grace_seconds,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

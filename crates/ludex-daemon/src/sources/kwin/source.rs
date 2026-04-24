@@ -18,7 +18,6 @@
 use std::future::pending;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ludex_core::default_database_path;
@@ -28,6 +27,7 @@ use tokio::time::Sleep;
 use tracing::{debug, info, instrument, warn};
 use zbus::Connection;
 
+use crate::config::SharedConfig;
 use crate::event::GameEvent;
 use crate::gate::{Gate, GateInput};
 use crate::proc::pidfd;
@@ -118,21 +118,17 @@ trait KWinScripting {
 /// The foreground-window source itself.
 pub struct KWinForegroundSource {
     gate: Gate,
-    /// How long to wait after the tracked game loses foreground
-    /// before closing the session. Resolved from settings at daemon
-    /// startup; changing the setting requires a daemon restart.
-    grace_duration: Duration,
+    /// Shared handle to the tunable daemon config. The source reads
+    /// `alt_tab_grace` from it at the moment it arms a grace timer,
+    /// so a setter RPC takes effect without a daemon restart.
+    config: SharedConfig,
 }
 
 impl KWinForegroundSource {
-    /// Construct a source with the given gate configuration and alt-
-    /// tab grace duration.
+    /// Construct a source with the given gate and shared config.
     #[must_use]
-    pub const fn new(gate: Gate, grace_duration: Duration) -> Self {
-        Self {
-            gate,
-            grace_duration,
-        }
+    pub const fn new(gate: Gate, config: SharedConfig) -> Self {
+        Self { gate, config }
     }
 
     /// Return `true` if `org.kde.KWin` is present on the session bus,
@@ -241,7 +237,7 @@ impl KWinForegroundSource {
                         outcome,
                         &mut state,
                         &mut grace_timer,
-                        self.grace_duration,
+                        &self.config,
                         event_tx,
                         &exit_tx,
                     )
@@ -258,7 +254,7 @@ impl KWinForegroundSource {
                         outcome,
                         &mut state,
                         &mut grace_timer,
-                        self.grace_duration,
+                        &self.config,
                         event_tx,
                         &exit_tx,
                     )
@@ -321,15 +317,7 @@ impl KWinForegroundSource {
             &meta,
             decision,
         );
-        apply_outcome(
-            outcome,
-            state,
-            grace_timer,
-            self.grace_duration,
-            event_tx,
-            exit_tx,
-        )
-        .await;
+        apply_outcome(outcome, state, grace_timer, &self.config, event_tx, exit_tx).await;
     }
 }
 
@@ -399,11 +387,15 @@ async fn poll_grace_timer(timer: &mut Option<Pin<Box<Sleep>>>) {
 /// the timer op. A newly-emitted `Start` arms a pidfd watcher on the
 /// new pid so the session closes promptly if the process exits
 /// without the foreground ever changing.
+///
+/// The grace duration is read from `config` at the moment the timer
+/// is actually armed, so a `SetAltTabGraceSeconds` RPC lands on the
+/// very next backgrounded tracked window.
 async fn apply_outcome(
     outcome: Outcome,
     state: &mut FgState,
     grace_timer: &mut Option<Pin<Box<Sleep>>>,
-    grace_duration: Duration,
+    config: &SharedConfig,
     events: &mpsc::Sender<GameEvent>,
     exit_tx: &mpsc::UnboundedSender<u32>,
 ) {
@@ -445,7 +437,8 @@ async fn apply_outcome(
     match timer {
         TimerOp::NoChange => {}
         TimerOp::Start => {
-            *grace_timer = Some(Box::pin(tokio::time::sleep(grace_duration)));
+            let grace = config.read().await.alt_tab_grace;
+            *grace_timer = Some(Box::pin(tokio::time::sleep(grace)));
         }
         TimerOp::Cancel => {
             *grace_timer = None;

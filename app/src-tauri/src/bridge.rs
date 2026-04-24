@@ -87,6 +87,8 @@ pub(crate) trait Tracker {
     fn unblock_application(&self, id: i64) -> zbus::Result<()>;
     fn get_gpu_memory_threshold_bytes(&self) -> zbus::Result<u64>;
     fn set_gpu_memory_threshold_bytes(&self, bytes: u64) -> zbus::Result<()>;
+    fn get_alt_tab_grace_seconds(&self) -> zbus::Result<u64>;
+    fn set_alt_tab_grace_seconds(&self, seconds: u64) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn application_added(&self, application_id: i64) -> zbus::Result<()>;
@@ -252,9 +254,9 @@ pub(crate) async fn get_gpu_memory_threshold_bytes(bridge: BridgeState<'_>) -> R
         .map_err(|e| friendly(&e))
 }
 
-/// `invoke('set_gpu_memory_threshold_bytes', { bytes })`. Takes
-/// effect at the next daemon restart; the GUI should surface that
-/// to the user.
+/// `invoke('set_gpu_memory_threshold_bytes', { bytes })`. The daemon
+/// applies the new value in-process, so the next foreground-window
+/// activation uses it — no daemon restart required.
 #[tauri::command]
 pub(crate) async fn set_gpu_memory_threshold_bytes(
     bridge: BridgeState<'_>,
@@ -263,6 +265,30 @@ pub(crate) async fn set_gpu_memory_threshold_bytes(
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
     proxy
         .set_gpu_memory_threshold_bytes(bytes)
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('get_alt_tab_grace_seconds')`.
+#[tauri::command]
+pub(crate) async fn get_alt_tab_grace_seconds(bridge: BridgeState<'_>) -> Result<u64, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .get_alt_tab_grace_seconds()
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('set_alt_tab_grace_seconds', { seconds })`. Live-reloaded
+/// — the very next grace timer uses the new value.
+#[tauri::command]
+pub(crate) async fn set_alt_tab_grace_seconds(
+    bridge: BridgeState<'_>,
+    seconds: u64,
+) -> Result<(), String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .set_alt_tab_grace_seconds(seconds)
         .await
         .map_err(|e| friendly(&e))
 }

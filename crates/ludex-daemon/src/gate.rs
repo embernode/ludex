@@ -27,6 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::config::SharedConfig;
 use crate::proc::{environ, exe, fdinfo, maps, tree};
 
 /// `/proc/<pid>/comm` values of the gamescope nested compositor. A
@@ -256,16 +257,20 @@ fn is_blocklisted(exe: &Path, blocklist: &HashSet<String>) -> bool {
 }
 
 /// Stateless gate instance. Constructed once and reused for every
-/// foreground-window event.
+/// foreground-window event. Holds a shared-config handle so the D-
+/// Bus setters can swap values in without tearing the gate down.
 #[derive(Debug, Clone)]
 pub struct Gate {
-    config: GateConfig,
+    config: SharedConfig,
 }
 
 impl Gate {
-    /// Construct a gate with the given configuration.
+    /// Construct a gate bound to the shared tracker configuration.
+    /// Read access in [`Gate::decide`] takes a read guard on the
+    /// underlying `RwLock`; writers are rare (user-driven settings
+    /// changes) so there is no meaningful contention.
     #[must_use]
-    pub const fn new(config: GateConfig) -> Self {
+    pub const fn new(config: SharedConfig) -> Self {
         Self { config }
     }
 
@@ -276,10 +281,17 @@ impl Gate {
     /// `RejectionReason::ExeUnreadable` or `MapsUnreadable` rather
     /// than propagating the I/O error.
     pub async fn decide(&self, input: GateInput) -> GateDecision {
+        // Snapshot the gate fields up front so we hold the read
+        // guard only for the pointer-copy, not across the `/proc`
+        // reads below. A writer calling `SetGpuMemoryThresholdBytes`
+        // between this snapshot and the final decision just lands
+        // the new value on the next activation — acceptable, and it
+        // means the lock never fights the proc syscalls.
+        let config = self.config.read().await.gate.clone();
         let Ok(exe_path) = exe::read(input.pid).await else {
             return GateDecision::Reject(RejectionReason::ExeUnreadable);
         };
-        if is_blocklisted(&exe_path, &self.config.blocklist) {
+        if is_blocklisted(&exe_path, &config.blocklist) {
             return GateDecision::Reject(RejectionReason::Blocklisted);
         }
         // Launcher-attribution check. Reading environ is cheap (single
@@ -287,10 +299,7 @@ impl Gate {
         // reads when the process is already owned by a launcher.
         let env = environ::read(input.pid).await.ok();
         if let Some(env) = env.as_ref() {
-            if env
-                .keys()
-                .any(|k| self.config.launcher_env_vars.contains(k))
-            {
+            if env.keys().any(|k| config.launcher_env_vars.contains(k)) {
                 return GateDecision::Reject(RejectionReason::AttributedToLauncher);
             }
         }
@@ -310,7 +319,7 @@ impl Gate {
             gpu.as_ref(),
             input.window_is_fullscreen,
             gamescope_ancestry,
-            &self.config,
+            &config,
         )
     }
 }
@@ -643,7 +652,15 @@ mod tests {
         // The test binary does not link GL/Vulkan/SDL, so the gate
         // should reject with NoGraphicsLibrary. This exercises the
         // real /proc read path.
-        let gate = Gate::new(GateConfig::default());
+        use crate::config::TrackerConfig;
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::RwLock;
+        let config = Arc::new(RwLock::new(TrackerConfig {
+            gate: GateConfig::default(),
+            alt_tab_grace: Duration::from_secs(15),
+        }));
+        let gate = Gate::new(config);
         let decision = gate
             .decide(GateInput {
                 pid: std::process::id(),

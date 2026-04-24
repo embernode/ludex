@@ -36,7 +36,10 @@
 
 use std::sync::Arc;
 
-use ludex_core::repo::{DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, GPU_MEMORY_THRESHOLD_BYTES};
+use ludex_core::repo::{
+    ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
+    GPU_MEMORY_THRESHOLD_BYTES,
+};
 use ludex_core::{Database, LauncherType, Session};
 pub use ludex_dbus_types::{
     ApplicationSummary, DailyPlaytime, SessionSummary, OBJECT_PATH, SERVICE_NAME,
@@ -48,6 +51,7 @@ use tracing::{debug, error, info, instrument, warn};
 use zbus::object_server::SignalEmitter;
 use zbus::Connection;
 
+use crate::config::SharedConfig;
 use crate::session_manager::SharedBlocklist;
 
 /// A session-lifecycle notification the [`SessionManager`] hands to
@@ -81,16 +85,22 @@ pub enum TrackerNotification {
 pub struct Tracker {
     db: Arc<Database>,
     blocklist: SharedBlocklist,
+    config: SharedConfig,
 }
 
 impl Tracker {
-    /// Construct a tracker bound to the given database handle and
-    /// the shared blocklist the session manager also watches.
-    /// Block/unblock RPCs mutate both the DB row and this handle, so
-    /// changes take effect on the very next `Started` event.
+    /// Construct a tracker bound to the given database handle, the
+    /// shared blocklist the session manager also watches, and the
+    /// shared tunable config the gate + foreground source read. All
+    /// three handles are mutated in place by the corresponding setter
+    /// RPCs so changes take effect on the very next event.
     #[must_use]
-    pub fn new(db: Arc<Database>, blocklist: SharedBlocklist) -> Self {
-        Self { db, blocklist }
+    pub fn new(db: Arc<Database>, blocklist: SharedBlocklist, config: SharedConfig) -> Self {
+        Self {
+            db,
+            blocklist,
+            config,
+        }
     }
 }
 
@@ -292,17 +302,42 @@ impl Tracker {
             .map_err(|e| into_fdo(&e))
     }
 
-    /// Update the GPU memory threshold setting. Takes effect on the
-    /// next daemon start — live reload is a follow-up that needs a
-    /// shared `Arc<RwLock<GateConfig>>` the gate reads from. The GUI
-    /// should surface the "restart required" state to the user.
+    /// Update the GPU memory threshold setting. The DB row is written
+    /// first, then the in-memory shared config is updated so the gate
+    /// picks up the new value on the next activation. No daemon
+    /// restart required.
     async fn set_gpu_memory_threshold_bytes(&self, bytes: u64) -> zbus::fdo::Result<()> {
         self.db
             .settings()
             .set_u64(GPU_MEMORY_THRESHOLD_BYTES, bytes)
             .await
             .map_err(|e| into_fdo(&e))?;
+        self.config.write().await.gate.gpu_memory_threshold_bytes = bytes;
         info!(gpu_memory_threshold_bytes = bytes, "setting updated");
+        Ok(())
+    }
+
+    /// Grace window (seconds) the foreground source waits after a
+    /// tracked game loses focus before closing the session.
+    async fn get_alt_tab_grace_seconds(&self) -> zbus::fdo::Result<u64> {
+        self.db
+            .settings()
+            .get_u64(ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS)
+            .await
+            .map_err(|e| into_fdo(&e))
+    }
+
+    /// Update the alt-tab grace window. DB first, then the shared
+    /// config so the very next backgrounded tracked window uses the
+    /// new value.
+    async fn set_alt_tab_grace_seconds(&self, seconds: u64) -> zbus::fdo::Result<()> {
+        self.db
+            .settings()
+            .set_u64(ALT_TAB_GRACE_SECONDS, seconds)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        self.config.write().await.alt_tab_grace = std::time::Duration::from_secs(seconds);
+        info!(alt_tab_grace_seconds = seconds, "setting updated");
         Ok(())
     }
 
@@ -376,8 +411,12 @@ fn launcher_type_string(lt: LauncherType) -> String {
 /// The daemon already owns a *separate* session-bus connection for
 /// the KWin callback; this one is purposely independent so the public
 /// API's lifecycle is not tangled with the compositor integration.
-pub async fn serve(db: Arc<Database>, blocklist: SharedBlocklist) -> anyhow::Result<Connection> {
-    let tracker = Tracker::new(db, blocklist);
+pub async fn serve(
+    db: Arc<Database>,
+    blocklist: SharedBlocklist,
+    config: SharedConfig,
+) -> anyhow::Result<Connection> {
+    let tracker = Tracker::new(db, blocklist, config);
     let conn = zbus::connection::Builder::session()?
         .name(SERVICE_NAME)?
         .serve_at(OBJECT_PATH, tracker)?

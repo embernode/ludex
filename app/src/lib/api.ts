@@ -111,11 +111,24 @@ export async function getGpuMemoryThresholdBytes(): Promise<number> {
 }
 
 /**
- * Persist the GPU memory threshold. Takes effect at the next
- * daemon restart; live reload is a follow-up.
+ * Persist the GPU memory threshold. The daemon applies the new
+ * value in-process; the next foreground-window activation uses it.
  */
 export async function setGpuMemoryThresholdBytes(bytes: number): Promise<void> {
     return invoke<void>('set_gpu_memory_threshold_bytes', { bytes });
+}
+
+/** Read the alt-tab grace window (seconds) used by the foreground source. */
+export async function getAltTabGraceSeconds(): Promise<number> {
+    return invoke<number>('get_alt_tab_grace_seconds');
+}
+
+/**
+ * Persist the alt-tab grace window. Live-reloaded — the very next
+ * grace timer uses the new value.
+ */
+export async function setAltTabGraceSeconds(seconds: number): Promise<void> {
+    return invoke<void>('set_alt_tab_grace_seconds', { seconds });
 }
 
 export function onApplicationAdded(
