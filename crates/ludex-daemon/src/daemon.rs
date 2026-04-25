@@ -23,8 +23,9 @@ use crate::sources::{KWinForegroundSource, SteamSource};
 use ludex_core::repo::{
     ALT_TAB_GRACE_SECONDS, BACKUP_INTERVAL_HOURS, BACKUP_RETENTION_COUNT,
     DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
-    DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, DEFAULT_PAUSE_WHEN_BACKGROUNDED,
-    GPU_MEMORY_THRESHOLD_BYTES, PAUSE_WHEN_BACKGROUNDED,
+    DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, DEFAULT_IDLE_GRACE_SECONDS,
+    DEFAULT_PAUSE_WHEN_BACKGROUNDED, GPU_MEMORY_THRESHOLD_BYTES, IDLE_GRACE_SECONDS,
+    PAUSE_WHEN_BACKGROUNDED,
 };
 
 const EVENT_CHANNEL_CAPACITY: usize = 128;
@@ -108,6 +109,7 @@ pub async fn run() -> Result<()> {
         Arc::clone(&enrichment_ctx),
         Arc::clone(&idle_tracker),
         Arc::clone(&sleep_tracker),
+        Arc::clone(&shared_config),
         Some(notif_tx),
         Arc::clone(&blocklist),
     );
@@ -244,90 +246,34 @@ async fn spawn_sources(
 /// errors. A transient DB read error must never stop the daemon
 /// from starting — log it and use the default.
 async fn resolve_tracker_config(db: &Database) -> TrackerConfig {
-    let mut gate = GateConfig::default();
-    match db
-        .settings()
-        .get_u64(
-            GPU_MEMORY_THRESHOLD_BYTES,
-            DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
-        )
-        .await
-    {
-        Ok(v) => gate.gpu_memory_threshold_bytes = v,
-        Err(e) => warn!(
-            error = %e,
-            setting = GPU_MEMORY_THRESHOLD_BYTES,
-            "settings read failed; using compiled-in default"
-        ),
-    }
-    let alt_tab_grace = match db
-        .settings()
-        .get_u64(ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS)
-        .await
-    {
-        Ok(v) => Duration::from_secs(v),
-        Err(e) => {
-            warn!(
-                error = %e,
-                setting = ALT_TAB_GRACE_SECONDS,
-                "settings read failed; using compiled-in default"
-            );
-            Duration::from_secs(DEFAULT_ALT_TAB_GRACE_SECONDS)
-        }
+    let gpu_memory_threshold_bytes =
+        load_u64(db, GPU_MEMORY_THRESHOLD_BYTES, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES).await;
+    let alt_tab_grace_seconds =
+        load_u64(db, ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS).await;
+    let pause_when_backgrounded =
+        load_bool(db, PAUSE_WHEN_BACKGROUNDED, DEFAULT_PAUSE_WHEN_BACKGROUNDED).await;
+    let idle_grace_seconds = load_u64(db, IDLE_GRACE_SECONDS, DEFAULT_IDLE_GRACE_SECONDS).await;
+    let backup_interval_hours =
+        load_u64(db, BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_INTERVAL_HOURS).await;
+    let backup_retention =
+        load_u64(db, BACKUP_RETENTION_COUNT, DEFAULT_BACKUP_RETENTION_COUNT).await;
+
+    let gate = GateConfig {
+        gpu_memory_threshold_bytes,
+        ..GateConfig::default()
     };
-    let pause_when_backgrounded = match db
-        .settings()
-        .get_bool(PAUSE_WHEN_BACKGROUNDED, DEFAULT_PAUSE_WHEN_BACKGROUNDED)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(
-                error = %e,
-                setting = PAUSE_WHEN_BACKGROUNDED,
-                "settings read failed; using compiled-in default"
-            );
-            DEFAULT_PAUSE_WHEN_BACKGROUNDED
-        }
-    };
-    let backup_interval_hours = match db
-        .settings()
-        .get_u64(BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_INTERVAL_HOURS)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(
-                error = %e,
-                setting = BACKUP_INTERVAL_HOURS,
-                "settings read failed; using compiled-in default"
-            );
-            DEFAULT_BACKUP_INTERVAL_HOURS
-        }
-    };
-    let backup_retention = match db
-        .settings()
-        .get_u64(BACKUP_RETENTION_COUNT, DEFAULT_BACKUP_RETENTION_COUNT)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(
-                error = %e,
-                setting = BACKUP_RETENTION_COUNT,
-                "settings read failed; using compiled-in default"
-            );
-            DEFAULT_BACKUP_RETENTION_COUNT
-        }
-    };
+    let alt_tab_grace = Duration::from_secs(alt_tab_grace_seconds);
+    let idle_grace = Duration::from_secs(idle_grace_seconds);
     let backup = BackupConfig {
         interval: Duration::from_secs(backup_interval_hours.saturating_mul(3_600)),
         retention: usize::try_from(backup_retention).unwrap_or(usize::MAX),
     };
+
     info!(
-        gpu_memory_threshold_bytes = gate.gpu_memory_threshold_bytes,
-        alt_tab_grace_seconds = alt_tab_grace.as_secs(),
+        gpu_memory_threshold_bytes,
+        alt_tab_grace_seconds,
         pause_when_backgrounded,
+        idle_grace_seconds,
         backup_interval_hours,
         backup_retention,
         "tracker configuration loaded"
@@ -336,7 +282,33 @@ async fn resolve_tracker_config(db: &Database) -> TrackerConfig {
         gate,
         alt_tab_grace,
         pause_when_backgrounded,
+        idle_grace,
         backup,
+    }
+}
+
+/// Read a `u64` setting, returning `fallback` (with a warn-log) on
+/// any read error. Used by `resolve_tracker_config` to keep the
+/// reload path uniform across every tunable.
+async fn load_u64(db: &Database, key: &str, fallback: u64) -> u64 {
+    match db.settings().get_u64(key, fallback).await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, setting = key, "settings read failed; using compiled-in default");
+            fallback
+        }
+    }
+}
+
+/// Read a `bool` setting with the same fallback semantics as
+/// [`load_u64`].
+async fn load_bool(db: &Database, key: &str, fallback: bool) -> bool {
+    match db.settings().get_bool(key, fallback).await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, setting = key, "settings read failed; using compiled-in default");
+            fallback
+        }
     }
 }
 

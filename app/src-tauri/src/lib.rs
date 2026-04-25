@@ -60,6 +60,8 @@ pub fn run() {
             bridge::set_alt_tab_grace_seconds,
             bridge::get_pause_when_backgrounded,
             bridge::set_pause_when_backgrounded,
+            bridge::get_idle_grace_seconds,
+            bridge::set_idle_grace_seconds,
             bridge::get_backup_interval_hours,
             bridge::set_backup_interval_hours,
             bridge::get_backup_retention_count,

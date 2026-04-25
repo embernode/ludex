@@ -58,6 +58,23 @@ pub const PAUSE_WHEN_BACKGROUNDED: &str = "pause_when_backgrounded";
 /// playing" mode rather than changing what existing users see.
 pub const DEFAULT_PAUSE_WHEN_BACKGROUNDED: bool = true;
 
+/// Key for the per-idle-interval grace (seconds). The first
+/// `idle_grace_seconds` of every input-idle interval are credited
+/// to `interactive_runtime_seconds` rather than subtracted as AFK
+/// time. The intent is to forgive non-skippable cutscenes,
+/// dialogue trees, long animations, and similar engagement-
+/// without-input events that today read as "user stepped away".
+/// Genuine AFK longer than the grace still bills correctly: only
+/// the first `grace` seconds of each natural interval are
+/// forgiven, the tail is subtracted as before.
+pub const IDLE_GRACE_SECONDS: &str = "idle_grace_seconds";
+
+/// Default for [`IDLE_GRACE_SECONDS`]: five minutes. Covers the
+/// typical cutscene length without over-forgiving genuine AFK.
+/// Players with very long cutscenes (Metal Gear, Final Fantasy,
+/// Naughty Dog titles) can crank this higher from Settings.
+pub const DEFAULT_IDLE_GRACE_SECONDS: u64 = 5 * 60;
+
 /// Typed access to the `settings` table.
 pub struct SettingsRepo<'a> {
     pool: &'a SqlitePool,

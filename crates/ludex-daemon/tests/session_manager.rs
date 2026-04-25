@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ludex_core::{Database, ExitReason, GameKey};
+use ludex_daemon::config::{BackupConfig, SharedConfig, TrackerConfig};
+use ludex_daemon::gate::GateConfig;
 use ludex_daemon::idle::IdleTracker;
 use ludex_daemon::sleep::SleepTracker;
 use ludex_daemon::{GameEvent, SessionManager, SharedBlocklist};
@@ -25,6 +27,27 @@ fn default_idle_tracker() -> Arc<IdleTracker> {
 
 fn default_sleep_tracker() -> Arc<SleepTracker> {
     Arc::new(SleepTracker::new())
+}
+
+fn default_config() -> SharedConfig {
+    config_with_idle_grace(Duration::from_mins(5))
+}
+
+/// Same as [`default_config`] but with a caller-chosen idle grace
+/// — used by tests that want to exercise the cutscene-forgiveness
+/// math directly (e.g. asserting "idle under grace is fully
+/// forgiven" or "long idle is billed minus grace").
+fn config_with_idle_grace(grace: Duration) -> SharedConfig {
+    Arc::new(RwLock::new(TrackerConfig {
+        gate: GateConfig::default(),
+        alt_tab_grace: Duration::from_secs(15),
+        pause_when_backgrounded: true,
+        idle_grace: grace,
+        backup: BackupConfig {
+            interval: Duration::from_hours(24),
+            retention: 14,
+        },
+    }))
 }
 
 fn empty_blocklist() -> SharedBlocklist {
@@ -49,6 +72,7 @@ async fn started_then_stopped_creates_one_closed_session() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        default_config(),
         None,
         empty_blocklist(),
     );
@@ -126,6 +150,7 @@ async fn blocked_key_drops_started_event() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        default_config(),
         None,
         blocklist_with([blocked_key.clone()]),
     );
@@ -170,6 +195,7 @@ async fn unblocking_a_key_lets_subsequent_sessions_through() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        default_config(),
         None,
         Arc::clone(&blocklist),
     );
@@ -218,6 +244,7 @@ async fn duplicate_started_is_ignored() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        default_config(),
         None,
         empty_blocklist(),
     );
@@ -266,6 +293,7 @@ async fn shutdown_closes_open_sessions() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        default_config(),
         None,
         empty_blocklist(),
     );
@@ -357,6 +385,7 @@ async fn recover_orphans_closes_stale_sessions() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         default_sleep_tracker(),
+        default_config(),
         None,
         empty_blocklist(),
     );
@@ -380,6 +409,10 @@ async fn recover_orphans_closes_stale_sessions() {
 
 /// Idle time that accumulates during a session must be subtracted
 /// from the session's interactive runtime when it closes.
+///
+/// This test fixes `idle_grace` at zero so every idle second is
+/// billable — the cutscene-forgiveness behaviour gets its own
+/// dedicated tests below.
 #[tokio::test]
 async fn idle_time_reduces_interactive_runtime() {
     let db = Database::open_memory().await.unwrap();
@@ -389,6 +422,7 @@ async fn idle_time_reduces_interactive_runtime() {
         default_enrichment_ctx(),
         Arc::clone(&idle),
         default_sleep_tracker(),
+        config_with_idle_grace(Duration::ZERO),
         None,
         empty_blocklist(),
     );
@@ -444,6 +478,135 @@ async fn idle_time_reduces_interactive_runtime() {
     handle.await.unwrap().unwrap();
 }
 
+/// A short idle interval (cutscene-shaped) under the configured
+/// grace must be fully credited as interactive — the user was
+/// engaged, just not pressing keys. With grace = 60s and a 30s idle
+/// interval, every interactive second of the session should equal
+/// the full runtime.
+#[tokio::test]
+async fn idle_under_grace_is_fully_forgiven() {
+    let db = Database::open_memory().await.unwrap();
+    let idle = Arc::new(IdleTracker::new());
+    let manager = SessionManager::new(
+        db.clone(),
+        default_enrichment_ctx(),
+        Arc::clone(&idle),
+        default_sleep_tracker(),
+        config_with_idle_grace(Duration::from_mins(1)),
+        None,
+        empty_blocklist(),
+    );
+    let (tx, rx) = mpsc::channel::<GameEvent>(16);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let handle = tokio::spawn(manager.run(rx, shutdown_rx));
+    let at = OffsetDateTime::now_utc();
+    tx.send(GameEvent::Started {
+        key: GameKey::steam("440"),
+        display_name: "Cutscene Game".into(),
+        at,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    // 30s "cutscene" — within the 60s grace.
+    idle.record_idle_interval(30);
+
+    let end = at + time::Duration::seconds(120);
+    tx.send(GameEvent::Stopped {
+        key: GameKey::steam("440"),
+        at: end,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    let app = db
+        .applications()
+        .find_by_key(&GameKey::steam("440"))
+        .await
+        .unwrap()
+        .unwrap();
+    let session = &db
+        .sessions()
+        .list_for_application(app.id, 1)
+        .await
+        .unwrap()[0];
+    assert_eq!(session.full_runtime_seconds, 120);
+    assert_eq!(
+        session.interactive_runtime_seconds, 120,
+        "30s idle under 60s grace should be fully forgiven",
+    );
+
+    shutdown_tx.send(true).unwrap();
+    drop(tx);
+    handle.await.unwrap().unwrap();
+}
+
+/// A long idle interval bills only the portion beyond the grace.
+/// 600s idle under a 60s grace → 540s billable → interactive =
+/// full − 540.
+#[tokio::test]
+async fn idle_above_grace_bills_only_the_tail() {
+    let db = Database::open_memory().await.unwrap();
+    let idle = Arc::new(IdleTracker::new());
+    let manager = SessionManager::new(
+        db.clone(),
+        default_enrichment_ctx(),
+        Arc::clone(&idle),
+        default_sleep_tracker(),
+        config_with_idle_grace(Duration::from_mins(1)),
+        None,
+        empty_blocklist(),
+    );
+    let (tx, rx) = mpsc::channel::<GameEvent>(16);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let handle = tokio::spawn(manager.run(rx, shutdown_rx));
+    let at = OffsetDateTime::now_utc();
+    tx.send(GameEvent::Started {
+        key: GameKey::steam("440"),
+        display_name: "AFK Game".into(),
+        at,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    // 10-minute AFK during a 20-minute session.
+    idle.record_idle_interval(10 * 60);
+
+    let end = at + time::Duration::seconds(20 * 60);
+    tx.send(GameEvent::Stopped {
+        key: GameKey::steam("440"),
+        at: end,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    let app = db
+        .applications()
+        .find_by_key(&GameKey::steam("440"))
+        .await
+        .unwrap()
+        .unwrap();
+    let session = &db
+        .sessions()
+        .list_for_application(app.id, 1)
+        .await
+        .unwrap()[0];
+    assert_eq!(session.full_runtime_seconds, 20 * 60);
+    // billable_idle = max(0, 600 - 60) = 540
+    // interactive = full - billable = 1200 - 540 = 660
+    assert_eq!(session.interactive_runtime_seconds, 660);
+
+    shutdown_tx.send(true).unwrap();
+    drop(tx);
+    handle.await.unwrap().unwrap();
+}
+
 /// System suspend that happens during a session must be subtracted
 /// from the session's *full* runtime (not just interactive). A game
 /// that ran for 10 minutes, then the laptop slept for 8 hours, then
@@ -457,6 +620,7 @@ async fn suspended_time_reduces_full_runtime() {
         default_enrichment_ctx(),
         default_idle_tracker(),
         Arc::clone(&sleep),
+        default_config(),
         None,
         empty_blocklist(),
     );
@@ -526,6 +690,7 @@ async fn pre_session_idle_does_not_count_against_session() {
         default_enrichment_ctx(),
         Arc::clone(&idle),
         default_sleep_tracker(),
+        default_config(),
         None,
         empty_blocklist(),
     );
@@ -598,6 +763,7 @@ async fn enrichment_fires_on_new_application() {
         ctx,
         default_idle_tracker(),
         default_sleep_tracker(),
+        default_config(),
         None,
         empty_blocklist(),
     );

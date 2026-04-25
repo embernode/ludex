@@ -172,6 +172,22 @@ export async function setPauseWhenBackgrounded(pause: boolean): Promise<void> {
     return invoke<void>('set_pause_when_backgrounded', { pause });
 }
 
+/**
+ * Per-idle-interval cutscene grace (seconds). The first `grace`
+ * seconds of every input-idle period are credited to interactive
+ * runtime instead of subtracted as AFK; covers cutscenes, dialogue
+ * trees, and similar engagement-without-input events.
+ */
+export async function getIdleGraceSeconds(): Promise<number> {
+    return invoke<number>('get_idle_grace_seconds');
+}
+
+/** Persist the cutscene-grace window. Live-reloaded — applies to
+ *  the next heartbeat / close-session calculation. */
+export async function setIdleGraceSeconds(seconds: number): Promise<void> {
+    return invoke<void>('set_idle_grace_seconds', { seconds });
+}
+
 /** Snapshot of the database-backup directory, served by the daemon. */
 export interface BackupStats {
     /** Absolute path to the backup directory. */

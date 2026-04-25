@@ -91,6 +91,8 @@ pub(crate) trait Tracker {
     fn set_alt_tab_grace_seconds(&self, seconds: u64) -> zbus::Result<()>;
     fn get_pause_when_backgrounded(&self) -> zbus::Result<bool>;
     fn set_pause_when_backgrounded(&self, pause: bool) -> zbus::Result<()>;
+    fn get_idle_grace_seconds(&self) -> zbus::Result<u64>;
+    fn set_idle_grace_seconds(&self, seconds: u64) -> zbus::Result<()>;
     fn get_backup_interval_hours(&self) -> zbus::Result<u64>;
     fn set_backup_interval_hours(&self, hours: u64) -> zbus::Result<()>;
     fn get_backup_retention_count(&self) -> zbus::Result<u64>;
@@ -321,6 +323,30 @@ pub(crate) async fn set_pause_when_backgrounded(
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
     proxy
         .set_pause_when_backgrounded(pause)
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('get_idle_grace_seconds')`.
+#[tauri::command]
+pub(crate) async fn get_idle_grace_seconds(bridge: BridgeState<'_>) -> Result<u64, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .get_idle_grace_seconds()
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('set_idle_grace_seconds', { seconds })`. Live-reloaded —
+/// the next heartbeat / close-session reads the new value.
+#[tauri::command]
+pub(crate) async fn set_idle_grace_seconds(
+    bridge: BridgeState<'_>,
+    seconds: u64,
+) -> Result<(), String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .set_idle_grace_seconds(seconds)
         .await
         .map_err(|e| friendly(&e))
 }

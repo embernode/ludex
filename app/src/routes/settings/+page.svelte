@@ -10,6 +10,7 @@
         getBackupRetentionCount,
         getBackupStats,
         getGpuMemoryThresholdBytes,
+        getIdleGraceSeconds,
         getPauseWhenBackgrounded,
         listApplications,
         listBlockedApplicationIds,
@@ -20,6 +21,7 @@
         setBackupIntervalHours,
         setBackupRetentionCount,
         setGpuMemoryThresholdBytes,
+        setIdleGraceSeconds,
         setPauseWhenBackgrounded,
         takeBackupNow,
         unblockApplication,
@@ -67,6 +69,14 @@
     /** Whether losing focus should pause the session. Saves
      *  immediately on toggle — no dirty-check / save button. */
     let pauseWhenBackgrounded = $state<boolean>(true);
+
+    /** Per-idle-interval cutscene grace, in MINUTES (the underlying
+     *  setting is stored as seconds; we expose minutes in the UI
+     *  because a 5-second grace makes no sense and 5 minutes is
+     *  the typical default). */
+    let savedIdleGraceMinutes = $state<number>(5);
+    let idleGraceMinutes = $state<number>(5);
+    let idleGraceStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
     /** Lower bound on the backup interval. Mirrors the daemon's
      *  scheduler floor — the setter clamps any smaller value to this
@@ -142,6 +152,7 @@
                 threshold,
                 grace,
                 pause,
+                idleGraceSecs,
                 intervalHours,
                 retention,
                 stats,
@@ -151,6 +162,7 @@
                 getGpuMemoryThresholdBytes(),
                 getAltTabGraceSeconds(),
                 getPauseWhenBackgrounded(),
+                getIdleGraceSeconds(),
                 getBackupIntervalHours(),
                 getBackupRetentionCount(),
                 getBackupStats(),
@@ -162,6 +174,10 @@
             savedGraceSeconds = grace;
             graceSeconds = Math.max(0, Math.round(grace));
             pauseWhenBackgrounded = pause;
+            // Round to whole minutes for the UI; the daemon stores
+            // seconds, but a sub-minute grace is too short to matter.
+            savedIdleGraceMinutes = Math.max(0, Math.round(idleGraceSecs / 60));
+            idleGraceMinutes = savedIdleGraceMinutes;
             savedBackupIntervalHours = intervalHours;
             backupIntervalHours = Math.max(
                 BACKUP_INTERVAL_FLOOR_HOURS,
@@ -278,6 +294,28 @@
     const graceDirty = $derived(
         Math.max(0, Math.round(savedGraceSeconds)) !== graceSeconds,
     );
+
+    const idleGraceDirty = $derived(
+        Math.max(0, Math.round(savedIdleGraceMinutes)) !== idleGraceMinutes,
+    );
+
+    async function saveIdleGrace() {
+        const minutes = Math.max(0, Math.floor(idleGraceMinutes));
+        const seconds = minutes * 60;
+        idleGraceStatus = 'saving';
+        try {
+            await setIdleGraceSeconds(seconds);
+            savedIdleGraceMinutes = minutes;
+            idleGraceMinutes = minutes;
+            idleGraceStatus = 'saved';
+            setTimeout(() => {
+                if (idleGraceStatus === 'saved') idleGraceStatus = 'idle';
+            }, 2500);
+        } catch (e) {
+            error = String(e);
+            idleGraceStatus = 'error';
+        }
+    }
 
     const backupIntervalDirty = $derived(
         Math.max(
@@ -507,6 +545,42 @@
                 {#if graceStatus === 'saved'}
                     <span class="hint">Saved.</span>
                 {:else if graceDirty}
+                    <span class="hint">Unsaved change.</span>
+                {/if}
+            </div>
+
+            <p class="description sub-description">
+                <strong>Cutscene grace.</strong> The first few minutes of
+                any input-idle period are credited as interactive runtime
+                rather than subtracted as AFK — covers cutscenes, dialogue
+                trees, and long animations where you're watching but not
+                pressing keys. Genuine AFK longer than this still bills
+                correctly: only the first <code>N</code> minutes of each
+                idle interval are forgiven, the rest is subtracted. Set
+                to 0 to disable forgiveness and have every idle second
+                subtracted as before.
+            </p>
+            <label class="field">
+                <span class="field-label">Cutscene grace (minutes)</span>
+                <input
+                    type="number"
+                    min="0"
+                    max="60"
+                    step="1"
+                    bind:value={idleGraceMinutes}
+                />
+            </label>
+            <div class="actions">
+                <button
+                    type="button"
+                    onclick={saveIdleGrace}
+                    disabled={!idleGraceDirty || idleGraceStatus === 'saving'}
+                >
+                    {#if idleGraceStatus === 'saving'}Saving…{:else}Save cutscene grace{/if}
+                </button>
+                {#if idleGraceStatus === 'saved'}
+                    <span class="hint">Saved.</span>
+                {:else if idleGraceDirty}
                     <span class="hint">Unsaved change.</span>
                 {/if}
             </div>
@@ -859,6 +933,24 @@
         font-size: 0.88rem;
         margin: 0 0 1rem;
         line-height: 1.5;
+    }
+
+    /* A second `.description` block within the same card. The
+       spacing-and-divider keeps the two grace fields visually
+       distinct so users don't conflate them. */
+    .sub-description {
+        margin-top: 1.5rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border-soft);
+    }
+
+    .sub-description code {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        background: var(--code-bg);
+        color: var(--code-text);
+        padding: 0.05rem 0.3rem;
+        border-radius: 4px;
+        font-size: 0.78rem;
     }
 
     .field {

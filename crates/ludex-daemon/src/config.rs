@@ -53,6 +53,12 @@ pub struct TrackerConfig {
     /// entirely — sessions only end on process exit. When `true`
     /// (default), the grace window above applies.
     pub pause_when_backgrounded: bool,
+    /// Per-idle-interval forgiveness window: the first `idle_grace`
+    /// of every input-idle interval is credited as interactive
+    /// rather than subtracted as AFK. Covers cutscenes, dialogue,
+    /// long animations — read by the session manager when computing
+    /// `interactive_runtime_seconds`.
+    pub idle_grace: Duration,
     /// Periodic-backup scheduler tunables. Mutated by D-Bus setters;
     /// the scheduler is signalled separately to reset its timer.
     pub backup: BackupConfig,

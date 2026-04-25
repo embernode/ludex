@@ -29,8 +29,19 @@ use tracing::{debug, info, instrument, warn};
 /// Locked state of the idle accumulator.
 #[derive(Debug, Default)]
 struct State {
-    /// Seconds spent in the idle state during closed intervals.
-    closed_seconds: i64,
+    /// Per-interval durations for completed (sealed) idle periods.
+    /// Storing intervals individually — rather than only their sum —
+    /// is what makes the cutscene-forgiveness math possible: each
+    /// natural idle interval is forgiven up to its own grace
+    /// threshold, so two short cutscenes within one session don't
+    /// have their forgiveness pooled into one window.
+    ///
+    /// The Vec grows for the lifetime of the daemon. Idle transitions
+    /// are slow (minutes apart), so even an always-on daemon
+    /// accumulates only thousands of entries per year — the memory
+    /// cost is negligible compared to the bookkeeping a ring-buffer
+    /// would add.
+    closed_intervals_seconds: Vec<i64>,
     /// When the current idle interval started, if any.
     since: Option<Instant>,
 }
@@ -58,9 +69,61 @@ impl IdleTracker {
     #[must_use]
     pub fn accumulated_idle_seconds(&self) -> i64 {
         let s = self.state.lock().expect("idle tracker mutex poisoned");
-        let mut total = s.closed_seconds;
+        let mut total: i64 = s
+            .closed_intervals_seconds
+            .iter()
+            .copied()
+            .fold(0i64, i64::saturating_add);
         if let Some(since) = s.since {
             total = total.saturating_add(seconds_since(since));
+        }
+        total
+    }
+
+    /// Number of completed idle intervals. A session captures this at
+    /// start so [`Self::billable_idle_seconds_since`] knows where its
+    /// view of new intervals begins.
+    #[must_use]
+    pub fn closed_intervals_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("idle tracker mutex poisoned")
+            .closed_intervals_seconds
+            .len()
+    }
+
+    /// Sum of `max(0, interval_duration − grace)` across every
+    /// closed idle interval recorded after `baseline_count`, plus
+    /// the same forgiveness applied to the currently-open interval
+    /// (if any).
+    ///
+    /// Cutscene rationale: a long idle interval is mostly AFK time
+    /// the user wasn't playing, but the first few minutes of *every*
+    /// interval are statistically likely to have been a non-skippable
+    /// cutscene, dialogue tree, or similar engagement-without-input
+    /// event. Forgiving the first `grace` seconds of each natural
+    /// interval credits those back into `interactive_runtime` while
+    /// still subtracting the genuine AFK tail.
+    ///
+    /// Sessions that started when the user was already idle (rare —
+    /// foreground-window activations require input, which clears
+    /// idle) have any open interval billed against them in full,
+    /// minus the grace. The slight over-forgiveness is acceptable
+    /// for the edge case it covers.
+    #[must_use]
+    pub fn billable_idle_seconds_since(
+        &self,
+        baseline_count: usize,
+        grace_seconds: i64,
+    ) -> i64 {
+        let s = self.state.lock().expect("idle tracker mutex poisoned");
+        let mut total: i64 = 0;
+        for dur in s.closed_intervals_seconds.iter().skip(baseline_count) {
+            total = total.saturating_add((*dur - grace_seconds).max(0));
+        }
+        if let Some(since) = s.since {
+            let dur = seconds_since(since);
+            total = total.saturating_add((dur - grace_seconds).max(0));
         }
         total
     }
@@ -84,15 +147,15 @@ impl IdleTracker {
                 s.since = Some(Instant::now());
             }
             (Some(since), false) => {
-                s.closed_seconds = s.closed_seconds.saturating_add(seconds_since(since));
+                let duration = seconds_since(since);
+                s.closed_intervals_seconds.push(duration);
                 s.since = None;
             }
             _ => {}
         }
     }
 
-    /// Add `seconds` to the closed-interval accumulator without
-    /// affecting the currently-open interval (if any).
+    /// Append a synthetic completed idle interval of `seconds`.
     ///
     /// Intended for:
     /// * test code that needs to inject a known amount of idle time
@@ -102,7 +165,7 @@ impl IdleTracker {
     ///   than edge transitions.
     pub fn record_idle_interval(&self, seconds: i64) {
         let mut s = self.state.lock().expect("idle tracker mutex poisoned");
-        s.closed_seconds = s.closed_seconds.saturating_add(seconds);
+        s.closed_intervals_seconds.push(seconds);
     }
 }
 
@@ -227,5 +290,73 @@ mod tests {
         // The closed accumulator still shows as the baseline; open
         // interval adds to it.
         assert!(t.accumulated_idle_seconds() >= 10);
+    }
+
+    #[test]
+    fn closed_intervals_count_grows_on_seal() {
+        let t = IdleTracker::new();
+        assert_eq!(t.closed_intervals_count(), 0);
+        t.set_idle(true);
+        assert_eq!(t.closed_intervals_count(), 0); // still open
+        t.set_idle(false);
+        assert_eq!(t.closed_intervals_count(), 1);
+        t.record_idle_interval(7);
+        assert_eq!(t.closed_intervals_count(), 2);
+    }
+
+    #[test]
+    fn billable_short_intervals_under_grace_are_fully_forgiven() {
+        let t = IdleTracker::new();
+        // Two cutscene-shaped intervals under the grace.
+        t.record_idle_interval(120); // 2 min
+        t.record_idle_interval(180); // 3 min
+        // Grace 5 min: both fully forgiven, both billable values 0.
+        assert_eq!(t.billable_idle_seconds_since(0, 300), 0);
+    }
+
+    #[test]
+    fn billable_long_interval_is_billed_minus_grace() {
+        let t = IdleTracker::new();
+        t.record_idle_interval(30 * 60); // 30 min AFK
+        // Grace 5 min: billable = 25 min.
+        assert_eq!(t.billable_idle_seconds_since(0, 5 * 60), 25 * 60);
+    }
+
+    #[test]
+    fn billable_baseline_skips_intervals_before_session_start() {
+        let t = IdleTracker::new();
+        // 30-min idle that happened *before* the session.
+        t.record_idle_interval(30 * 60);
+        let baseline = t.closed_intervals_count();
+        // 10-min idle during the session — billable = 5 min with
+        // grace = 5 min.
+        t.record_idle_interval(10 * 60);
+        assert_eq!(t.billable_idle_seconds_since(baseline, 5 * 60), 5 * 60);
+    }
+
+    #[test]
+    fn billable_per_interval_grace_does_not_pool_across_two_short_intervals() {
+        let t = IdleTracker::new();
+        // Two 4-minute intervals: total idle 8 min.
+        // Per-session pooled grace would bill 8 - 5 = 3 min.
+        // Per-interval grace bills max(0, 4-5) + max(0, 4-5) = 0.
+        // The latter is the right behaviour for "two cutscenes".
+        t.record_idle_interval(4 * 60);
+        t.record_idle_interval(4 * 60);
+        assert_eq!(t.billable_idle_seconds_since(0, 5 * 60), 0);
+    }
+
+    #[test]
+    fn billable_currently_open_interval_is_included_with_forgiveness() {
+        let t = IdleTracker::new();
+        // Synthetic baseline of 10 minutes already closed (and
+        // billable in full minus grace).
+        t.record_idle_interval(10 * 60);
+        // Open a fresh interval; instantly check billable. The open
+        // interval has elapsed ~0s, so its billable contribution is
+        // max(0, 0 - 300) = 0. Total billable = 10 min - 5 min = 5 min.
+        t.set_idle(true);
+        let billable = t.billable_idle_seconds_since(0, 5 * 60);
+        assert_eq!(billable, 5 * 60);
     }
 }

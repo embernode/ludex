@@ -679,6 +679,7 @@ mod tests {
             gate: GateConfig::default(),
             alt_tab_grace: Duration::from_secs(15),
             pause_when_backgrounded: true,
+            idle_grace: Duration::from_mins(5),
             backup: BackupConfig {
                 interval: Duration::from_hours(24),
                 retention: 14,

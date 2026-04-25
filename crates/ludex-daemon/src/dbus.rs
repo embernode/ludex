@@ -41,8 +41,9 @@ use ludex_core::backup::{list_backups, prune_backups, snapshot_now};
 use ludex_core::repo::{
     ALT_TAB_GRACE_SECONDS, BACKUP_INTERVAL_HOURS, BACKUP_RETENTION_COUNT,
     DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
-    DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, DEFAULT_PAUSE_WHEN_BACKGROUNDED,
-    GPU_MEMORY_THRESHOLD_BYTES, PAUSE_WHEN_BACKGROUNDED,
+    DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, DEFAULT_IDLE_GRACE_SECONDS,
+    DEFAULT_PAUSE_WHEN_BACKGROUNDED, GPU_MEMORY_THRESHOLD_BYTES, IDLE_GRACE_SECONDS,
+    PAUSE_WHEN_BACKGROUNDED,
 };
 use ludex_core::session_merge::{
     merge_adjacent_recent, merge_adjacent_session, DEFAULT_MERGE_GAP_SECONDS,
@@ -403,6 +404,33 @@ impl Tracker {
             .map_err(|e| into_fdo(&e))?;
         self.config.write().await.pause_when_backgrounded = pause;
         info!(pause_when_backgrounded = pause, "setting updated");
+        Ok(())
+    }
+
+    /// Per-idle-interval grace (seconds). The first `grace` seconds
+    /// of every input-idle interval are credited to interactive
+    /// runtime instead of subtracted as AFK; covers cutscenes,
+    /// dialogue trees, and similar engagement-without-input events.
+    async fn get_idle_grace_seconds(&self) -> zbus::fdo::Result<u64> {
+        self.db
+            .settings()
+            .get_u64(IDLE_GRACE_SECONDS, DEFAULT_IDLE_GRACE_SECONDS)
+            .await
+            .map_err(|e| into_fdo(&e))
+    }
+
+    /// Update the cutscene-grace window. DB first, then the shared
+    /// config so the next heartbeat / close-session reads the new
+    /// value — already-billed heartbeats stay as they were, but the
+    /// next snapshot uses the updated grace.
+    async fn set_idle_grace_seconds(&self, seconds: u64) -> zbus::fdo::Result<()> {
+        self.db
+            .settings()
+            .set_u64(IDLE_GRACE_SECONDS, seconds)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        self.config.write().await.idle_grace = std::time::Duration::from_secs(seconds);
+        info!(idle_grace_seconds = seconds, "setting updated");
         Ok(())
     }
 

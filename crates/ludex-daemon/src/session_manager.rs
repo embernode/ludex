@@ -33,6 +33,7 @@ use tracing::{debug, error, info, instrument, warn};
 /// set in one shot — no reload signal, no polling, no TOCTOU.
 pub type SharedBlocklist = Arc<RwLock<HashSet<GameKey>>>;
 
+use crate::config::SharedConfig;
 use crate::dbus::TrackerNotification;
 use crate::event::GameEvent;
 use crate::idle::IdleTracker;
@@ -52,10 +53,12 @@ struct OpenSession {
     session_id: i64,
     application_id: i64,
     started_at: OffsetDateTime,
-    /// Cumulative idle seconds at session start. The delta against
-    /// the tracker's current value is subtracted from the session's
-    /// full runtime to yield the interactive runtime.
-    baseline_idle_seconds: i64,
+    /// Number of completed idle intervals on the [`IdleTracker`] at
+    /// session start. The session's billable-idle calculation only
+    /// considers intervals recorded after this baseline so that AFK
+    /// time before the user picked up the controller doesn't get
+    /// rolled into this play's stats.
+    baseline_idle_intervals_count: usize,
     /// Cumulative suspended seconds at session start. The delta is
     /// subtracted from wall-clock elapsed time before anything else;
     /// a system that suspended for eight hours mid-session must not
@@ -69,6 +72,10 @@ pub struct SessionManager {
     enrichment_ctx: Arc<EnrichmentContext>,
     idle_tracker: Arc<IdleTracker>,
     sleep_tracker: Arc<SleepTracker>,
+    /// Shared tunable config. Read on each heartbeat / close so a
+    /// `SetIdleGraceSeconds` D-Bus call lands on the very next
+    /// runtime calculation — no daemon restart required.
+    config: SharedConfig,
     /// Optional channel to the D-Bus notifier task. `None` when no
     /// Tracker service is exposed (e.g. integration tests that don't
     /// stand up the public API).
@@ -97,6 +104,7 @@ impl SessionManager {
         enrichment_ctx: Arc<EnrichmentContext>,
         idle_tracker: Arc<IdleTracker>,
         sleep_tracker: Arc<SleepTracker>,
+        config: SharedConfig,
         notifications: Option<mpsc::Sender<TrackerNotification>>,
         blocklist: SharedBlocklist,
     ) -> Self {
@@ -105,6 +113,7 @@ impl SessionManager {
             enrichment_ctx,
             idle_tracker,
             sleep_tracker,
+            config,
             notifications,
             blocklist,
             open: HashMap::new(),
@@ -257,7 +266,7 @@ impl SessionManager {
             }
             Err(e) => return Err(e),
         };
-        let baseline_idle_seconds = self.idle_tracker.accumulated_idle_seconds();
+        let baseline_idle_intervals_count = self.idle_tracker.closed_intervals_count();
         let baseline_suspended_seconds = self.sleep_tracker.accumulated_suspended_seconds();
         // Game title logged at debug only; info keeps the numeric
         // identifiers that are enough for correlation without
@@ -271,7 +280,7 @@ impl SessionManager {
         info!(
             app_id = app.id,
             session_id = session.id,
-            baseline_idle_seconds,
+            baseline_idle_intervals_count,
             baseline_suspended_seconds,
             "session opened"
         );
@@ -281,7 +290,7 @@ impl SessionManager {
                 session_id: session.id,
                 application_id: app.id,
                 started_at: at,
-                baseline_idle_seconds,
+                baseline_idle_intervals_count,
                 baseline_suspended_seconds,
             },
         );
@@ -357,8 +366,13 @@ impl SessionManager {
             return Ok(());
         }
         let now = OffsetDateTime::now_utc();
+        // Read the live grace setting once per heartbeat batch — the
+        // alternative (one read per open session) would be redundant
+        // because in practice there's at most one open session.
+        let grace_seconds = i64::try_from(self.config.read().await.idle_grace.as_secs())
+            .unwrap_or(i64::MAX);
         for open in self.open.values() {
-            let (full, interactive) = self.runtimes_for(open, now);
+            let (full, interactive) = self.runtimes_for(open, now, grace_seconds);
             self.db
                 .sessions()
                 .heartbeat(
@@ -375,29 +389,38 @@ impl SessionManager {
     }
 
     /// Compute full and interactive runtime seconds for an open
-    /// session at `now`.
+    /// session at `now`, applying `grace_seconds` of cutscene
+    /// forgiveness to each natural idle interval.
     ///
     /// Wall-clock elapsed time is the upper bound. From it we
     /// subtract system-suspend time to produce `full_runtime` — a
     /// session that survives an eight-hour laptop-closed stretch
     /// must not count those hours as gameplay. Interactive runtime
-    /// further subtracts user-idle time (the user stepped away but
-    /// the process kept running).
+    /// further subtracts billable idle time: each natural input-idle
+    /// interval is forgiven up to `grace_seconds` (the typical
+    /// cutscene length) and only the tail beyond that counts as the
+    /// user genuinely stepping away.
     ///
     /// Both outputs are clamped into `[0, full_runtime]` because the
     /// CHECK constraints on `sessions.*_runtime_seconds` reject
     /// negative values and require `interactive ≤ full`. A single
     /// buggy sample (spurious clock jump, NTP step) must not corrupt
     /// an in-flight heartbeat.
-    fn runtimes_for(&self, open: &OpenSession, now: OffsetDateTime) -> (i64, i64) {
+    fn runtimes_for(
+        &self,
+        open: &OpenSession,
+        now: OffsetDateTime,
+        grace_seconds: i64,
+    ) -> (i64, i64) {
         let wall = (now - open.started_at).whole_seconds().max(0);
         let suspended_during = (self.sleep_tracker.accumulated_suspended_seconds()
             - open.baseline_suspended_seconds)
             .max(0);
         let full = (wall - suspended_during).clamp(0, wall);
-        let idle_during =
-            (self.idle_tracker.accumulated_idle_seconds() - open.baseline_idle_seconds).max(0);
-        let interactive = (full - idle_during).clamp(0, full);
+        let billable_idle = self
+            .idle_tracker
+            .billable_idle_seconds_since(open.baseline_idle_intervals_count, grace_seconds);
+        let interactive = (full - billable_idle).clamp(0, full);
         (full, interactive)
     }
 
@@ -407,7 +430,9 @@ impl SessionManager {
         ended_at: OffsetDateTime,
         reason: ExitReason,
     ) -> Result<(), Error> {
-        let (full, interactive) = self.runtimes_for(&open, ended_at);
+        let grace_seconds = i64::try_from(self.config.read().await.idle_grace.as_secs())
+            .unwrap_or(i64::MAX);
+        let (full, interactive) = self.runtimes_for(&open, ended_at, grace_seconds);
         self.db
             .sessions()
             .close_and_rollup(
