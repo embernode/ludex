@@ -60,6 +60,13 @@ pub fn run() {
             bridge::set_alt_tab_grace_seconds,
             bridge::get_pause_when_backgrounded,
             bridge::set_pause_when_backgrounded,
+            bridge::get_backup_interval_hours,
+            bridge::set_backup_interval_hours,
+            bridge::get_backup_retention_count,
+            bridge::set_backup_retention_count,
+            bridge::take_backup_now,
+            bridge::get_backup_stats,
+            bridge::open_backup_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

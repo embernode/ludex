@@ -181,6 +181,13 @@ they become user-visible or when neighbouring work lands.
   currently rejects for `NoGraphicsLibrary` or
   `NotFullscreenAndLowGpu`. Low priority until a user asks for
   it.
+- **GUI restore from a snapshot.** The Backups settings card
+  exposes interval, retention, manual snapshot, and "open
+  folder", but restoration stays on the CLI
+  (`ludex backup restore <path>`). Restore is destructive,
+  requires the daemon stopped, and the file-picker UX inside a
+  webview is awkward — the CLI handles all of that already.
+  Revisit only if a user without terminal comfort asks for it.
 
 ### Post-M6 (unscheduled)
 

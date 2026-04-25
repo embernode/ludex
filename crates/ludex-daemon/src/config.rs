@@ -21,6 +21,24 @@ use tokio::sync::RwLock;
 
 use crate::gate::GateConfig;
 
+/// Tunables for the periodic database-backup scheduler. Lives on
+/// [`TrackerConfig`] so the GUI can mutate it through the same
+/// pathway as everything else; the scheduler subscribes to the
+/// `backup_changed` `Notify` published by [`crate::daemon::run`] to
+/// learn when this struct moved underneath it.
+#[derive(Debug, Clone, Copy)]
+pub struct BackupConfig {
+    /// Wall-clock cadence between snapshots while the daemon runs.
+    /// The scheduler clamps this above a minimum of one hour so a
+    /// misconfigured value can't turn the timer into a hot loop.
+    pub interval: Duration,
+    /// Number of snapshots to keep after each successful backup.
+    /// Older files are deleted in newest-first order. Pruning
+    /// itself clamps zero to one — leaving nothing recoverable
+    /// would be a surprising configuration outcome.
+    pub retention: usize,
+}
+
 /// Aggregate of every tunable daemon setting.
 #[derive(Debug, Clone)]
 pub struct TrackerConfig {
@@ -35,6 +53,9 @@ pub struct TrackerConfig {
     /// entirely — sessions only end on process exit. When `true`
     /// (default), the grace window above applies.
     pub pause_when_backgrounded: bool,
+    /// Periodic-backup scheduler tunables. Mutated by D-Bus setters;
+    /// the scheduler is signalled separately to reset its timer.
+    pub backup: BackupConfig,
 }
 
 /// Shared handle to the tunable config. Clone the `Arc` — the

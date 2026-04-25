@@ -164,6 +164,59 @@ export async function setPauseWhenBackgrounded(pause: boolean): Promise<void> {
     return invoke<void>('set_pause_when_backgrounded', { pause });
 }
 
+/** Snapshot of the database-backup directory, served by the daemon. */
+export interface BackupStats {
+    /** Absolute path to the backup directory. */
+    directory: string;
+    /** Number of snapshots currently on disk. */
+    count: number;
+    /** Cumulative byte size across every snapshot. */
+    total_bytes: number;
+    /** RFC 3339 timestamp of the newest snapshot, empty when none. */
+    latest_at: string;
+}
+
+/** Hours between automatic database snapshots. */
+export async function getBackupIntervalHours(): Promise<number> {
+    return invoke<number>('get_backup_interval_hours');
+}
+
+/**
+ * Persist the backup interval (hours). Live-reloaded — the daemon's
+ * scheduler resets its timer rather than waiting out the old period.
+ */
+export async function setBackupIntervalHours(hours: number): Promise<void> {
+    return invoke<void>('set_backup_interval_hours', { hours });
+}
+
+/** Number of snapshots the daemon retains after each prune. */
+export async function getBackupRetentionCount(): Promise<number> {
+    return invoke<number>('get_backup_retention_count');
+}
+
+/** Persist the retention count. Applied on the next prune cycle. */
+export async function setBackupRetentionCount(count: number): Promise<void> {
+    return invoke<void>('set_backup_retention_count', { count });
+}
+
+/**
+ * Ask the daemon to take a snapshot now and prune to the configured
+ * retention. Resolves with the absolute path of the new snapshot.
+ */
+export async function takeBackupNow(): Promise<string> {
+    return invoke<string>('take_backup_now');
+}
+
+/** Directory + size + last-snapshot summary the settings page shows. */
+export async function getBackupStats(): Promise<BackupStats> {
+    return invoke<BackupStats>('get_backup_stats');
+}
+
+/** Open the backup directory in the user's file manager. */
+export async function openBackupDirectory(path: string): Promise<void> {
+    return invoke<void>('open_backup_directory', { path });
+}
+
 export function onApplicationAdded(
     cb: (applicationId: number) => void,
 ): Promise<UnlistenFn> {

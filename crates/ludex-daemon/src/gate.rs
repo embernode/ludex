@@ -652,7 +652,7 @@ mod tests {
         // The test binary does not link GL/Vulkan/SDL, so the gate
         // should reject with NoGraphicsLibrary. This exercises the
         // real /proc read path.
-        use crate::config::TrackerConfig;
+        use crate::config::{BackupConfig, TrackerConfig};
         use std::sync::Arc;
         use std::time::Duration;
         use tokio::sync::RwLock;
@@ -660,6 +660,10 @@ mod tests {
             gate: GateConfig::default(),
             alt_tab_grace: Duration::from_secs(15),
             pause_when_backgrounded: true,
+            backup: BackupConfig {
+                interval: Duration::from_hours(24),
+                retention: 14,
+            },
         }));
         let gate = Gate::new(config);
         let decision = gate

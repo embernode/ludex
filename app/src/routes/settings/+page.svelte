@@ -6,17 +6,25 @@
     import {
         blockApplication,
         getAltTabGraceSeconds,
+        getBackupIntervalHours,
+        getBackupRetentionCount,
+        getBackupStats,
         getGpuMemoryThresholdBytes,
         getPauseWhenBackgrounded,
         listApplications,
         listBlockedApplicationIds,
         onBlocklistChanged,
         onDaemonReconnected,
+        openBackupDirectory,
         setAltTabGraceSeconds,
+        setBackupIntervalHours,
+        setBackupRetentionCount,
         setGpuMemoryThresholdBytes,
         setPauseWhenBackgrounded,
+        takeBackupNow,
         unblockApplication,
         type ApplicationSummary,
+        type BackupStats,
     } from '$lib/api';
     import {
         currentTimestampFormat,
@@ -30,6 +38,18 @@
     let apps = $state<ApplicationSummary[]>([]);
     let blocked = $state<Set<number>>(new Set());
     let loading = $state(true);
+    /** True once the initial `load()` populated the page state. Lets
+     *  the template distinguish "load failed before we had anything
+     *  to show" (full-page error) from "save failed mid-session"
+     *  (inline banner that keeps the form visible so the user can
+     *  retry without losing their typed values). */
+    let loaded = $state(false);
+    /** Reason the initial `load()` failed; renders as a full-page
+     *  banner only while `loaded` is still false. */
+    let loadError = $state<string | null>(null);
+    /** Most recent per-action error (save, manual snapshot, etc.).
+     *  Rendered as a dismissable inline banner above the sections —
+     *  never replaces the form, so the user can retry in place. */
     let error = $state<string | null>(null);
 
     /** Bytes currently persisted, for dirty-check. */
@@ -47,6 +67,32 @@
     /** Whether losing focus should pause the session. Saves
      *  immediately on toggle — no dirty-check / save button. */
     let pauseWhenBackgrounded = $state<boolean>(true);
+
+    /** Lower bound on the backup interval. Mirrors the daemon's
+     *  scheduler floor — the setter clamps any smaller value to this
+     *  before persisting, so 0 in the input becomes 1 on save. */
+    const BACKUP_INTERVAL_FLOOR_HOURS = 1;
+
+    /** Hours currently persisted, for dirty-check. */
+    let savedBackupIntervalHours = $state<number>(24);
+    let backupIntervalHours = $state<number>(24);
+    let backupIntervalStatus = $state<'idle' | 'saving' | 'saved' | 'error'>(
+        'idle',
+    );
+
+    /** Snapshots currently persisted, for dirty-check. */
+    let savedBackupRetention = $state<number>(14);
+    let backupRetention = $state<number>(14);
+    let backupRetentionStatus = $state<'idle' | 'saving' | 'saved' | 'error'>(
+        'idle',
+    );
+
+    /** Directory + count + size summary. `null` while loading or when
+     *  the daemon couldn't resolve a backup directory. */
+    let backupStats = $state<BackupStats | null>(null);
+
+    let backupNowStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
+    let backupNowMessage = $state<string>('');
 
     /**
      * Timestamp format preference. Stored in `localStorage` and
@@ -90,12 +136,24 @@
     async function load() {
         loading = true;
         try {
-            const [a, ids, threshold, grace, pause] = await Promise.all([
+            const [
+                a,
+                ids,
+                threshold,
+                grace,
+                pause,
+                intervalHours,
+                retention,
+                stats,
+            ] = await Promise.all([
                 listApplications(),
                 listBlockedApplicationIds(),
                 getGpuMemoryThresholdBytes(),
                 getAltTabGraceSeconds(),
                 getPauseWhenBackgrounded(),
+                getBackupIntervalHours(),
+                getBackupRetentionCount(),
+                getBackupStats(),
             ]);
             apps = a;
             blocked = new Set(ids);
@@ -104,11 +162,40 @@
             savedGraceSeconds = grace;
             graceSeconds = Math.max(0, Math.round(grace));
             pauseWhenBackgrounded = pause;
-            error = null;
+            savedBackupIntervalHours = intervalHours;
+            backupIntervalHours = Math.max(
+                BACKUP_INTERVAL_FLOOR_HOURS,
+                Math.round(intervalHours),
+            );
+            savedBackupRetention = retention;
+            backupRetention = Math.max(1, Math.round(retention));
+            backupStats = stats;
+            loaded = true;
+            loadError = null;
         } catch (e) {
-            error = String(e);
+            // Pre-`loaded` failure → full-page banner; mid-session
+            // failures (e.g. the daemon dropped after a successful
+            // first load and a reconnect retry hit it before the bus
+            // came back) surface inline so the user keeps the form.
+            if (loaded) {
+                error = String(e);
+            } else {
+                loadError = String(e);
+            }
         } finally {
             loading = false;
+        }
+    }
+
+    /** Pull a fresh `BackupStats` without disturbing the rest of the
+     *  page. Called after manual snapshots so the size/count/last
+     *  fields update. Failures are surfaced through `error` so the
+     *  user sees them — silent staleness would be more confusing. */
+    async function refreshBackupStats() {
+        try {
+            backupStats = await getBackupStats();
+        } catch (e) {
+            error = String(e);
         }
     }
 
@@ -192,6 +279,110 @@
         Math.max(0, Math.round(savedGraceSeconds)) !== graceSeconds,
     );
 
+    const backupIntervalDirty = $derived(
+        Math.max(
+            BACKUP_INTERVAL_FLOOR_HOURS,
+            Math.round(savedBackupIntervalHours),
+        ) !== backupIntervalHours,
+    );
+
+    const backupRetentionDirty = $derived(
+        Math.max(1, Math.round(savedBackupRetention)) !== backupRetention,
+    );
+
+    async function saveBackupInterval() {
+        const hours = Math.max(
+            BACKUP_INTERVAL_FLOOR_HOURS,
+            Math.floor(backupIntervalHours),
+        );
+        backupIntervalStatus = 'saving';
+        try {
+            await setBackupIntervalHours(hours);
+            savedBackupIntervalHours = hours;
+            backupIntervalHours = hours;
+            backupIntervalStatus = 'saved';
+            setTimeout(() => {
+                if (backupIntervalStatus === 'saved') {
+                    backupIntervalStatus = 'idle';
+                }
+            }, 2500);
+        } catch (e) {
+            error = String(e);
+            backupIntervalStatus = 'error';
+        }
+    }
+
+    async function saveBackupRetention() {
+        const count = Math.max(1, Math.floor(backupRetention));
+        backupRetentionStatus = 'saving';
+        try {
+            await setBackupRetentionCount(count);
+            savedBackupRetention = count;
+            backupRetention = count;
+            // The daemon prunes immediately on save so older
+            // snapshots beyond the new count are gone — refresh the
+            // stats card so count and total size reflect that
+            // without waiting for the next snapshot.
+            await refreshBackupStats();
+            backupRetentionStatus = 'saved';
+            setTimeout(() => {
+                if (backupRetentionStatus === 'saved') {
+                    backupRetentionStatus = 'idle';
+                }
+            }, 2500);
+        } catch (e) {
+            error = String(e);
+            backupRetentionStatus = 'error';
+        }
+    }
+
+    async function backupNow() {
+        backupNowStatus = 'saving';
+        backupNowMessage = '';
+        try {
+            const path = await takeBackupNow();
+            // The path is daemon-resolved; show only the filename
+            // since the directory is rendered elsewhere on the card.
+            const filename = path.split('/').pop() ?? path;
+            backupNowMessage = `Saved ${filename}`;
+            backupNowStatus = 'saved';
+            await refreshBackupStats();
+            setTimeout(() => {
+                if (backupNowStatus === 'saved') {
+                    backupNowStatus = 'idle';
+                }
+            }, 4000);
+        } catch (e) {
+            error = String(e);
+            backupNowStatus = 'error';
+            backupNowMessage = '';
+        }
+    }
+
+    async function openBackupFolder() {
+        if (!backupStats) return;
+        try {
+            await openBackupDirectory(backupStats.directory);
+        } catch (e) {
+            error = String(e);
+        }
+    }
+
+    /** Format a byte count as a short human-readable string.
+     *  Mirrors the daemon CLI's `format_size` so the GUI and CLI
+     *  agree on labels for the same file sizes. */
+    function formatBytes(bytes: number): string {
+        const KIB = 1024;
+        const MIB_ = 1024 * 1024;
+        const GIB = 1024 * 1024 * 1024;
+        if (bytes < KIB) return `${bytes} B`;
+        const tenths = (n: number, unit: number) =>
+            Math.floor((n * 10) / unit) / 10;
+        if (bytes < MIB_) return `${tenths(bytes, KIB).toFixed(1)} KiB`;
+        if (bytes < GIB) return `${tenths(bytes, MIB_).toFixed(1)} MiB`;
+        return `${tenths(bytes, GIB).toFixed(1)} GiB`;
+    }
+
     onMount(() => {
         load();
         // Version read is fire-and-forget; an old Tauri without
@@ -218,15 +409,28 @@
         <h1>Settings</h1>
     </header>
 
-    {#if loading && apps.length === 0}
+    {#if loading && !loaded}
         <p class="hint">Loading…</p>
-    {:else if error}
+    {:else if loadError && !loaded}
         <div class="error">
             <p><strong>Couldn't reach the daemon.</strong></p>
-            <p class="detail">{error}</p>
+            <p class="detail">{loadError}</p>
             <p class="hint">Is <code>ludex-daemon</code> running?</p>
         </div>
     {:else}
+        {#if error}
+            <div class="error inline">
+                <p class="detail">{error}</p>
+                <button
+                    type="button"
+                    class="link-button"
+                    onclick={() => (error = null)}
+                    aria-label="Dismiss"
+                >
+                    Dismiss
+                </button>
+            </div>
+        {/if}
         <section>
             <h2>Detection thresholds</h2>
             <p class="description">
@@ -328,6 +532,112 @@
             <p class="hint">
                 Preview: {formatTimestamp(TS_SAMPLE, tsFormat)}
             </p>
+        </section>
+
+        <section>
+            <h2>Backups</h2>
+            <p class="description">
+                The daemon snapshots your database on a fixed cadence and
+                once more on a clean shutdown. Snapshots are written to a
+                local directory; nothing leaves your machine.
+            </p>
+
+            {#if backupStats}
+                <dl class="backup-facts">
+                    <dt>Snapshots</dt>
+                    <dd>
+                        {backupStats.count}
+                        {#if backupStats.count > 0}
+                            · {formatBytes(backupStats.total_bytes)} on disk
+                        {/if}
+                    </dd>
+                    <dt>Last snapshot</dt>
+                    <dd>
+                        {backupStats.latest_at
+                            ? formatTimestamp(
+                                  backupStats.latest_at,
+                                  tsFormat,
+                              )
+                            : '—'}
+                    </dd>
+                    <dt>Folder</dt>
+                    <dd class="backup-path">
+                        <code>{backupStats.directory}</code>
+                        <button
+                            type="button"
+                            class="link-button"
+                            onclick={openBackupFolder}
+                        >
+                            Open
+                        </button>
+                    </dd>
+                </dl>
+            {/if}
+
+            <label class="field">
+                <span class="field-label">Snapshots to keep</span>
+                <input
+                    type="number"
+                    min="1"
+                    max="365"
+                    step="1"
+                    bind:value={backupRetention}
+                />
+            </label>
+            <div class="actions">
+                <button
+                    type="button"
+                    onclick={saveBackupRetention}
+                    disabled={!backupRetentionDirty ||
+                        backupRetentionStatus === 'saving'}
+                >
+                    {#if backupRetentionStatus === 'saving'}Saving…{:else}Save retention{/if}
+                </button>
+                {#if backupRetentionStatus === 'saved'}
+                    <span class="hint">Saved.</span>
+                {:else if backupRetentionDirty}
+                    <span class="hint">Unsaved change.</span>
+                {/if}
+            </div>
+
+            <label class="field">
+                <span class="field-label">Interval (hours)</span>
+                <input
+                    type="number"
+                    min={BACKUP_INTERVAL_FLOOR_HOURS}
+                    max="720"
+                    step="1"
+                    bind:value={backupIntervalHours}
+                />
+            </label>
+            <div class="actions">
+                <button
+                    type="button"
+                    onclick={saveBackupInterval}
+                    disabled={!backupIntervalDirty ||
+                        backupIntervalStatus === 'saving'}
+                >
+                    {#if backupIntervalStatus === 'saving'}Saving…{:else}Save interval{/if}
+                </button>
+                {#if backupIntervalStatus === 'saved'}
+                    <span class="hint">Saved.</span>
+                {:else if backupIntervalDirty}
+                    <span class="hint">Unsaved change.</span>
+                {/if}
+            </div>
+
+            <div class="actions">
+                <button
+                    type="button"
+                    onclick={backupNow}
+                    disabled={backupNowStatus === 'saving'}
+                >
+                    {#if backupNowStatus === 'saving'}Backing up…{:else}Back up now{/if}
+                </button>
+                {#if backupNowStatus === 'saved' && backupNowMessage}
+                    <span class="hint">{backupNowMessage}</span>
+                {/if}
+            </div>
         </section>
 
         <section class="blocked-section">
@@ -683,5 +993,55 @@
     .block-toggle.is-blocked {
         border-color: var(--accent);
         color: var(--accent);
+    }
+
+    /* Inline variant of the global `.error` block, used for
+       per-action failures so the form stays visible. Pairs the
+       message with a Dismiss button on the right. */
+    .error.inline {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.6rem 0.9rem;
+        margin-bottom: 1rem;
+    }
+
+    .backup-facts {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.3rem 1rem;
+        margin: 0 0 1rem;
+        font-size: 0.88rem;
+    }
+
+    .backup-facts dt {
+        color: var(--text-subtle);
+        text-transform: uppercase;
+        font-size: 0.75rem;
+        letter-spacing: 0.03em;
+        align-self: center;
+    }
+
+    .backup-facts dd {
+        margin: 0;
+        color: var(--text-secondary);
+    }
+
+    .backup-path {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+    }
+
+    .backup-path code {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        background: var(--code-bg);
+        color: var(--code-text);
+        padding: 0.1rem 0.35rem;
+        border-radius: 4px;
+        font-size: 0.8rem;
+        word-break: break-all;
     }
 </style>

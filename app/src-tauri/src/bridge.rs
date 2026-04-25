@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 pub(crate) use ludex_dbus_types::{
-    ApplicationSummary, DailyPlaytime, SessionSummary, SERVICE_NAME,
+    ApplicationSummary, BackupStats, DailyPlaytime, SessionSummary, SERVICE_NAME,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -91,6 +91,12 @@ pub(crate) trait Tracker {
     fn set_alt_tab_grace_seconds(&self, seconds: u64) -> zbus::Result<()>;
     fn get_pause_when_backgrounded(&self) -> zbus::Result<bool>;
     fn set_pause_when_backgrounded(&self, pause: bool) -> zbus::Result<()>;
+    fn get_backup_interval_hours(&self) -> zbus::Result<u64>;
+    fn set_backup_interval_hours(&self, hours: u64) -> zbus::Result<()>;
+    fn get_backup_retention_count(&self) -> zbus::Result<u64>;
+    fn set_backup_retention_count(&self, count: u64) -> zbus::Result<()>;
+    fn take_backup_now(&self) -> zbus::Result<String>;
+    fn get_backup_stats(&self) -> zbus::Result<BackupStats>;
 
     #[zbus(signal)]
     fn application_added(&self, application_id: i64) -> zbus::Result<()>;
@@ -317,6 +323,94 @@ pub(crate) async fn set_pause_when_backgrounded(
         .set_pause_when_backgrounded(pause)
         .await
         .map_err(|e| friendly(&e))
+}
+
+/// `invoke('get_backup_interval_hours')`.
+#[tauri::command]
+pub(crate) async fn get_backup_interval_hours(bridge: BridgeState<'_>) -> Result<u64, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .get_backup_interval_hours()
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('set_backup_interval_hours', { hours })`. Live-reloaded —
+/// the daemon's backup scheduler resets its timer rather than
+/// waiting out the old cadence.
+#[tauri::command]
+pub(crate) async fn set_backup_interval_hours(
+    bridge: BridgeState<'_>,
+    hours: u64,
+) -> Result<(), String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .set_backup_interval_hours(hours)
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('get_backup_retention_count')`.
+#[tauri::command]
+pub(crate) async fn get_backup_retention_count(bridge: BridgeState<'_>) -> Result<u64, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .get_backup_retention_count()
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('set_backup_retention_count', { count })`. Applies on the
+/// next prune cycle — i.e. the next snapshot.
+#[tauri::command]
+pub(crate) async fn set_backup_retention_count(
+    bridge: BridgeState<'_>,
+    count: u64,
+) -> Result<(), String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .set_backup_retention_count(count)
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('take_backup_now')`. Returns the absolute path of the new
+/// snapshot so the GUI can show "saved to X" feedback.
+#[tauri::command]
+pub(crate) async fn take_backup_now(bridge: BridgeState<'_>) -> Result<String, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy.take_backup_now().await.map_err(|e| friendly(&e))
+}
+
+/// `invoke('get_backup_stats')`. Reports the directory + size +
+/// last-snapshot timestamp the settings page renders next to the
+/// retention controls.
+#[tauri::command]
+pub(crate) async fn get_backup_stats(bridge: BridgeState<'_>) -> Result<BackupStats, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy.get_backup_stats().await.map_err(|e| friendly(&e))
+}
+
+/// `invoke('open_backup_directory', { path })` opens `path` in the
+/// user's file manager. Trusted because the path always originates
+/// from `get_backup_stats` (which only returns
+/// `default_backup_dir()`); we still spawn `xdg-open` rather than
+/// shelling through the opener plugin's path scope to keep the
+/// capability JSON limited to URLs.
+#[tauri::command]
+pub(crate) async fn open_backup_directory(path: String) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    let status = Command::new("xdg-open")
+        .arg(&path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("xdg-open: {e}"))?;
+    if !status.success() {
+        return Err(format!("xdg-open exited with status {status}"));
+    }
+    Ok(())
 }
 
 /// `invoke('list_sessions_for_application', { applicationId, limit })`.

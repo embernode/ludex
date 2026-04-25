@@ -37,22 +37,26 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use ludex_core::backup::{list_backups, prune_backups, snapshot_now};
 use ludex_core::repo::{
-    ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
-    DEFAULT_PAUSE_WHEN_BACKGROUNDED, GPU_MEMORY_THRESHOLD_BYTES, PAUSE_WHEN_BACKGROUNDED,
+    ALT_TAB_GRACE_SECONDS, BACKUP_INTERVAL_HOURS, BACKUP_RETENTION_COUNT,
+    DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
+    DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, DEFAULT_PAUSE_WHEN_BACKGROUNDED,
+    GPU_MEMORY_THRESHOLD_BYTES, PAUSE_WHEN_BACKGROUNDED,
 };
-use ludex_core::{Database, LauncherType, Session};
+use ludex_core::{default_backup_dir, Database, LauncherType, Session};
 pub use ludex_dbus_types::{
-    ApplicationSummary, DailyPlaytime, SessionSummary, OBJECT_PATH, SERVICE_NAME,
+    ApplicationSummary, BackupStats, DailyPlaytime, SessionSummary, OBJECT_PATH, SERVICE_NAME,
 };
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tracing::{debug, error, info, instrument, warn};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::object_server::SignalEmitter;
 use zbus::Connection;
 
+use crate::backup::MIN_INTERVAL_SECONDS;
 use crate::config::SharedConfig;
 use crate::session_manager::SharedBlocklist;
 
@@ -88,6 +92,11 @@ pub struct Tracker {
     db: Arc<Database>,
     blocklist: SharedBlocklist,
     config: SharedConfig,
+    /// Notifies the backup scheduler when a backup-related setting
+    /// has been mutated through this interface. The scheduler
+    /// re-reads `config` and resets its timer so the change applies
+    /// before the next snapshot, not after the in-flight one.
+    backup_changed: Arc<Notify>,
 }
 
 impl Tracker {
@@ -97,11 +106,17 @@ impl Tracker {
     /// three handles are mutated in place by the corresponding setter
     /// RPCs so changes take effect on the very next event.
     #[must_use]
-    pub fn new(db: Arc<Database>, blocklist: SharedBlocklist, config: SharedConfig) -> Self {
+    pub fn new(
+        db: Arc<Database>,
+        blocklist: SharedBlocklist,
+        config: SharedConfig,
+        backup_changed: Arc<Notify>,
+    ) -> Self {
         Self {
             db,
             blocklist,
             config,
+            backup_changed,
         }
     }
 }
@@ -367,6 +382,138 @@ impl Tracker {
         Ok(())
     }
 
+    /// Cadence (hours) between automatic database snapshots. The
+    /// scheduler clamps anything below the safety floor at read
+    /// time, so a returned value can technically be lower than the
+    /// effective interval — the GUI is expected to apply the same
+    /// floor in its input control.
+    async fn get_backup_interval_hours(&self) -> zbus::fdo::Result<u64> {
+        self.db
+            .settings()
+            .get_u64(BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_INTERVAL_HOURS)
+            .await
+            .map_err(|e| into_fdo(&e))
+    }
+
+    /// Update the backup cadence. Clamped to the scheduler's safety
+    /// floor before persisting so the stored value matches what the
+    /// scheduler actually uses; otherwise a "you saved 1h" toast
+    /// would mislead a user that typed `0`. The scheduler is then
+    /// notified to reset its timer immediately rather than waiting
+    /// for the in-flight tick.
+    async fn set_backup_interval_hours(&self, hours: u64) -> zbus::fdo::Result<()> {
+        let floor_hours = MIN_INTERVAL_SECONDS / 3_600;
+        let hours = hours.max(floor_hours);
+        self.db
+            .settings()
+            .set_u64(BACKUP_INTERVAL_HOURS, hours)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        self.config.write().await.backup.interval =
+            std::time::Duration::from_secs(hours.saturating_mul(3_600));
+        self.backup_changed.notify_one();
+        info!(backup_interval_hours = hours, "setting updated");
+        Ok(())
+    }
+
+    /// Number of snapshots the scheduler retains after each prune.
+    async fn get_backup_retention_count(&self) -> zbus::fdo::Result<u64> {
+        self.db
+            .settings()
+            .get_u64(BACKUP_RETENTION_COUNT, DEFAULT_BACKUP_RETENTION_COUNT)
+            .await
+            .map_err(|e| into_fdo(&e))
+    }
+
+    /// Update the retention count and immediately prune the backup
+    /// directory to that count. The prune routine clamps zero to one
+    /// internally; we apply the same clamp at the setter so the
+    /// stored value matches what the GUI sees on its next refresh.
+    ///
+    /// Pruning at save-time matches the user's mental model: typing
+    /// a smaller number means "I want this many *now*", not "after
+    /// the next snapshot eventually". The CLI's
+    /// `ludex backup prune --keep N` already behaves this way.
+    /// `prune_backups` itself enforces the `>= 1` floor regardless
+    /// of what we hand it, so this path can never drop the on-disk
+    /// set to zero.
+    async fn set_backup_retention_count(&self, count: u64) -> zbus::fdo::Result<()> {
+        let count = count.max(1);
+        self.db
+            .settings()
+            .set_u64(BACKUP_RETENTION_COUNT, count)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        let retention_usize = usize::try_from(count).unwrap_or(usize::MAX);
+        self.config.write().await.backup.retention = retention_usize;
+        self.backup_changed.notify_one();
+        // Prune is best-effort: a missing backup directory or a
+        // permission glitch shouldn't fail the setting save.
+        // `default_backup_dir` returning `None` only happens in the
+        // "neither XDG_DATA_HOME nor HOME is set" edge case the
+        // scheduler already disables itself for; logging once and
+        // moving on keeps the GUI flow snappy.
+        if let Some(dir) = default_backup_dir() {
+            match prune_backups(&dir, retention_usize) {
+                Ok(removed) if !removed.is_empty() => {
+                    info!(
+                        removed = removed.len(),
+                        retention = retention_usize,
+                        "pruned older snapshots after retention save"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "prune-on-save failed"),
+            }
+        }
+        info!(backup_retention_count = count, "setting updated");
+        Ok(())
+    }
+
+    /// Take a snapshot now and prune to the configured retention,
+    /// returning the absolute path of the new file. Routes through
+    /// the same primitive the scheduler uses, so manual and
+    /// automatic snapshots stay byte-compatible.
+    async fn take_backup_now(&self) -> zbus::fdo::Result<String> {
+        let path = snapshot_now(&self.db, None)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        info!(path = %path.display(), "manual snapshot taken via D-Bus");
+        Ok(path.display().to_string())
+    }
+
+    /// Summary of the on-disk backup set. The directory is always
+    /// reported even when no backups exist, so the GUI can offer an
+    /// "open folder" affordance without first taking a snapshot.
+    #[allow(
+        clippy::unused_async,
+        reason = "kept async for symmetry with the rest of the interface; the directory is small and reading it doesn't need offloading"
+    )]
+    async fn get_backup_stats(&self) -> zbus::fdo::Result<BackupStats> {
+        let dir = default_backup_dir().ok_or_else(|| {
+            zbus::fdo::Error::Failed(
+                "neither XDG_DATA_HOME nor HOME is set; cannot resolve backup dir".to_owned(),
+            )
+        })?;
+        let entries = list_backups(&dir).map_err(|e| into_fdo(&e))?;
+        let total_bytes: u64 = entries.iter().map(|e| e.size_bytes).sum();
+        // Entries are sorted newest-first by `list_backups`; the
+        // first one with a parseable timestamp wins. A directory
+        // full of unparseable filenames reports an empty `latest_at`
+        // rather than guessing from mtime — the GUI shows "—" then.
+        let latest_at = entries
+            .iter()
+            .find_map(|e| e.timestamp)
+            .and_then(|t| t.format(&Rfc3339).ok())
+            .unwrap_or_default();
+        Ok(BackupStats {
+            directory: dir.display().to_string(),
+            count: entries.len() as u64,
+            total_bytes,
+            latest_at,
+        })
+    }
+
     /// Fired when a fresh application row was inserted into the
     /// database. Clients that maintain an in-memory list of
     /// applications should re-read `ListApplications`.
@@ -441,8 +588,9 @@ pub async fn serve(
     db: Arc<Database>,
     blocklist: SharedBlocklist,
     config: SharedConfig,
+    backup_changed: Arc<Notify>,
 ) -> anyhow::Result<Connection> {
-    let tracker = Tracker::new(db, blocklist, config);
+    let tracker = Tracker::new(db, blocklist, config, backup_changed);
     // Build the connection without requesting the name in the
     // builder so we can supply explicit flags below. The default
     // path takes the name-queue slot if the name is already

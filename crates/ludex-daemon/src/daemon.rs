@@ -9,11 +9,11 @@ use anyhow::{Context, Result};
 use ludex_core::{default_database_path, Database};
 use ludex_enrich::EnrichmentContext;
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::{mpsc, watch, RwLock};
+use tokio::sync::{mpsc, watch, Notify, RwLock};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::config::{SharedConfig, TrackerConfig};
+use crate::config::{BackupConfig, SharedConfig, TrackerConfig};
 use crate::dbus::{self, TrackerNotification};
 use crate::gate::{Gate, GateConfig};
 use crate::idle::{self, IdleTracker};
@@ -21,8 +21,10 @@ use crate::session_manager::{SessionManager, SharedBlocklist};
 use crate::sleep::{self, SleepTracker};
 use crate::sources::{KWinForegroundSource, SteamSource};
 use ludex_core::repo::{
-    ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
-    DEFAULT_PAUSE_WHEN_BACKGROUNDED, GPU_MEMORY_THRESHOLD_BYTES, PAUSE_WHEN_BACKGROUNDED,
+    ALT_TAB_GRACE_SECONDS, BACKUP_INTERVAL_HOURS, BACKUP_RETENTION_COUNT,
+    DEFAULT_ALT_TAB_GRACE_SECONDS, DEFAULT_BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_RETENTION_COUNT,
+    DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, DEFAULT_PAUSE_WHEN_BACKGROUNDED,
+    GPU_MEMORY_THRESHOLD_BYTES, PAUSE_WHEN_BACKGROUNDED,
 };
 
 const EVENT_CHANNEL_CAPACITY: usize = 128;
@@ -80,6 +82,13 @@ pub async fn run() -> Result<()> {
         })));
     info!(blocked = blocklist.read().await.len(), "blocklist loaded");
 
+    // Signal channel from the D-Bus backup setters to the scheduler.
+    // The setter writes the new value to `shared_config`, then
+    // `notify_one`s; the scheduler wakes, re-reads, and resets its
+    // timer if the cadence moved. Cheap to keep around even when
+    // nothing is listening — `Notify` accumulates at most one permit.
+    let backup_changed = Arc::new(Notify::new());
+
     // Public D-Bus API. Served on its own session-bus connection
     // (distinct from the KWin callback's org.kde.ludex.Tracker1)
     // so each service's lifecycle is independent.
@@ -88,6 +97,7 @@ pub async fn run() -> Result<()> {
         Arc::clone(&shared_db),
         Arc::clone(&blocklist),
         Arc::clone(&shared_config),
+        Arc::clone(&backup_changed),
     )
     .await
     .context("register net.ludex.Tracker1 service")?;
@@ -141,11 +151,15 @@ pub async fn run() -> Result<()> {
 
     // Periodic + on-shutdown database snapshots. Runs against the
     // same pool as everyone else; SQLite's VACUUM INTO is safe to
-    // interleave with live writers.
+    // interleave with live writers. The shared config + Notify let
+    // GUI-driven changes to interval and retention apply without a
+    // daemon restart.
     let backup_handle = {
         let db = db.clone();
+        let cfg = Arc::clone(&shared_config);
+        let notify = Arc::clone(&backup_changed);
         let sd = shutdown_rx.clone();
-        tokio::spawn(async move { crate::backup::run_scheduler(db, sd).await })
+        tokio::spawn(async move { crate::backup::run_scheduler(db, cfg, notify, sd).await })
     };
 
     let source_handles =
@@ -276,16 +290,53 @@ async fn resolve_tracker_config(db: &Database) -> TrackerConfig {
             DEFAULT_PAUSE_WHEN_BACKGROUNDED
         }
     };
+    let backup_interval_hours = match db
+        .settings()
+        .get_u64(BACKUP_INTERVAL_HOURS, DEFAULT_BACKUP_INTERVAL_HOURS)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                error = %e,
+                setting = BACKUP_INTERVAL_HOURS,
+                "settings read failed; using compiled-in default"
+            );
+            DEFAULT_BACKUP_INTERVAL_HOURS
+        }
+    };
+    let backup_retention = match db
+        .settings()
+        .get_u64(BACKUP_RETENTION_COUNT, DEFAULT_BACKUP_RETENTION_COUNT)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                error = %e,
+                setting = BACKUP_RETENTION_COUNT,
+                "settings read failed; using compiled-in default"
+            );
+            DEFAULT_BACKUP_RETENTION_COUNT
+        }
+    };
+    let backup = BackupConfig {
+        interval: Duration::from_secs(backup_interval_hours.saturating_mul(3_600)),
+        retention: usize::try_from(backup_retention).unwrap_or(usize::MAX),
+    };
     info!(
         gpu_memory_threshold_bytes = gate.gpu_memory_threshold_bytes,
         alt_tab_grace_seconds = alt_tab_grace.as_secs(),
         pause_when_backgrounded,
+        backup_interval_hours,
+        backup_retention,
         "tracker configuration loaded"
     );
     TrackerConfig {
         gate,
         alt_tab_grace,
         pause_when_backgrounded,
+        backup,
     }
 }
 

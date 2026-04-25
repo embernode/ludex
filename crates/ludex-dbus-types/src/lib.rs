@@ -82,6 +82,29 @@ pub struct DailyPlaytime {
     pub session_count: i64,
 }
 
+/// Snapshot of the database-backup directory, shaped for the GUI.
+///
+/// Produced by `net.ludex.Tracker1.GetBackupStats`. Lets the
+/// settings page show "you have N backups using X disk" without
+/// the GUI listing files itself.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct BackupStats {
+    /// Absolute path to the directory ludex writes snapshots into.
+    /// Always reported even when no backups exist yet, so the GUI
+    /// can offer an "open folder" affordance unconditionally.
+    pub directory: String,
+    /// Number of `ludex-*.sqlite` files in the directory.
+    pub count: u64,
+    /// Cumulative byte size across every snapshot.
+    pub total_bytes: u64,
+    /// RFC 3339 UTC timestamp of the newest snapshot, or empty
+    /// when [`count`] is zero or the newest filename has no
+    /// parseable timestamp.
+    ///
+    /// [`count`]: BackupStats::count
+    pub latest_at: String,
+}
+
 /// Session row shaped for the GUI.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct SessionSummary {
