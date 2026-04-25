@@ -46,25 +46,44 @@ const TOOLTIP_IDLE: &str = "ludex";
 /// session is being tracked.
 const TOOLTIP_ACTIVE_UNRESOLVED: &str = "ludex · session active";
 
-/// PNG bytes for the light-theme (dark-shape) and dark-theme
-/// (light-shape) icon variants. Kept at 256px so downsampling to
-/// typical tray sizes (16/22/24) stays crisp.
+/// PNG bytes for the four icon variants (theme × session-active).
+/// Kept at 256px so downsampling to typical tray sizes
+/// (16/22/24) stays crisp. The active variant differs from the
+/// idle one only in the inner Play triangle, which is filled
+/// green to indicate an in-flight session — same overall logo
+/// silhouette, so the user reads "active" as a colour change
+/// rather than a different shape.
 const ICON_PNG_LIGHT: &[u8] = include_bytes!("../icons/icon_light.png");
 const ICON_PNG_DARK: &[u8] = include_bytes!("../icons/icon.png");
+const ICON_PNG_ACTIVE_LIGHT: &[u8] = include_bytes!("../icons/icon_active_light.png");
+const ICON_PNG_ACTIVE_DARK: &[u8] = include_bytes!("../icons/icon_active.png");
+
+struct ThemeVariant {
+    /// No session in flight; the plain logo silhouette.
+    idle: Icon,
+    /// Session active; play triangle filled green, rest of the
+    /// logo unchanged so the cue is unambiguous on the panel.
+    active: Icon,
+}
 
 struct ThemeIcons {
     /// Dark shapes on a transparent background — reads on a light
     /// system panel.
-    light: Icon,
+    light: ThemeVariant,
     /// Light shapes on a transparent background — reads on a dark
     /// system panel.
-    dark: Icon,
+    dark: ThemeVariant,
 }
 
 struct LudexTray<R: Runtime> {
     app: AppHandle<R>,
     icons: ThemeIcons,
     is_dark: bool,
+    /// True between `session-started` and `session-ended` events.
+    /// Selects the active (green-play) icon variant in
+    /// [`Self::icon_pixmap`]; the tooltip text already moves to
+    /// the per-game string in parallel.
+    is_active: bool,
     tooltip_title: String,
 }
 
@@ -78,11 +97,34 @@ impl<R: Runtime> Tray for LudexTray<R> {
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
-        vec![if self.is_dark {
-            self.icons.dark.clone()
+        let variant = if self.is_dark {
+            &self.icons.dark
         } else {
-            self.icons.light.clone()
-        }]
+            &self.icons.light
+        };
+        let icon = if self.is_active {
+            &variant.active
+        } else {
+            &variant.idle
+        };
+        vec![icon.clone()]
+    }
+
+    /// Plasma 6's StatusNotifierItem host caches the rendered icon
+    /// keyed on `IconName`. With an empty name it caches the first
+    /// `IconPixmap` it sees and ignores subsequent `NewIcon` signals
+    /// for the lifetime of the SNI item, so updating `icon_pixmap`
+    /// alone never repaints. Returning a state-dependent name flips
+    /// that cache key on every idle ↔ active transition: Plasma
+    /// looks the name up, fails to find it in the icon theme
+    /// (intentional), and falls back to refetching `IconPixmap`,
+    /// which we've just changed.
+    fn icon_name(&self) -> String {
+        if self.is_active {
+            "ludex-active".into()
+        } else {
+            "ludex-idle".into()
+        }
     }
 
     fn tool_tip(&self) -> ToolTip {
@@ -139,8 +181,14 @@ pub(crate) fn install<R: Runtime>(
     bridge: &Arc<TrackerBridge>,
 ) -> anyhow::Result<()> {
     let icons = ThemeIcons {
-        light: decode_icon(ICON_PNG_LIGHT)?,
-        dark: decode_icon(ICON_PNG_DARK)?,
+        light: ThemeVariant {
+            idle: decode_icon(ICON_PNG_LIGHT)?,
+            active: decode_icon(ICON_PNG_ACTIVE_LIGHT)?,
+        },
+        dark: ThemeVariant {
+            idle: decode_icon(ICON_PNG_DARK)?,
+            active: decode_icon(ICON_PNG_ACTIVE_DARK)?,
+        },
     };
 
     // Initial theme: ask the main window. Tauri's Linux backend
@@ -168,6 +216,7 @@ pub(crate) fn install<R: Runtime>(
         app: app.clone(),
         icons,
         is_dark: initial_is_dark,
+        is_active: false,
         tooltip_title: TOOLTIP_IDLE.into(),
     };
 
@@ -259,7 +308,11 @@ async fn run_tray_worker<R: Runtime>(
     while let Some(update) = rx.recv().await {
         match update {
             TrayStateUpdate::TooltipStarted(id) => {
-                apply_tooltip(&handle_slot, TOOLTIP_ACTIVE_UNRESOLVED.to_owned()).await;
+                // Flip the active flag first so the icon swap
+                // takes the same `update()` round-trip as the
+                // unresolved tooltip — fewer paints than two
+                // separate calls.
+                apply_session(&handle_slot, true, TOOLTIP_ACTIVE_UNRESOLVED.to_owned()).await;
                 let name = resolve_app_name(&bridge, id).await;
                 let text = match name {
                     Some(n) if !n.trim().is_empty() => format!("ludex · {n}"),
@@ -268,7 +321,7 @@ async fn run_tray_worker<R: Runtime>(
                 apply_tooltip(&handle_slot, text).await;
             }
             TrayStateUpdate::TooltipEnded => {
-                apply_tooltip(&handle_slot, TOOLTIP_IDLE.to_owned()).await;
+                apply_session(&handle_slot, false, TOOLTIP_IDLE.to_owned()).await;
             }
             TrayStateUpdate::ThemeChanged(is_dark) => {
                 apply_theme(&handle_slot, is_dark).await;
@@ -315,6 +368,26 @@ async fn apply_theme<R: Runtime>(handle_slot: &Arc<OnceLock<Handle<LudexTray<R>>
     handle
         .update(move |t: &mut LudexTray<R>| {
             t.is_dark = is_dark;
+        })
+        .await;
+}
+
+/// Combined active-flag + tooltip update. Both fields move on
+/// the same lifecycle event (session start / end), so bundling
+/// them into one `Handle::update` call costs one ksni redraw
+/// instead of two.
+async fn apply_session<R: Runtime>(
+    handle_slot: &Arc<OnceLock<Handle<LudexTray<R>>>>,
+    is_active: bool,
+    tooltip_title: String,
+) {
+    let Some(handle) = handle_slot.get().cloned() else {
+        return;
+    };
+    handle
+        .update(move |t: &mut LudexTray<R>| {
+            t.is_active = is_active;
+            t.tooltip_title = tooltip_title;
         })
         .await;
 }
