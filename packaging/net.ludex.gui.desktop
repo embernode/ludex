@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=ludex
+GenericName=Gameplay Time Tracker
+Comment=Linux gameplay time tracker
+Exec=ludex-gui
+Icon=net.ludex.gui
+Terminal=false
+Categories=Game;Utility;
+Keywords=games;playtime;tracker;steam;
+StartupNotify=true
+# Tauri 2 on Linux uses the bundle identifier as the GTK application
+# id, which is what KDE's task manager reads as the app-id (Wayland)
+# or WM_CLASS (Xwayland). Matching it here is what links the
+# running window to this entry — without that link, the taskbar
+# icon falls back to a generic placeholder no matter what `Icon=`
+# above resolves to.
+StartupWMClass=net.ludex.gui

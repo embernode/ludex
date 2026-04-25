@@ -1,0 +1,117 @@
+# Maintainer: embernode <bindstone@gmail.com>
+#
+# Source-tree PKGBUILD: meant to be run from this `packaging/`
+# directory of a checked-out ludex repo, NOT as an AUR submission.
+# `cd packaging && makepkg -si` builds the daemon, CLI, and GUI
+# from the working tree and lands them under `/usr/`.
+#
+# A separate `-git` PKGBUILD targeting AUR with a real git source
+# is tracked on the roadmap; that variant pulls from GitHub
+# instead of `$startdir/..`.
+
+pkgname=ludex
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Linux gameplay time tracker — daemon, CLI, and Tauri GUI"
+arch=('x86_64')
+url="https://github.com/embernode/ludex"
+license=('MIT' 'Apache')
+
+depends=(
+    'webkit2gtk-4.1'   # Tauri 2 webview; pulls in gtk3, glib2, etc.
+    'sqlite'           # sqlx-sqlite links system libsqlite3 by default
+    'dbus'             # zbus session-bus + KWin scripting
+)
+makedepends=(
+    'rust'
+    'pnpm'             # pulls in nodejs as a transitive dep
+    'pkg-config'
+)
+
+# Source is the working tree itself — no tarball fetch, no
+# checksum to verify. `makepkg` accepts an empty source array
+# but warns; that's expected for in-repo PKGBUILDs.
+source=()
+sha256sums=()
+
+prepare() {
+    # Frontend dependencies. `--frozen-lockfile` fails the build
+    # rather than silently regenerating `pnpm-lock.yaml`, which is
+    # what we want for reproducibility against the committed lock.
+    cd "$startdir/../app"
+    pnpm install --frozen-lockfile
+}
+
+build() {
+    cd "$startdir/.."
+
+    # Daemon and CLI. `--locked` requires `Cargo.lock` to match the
+    # committed version (allowing fetches but rejecting drift); the
+    # explicit `--bin` flags skip the GUI binary which Tauri builds
+    # below with its own toolchain glue.
+    cargo build --release --locked --bin ludex-daemon --bin ludex
+
+    # GUI. `tauri build --no-bundle` runs the SvelteKit production
+    # build then the Rust release build for the GUI binary, but
+    # skips bundling into deb/AppImage — pacman is our packaging
+    # format here.
+    cd "$startdir/../app"
+    pnpm exec tauri build --no-bundle
+}
+
+package() {
+    cd "$startdir/.."
+
+    # Binaries.
+    install -Dm755 "target/release/ludex-daemon" \
+        "$pkgdir/usr/bin/ludex-daemon"
+    install -Dm755 "target/release/ludex" \
+        "$pkgdir/usr/bin/ludex"
+    install -Dm755 "target/release/ludex-gui" \
+        "$pkgdir/usr/bin/ludex-gui"
+
+    # GUI desktop entry. `StartupWMClass=net.ludex.gui` matches
+    # the Wayland app-id Tauri 2 sets via GTK; without this, the
+    # taskbar shows a placeholder instead of the icon.
+    install -Dm644 "packaging/net.ludex.gui.desktop" \
+        "$pkgdir/usr/share/applications/net.ludex.gui.desktop"
+
+    # Taskbar icon. Tauri's pre-rendered `32x32.png`, `128x128.png`,
+    # and `icon.png` are all the dark silhouette — invisible on
+    # Plasma's default dark theme. `icon_light.png` is the white
+    # variant the tray code already uses for dark-theme detection;
+    # ship it under the 256×256 hicolor slot and let KDE downscale
+    # for the panel. A proper multi-colour icon that reads on both
+    # light and dark themes is the long-term answer; until then
+    # this matches the dark-by-default majority.
+    #
+    # `icon.svg` is intentionally NOT installed — it has Inkscape's
+    # A4 page bounds rather than a tight icon viewport, so the
+    # rasterisation lands a tiny shape on a huge transparent
+    # backdrop.
+    install -Dm644 "app/src-tauri/icons/icon_light.png" \
+        "$pkgdir/usr/share/icons/hicolor/256x256/apps/net.ludex.gui.png"
+
+    # systemd `--user` unit at the system path so every account
+    # can `systemctl --user enable ludex-daemon` without copying
+    # anything into `~/.config/systemd/user/`. The committed unit
+    # points `ExecStart` at `%h/.cargo/bin/...` for source-builds;
+    # rewrite it to `/usr/bin/ludex-daemon` for the packaged
+    # install.
+    install -dm755 "$pkgdir/usr/lib/systemd/user"
+    sed 's|%h/\.cargo/bin/ludex-daemon|/usr/bin/ludex-daemon|' \
+        "packaging/ludex-daemon.service" \
+        > "$pkgdir/usr/lib/systemd/user/ludex-daemon.service"
+    chmod 0644 "$pkgdir/usr/lib/systemd/user/ludex-daemon.service"
+
+    # Licenses (dual MIT / Apache-2.0).
+    install -Dm644 "LICENSE-MIT" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+    install -Dm644 "LICENSE-APACHE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+
+    # README at the conventional doc location for `pacman -Qi`'s
+    # "lookup the docs" path.
+    install -Dm644 "README.md" \
+        "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

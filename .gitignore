@@ -31,3 +31,10 @@ Cargo.lock.bak
 # Generated / runtime
 *.log
 /tmp/
+
+# makepkg build artefacts inside packaging/ — the PKGBUILD itself
+# is committed, but the package output and the makepkg working
+# directories are local-only.
+/packaging/*.pkg.tar.*
+/packaging/pkg/
+/packaging/src/

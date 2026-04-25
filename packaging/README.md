@@ -84,7 +84,53 @@ if you need finer verbosity:
 Environment="LUDEX_LOG=debug"
 ```
 
-## (planned) `PKGBUILD`
+## `PKGBUILD` (Arch package — daemon + CLI + GUI + unit + icons)
 
-An AUR PKGBUILD shipping `ludex-daemon`, `ludex`, the GUI bundle,
-and this unit file is on the post-M6 roadmap. Not yet present.
+Builds and installs everything ludex ships from the working tree
+of this checkout: the daemon, the CLI, the Tauri GUI, the
+`net.ludex.gui.desktop` entry, the hicolor icon set, and a
+system-path systemd `--user` unit pointing at `/usr/bin/ludex-daemon`.
+
+```sh
+cd packaging
+makepkg -si        # builds the package and installs via pacman
+```
+
+`makepkg` will warn about the empty `source=()` — that's expected;
+this is an in-repo PKGBUILD that builds from `$startdir/..` rather
+than a fetched tarball. (A separate `-git` PKGBUILD targeting AUR
+with a real git source is on the roadmap.)
+
+After install, the GUI's taskbar icon resolves correctly because
+`StartupWMClass=net.ludex.gui` in the desktop entry matches the
+Wayland app-id Tauri 2 sets via GTK. The daemon's user unit lives
+at `/usr/lib/systemd/user/ludex-daemon.service` so every account
+can enable it without copying anything:
+
+```sh
+systemctl --user enable --now ludex-daemon
+```
+
+To remove: `pacman -Rns ludex` cleans up every file in one shot.
+
+### Updating after a code change
+
+`makepkg -si` again — `--locked` on the cargo invocation rebuilds
+incrementally against the workspace's existing `target/`, so
+subsequent runs are fast.
+
+### If the icon still doesn't show
+
+Confirm the running window's app-id actually matches the
+`StartupWMClass=net.ludex.gui` line in the `.desktop` file. On
+Plasma 6 Wayland: open the **System Monitor** widget, right-click
+the ludex process, **Properties** → **App ID**. Adjust the
+`StartupWMClass` in the desktop entry if it differs (and rebuild
+the package).
+
+## (planned) AUR PKGBUILD
+
+A `-git` variant pulling from the public GitHub source rather
+than the working tree is on the roadmap for an AUR submission.
+Until then the in-repo PKGBUILD above covers single-machine
+installs from a checked-out clone.
