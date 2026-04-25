@@ -438,6 +438,22 @@ fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let _ = window.show();
         let _ = window.set_focus();
+        // KDE Plasma 6 Wayland: after a `hide()` → `show()`
+        // cycle the server-side decoration is *drawn* but
+        // doesn't receive pointer events — the titlebar's
+        // min/max/close buttons read as dead. KWin re-binds
+        // the decoration's input grab when the toplevel
+        // receives a `configure` event; `show()` alone doesn't
+        // generate one, but a state change like maximise
+        // does (which is why double-clicking the titlebar
+        // empirically fixes the bug). Toggling `resizable`
+        // produces the same configure round-trip without any
+        // visible size change. Idempotent and harmless when
+        // the bug isn't present.
+        if let Ok(resizable) = window.is_resizable() {
+            let _ = window.set_resizable(!resizable);
+            let _ = window.set_resizable(resizable);
+        }
     }
 }
 
@@ -457,7 +473,6 @@ fn toggle_main<R: Runtime>(app: &AppHandle<R>) {
     if let Ok(true) = window.is_visible() {
         let _ = window.hide();
     } else {
-        let _ = window.show();
-        let _ = window.set_focus();
+        show_main(app);
     }
 }
