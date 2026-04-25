@@ -775,7 +775,7 @@
                 <dt>Version</dt>
                 <dd>{appVersion || '—'}</dd>
                 <dt>License</dt>
-                <dd>MIT OR Apache-2.0</dd>
+                <dd>Dual MIT / Apache-2.0</dd>
                 <dt>Repository</dt>
                 <dd>
                     <button

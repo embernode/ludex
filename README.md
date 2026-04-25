@@ -2,18 +2,18 @@
 
 A launcher-agnostic playtime tracker for Linux.
 
-**Status: 0.1.0.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6. The GUI covers the apps list, recent sessions, per-application detail, an ECharts dashboard, settings, and a system tray with close-to-tray. Lutris and Heroic launcher integrations remain deferred; no released binaries yet.
+**Status: 0.2.0.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris-managed wine prefixes. The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. No released binaries yet.
 
 ## What it does
 
 ludex records time spent playing games on Linux without requiring per-game configuration. The daemon observes game launches from:
 
 - **Steam** via inotify on the Steam content log *(shipped)*
-- **Lutris** via its `net.lutris.Lutris` D-Bus service *(deferred — Lutris does not expose start/stop signals on its session-bus interface today)*
+- **Lutris-managed games** via the foreground-window source — Lutris itself exposes no start/stop signals, but its `pga.db` is read on enrichment to give games their proper names; Battle.net's catalogue (WoW, Diablo, Overwatch, etc.) is curated by executable basename *(shipped)*
 - **Heroic Games Launcher** via process-tree / log inspection *(deferred — Heroic 2.x removed the single `running_game.json` file this was designed around)*
 - **Anything else** via a Wayland foreground-window fallback gated on loaded graphics libraries and DRM fdinfo GPU-usage metrics *(shipped on KDE Plasma 6 Wayland)*
 
-Each recognised game has its sessions persisted to SQLite with two runtime figures: **full runtime** (wall-clock session duration) and **interactive runtime** (full runtime minus system-reported idle intervals via `logind.IdleHint`).
+Each recognised game has its sessions persisted to SQLite with two runtime figures: **full runtime** (wall-clock session duration) and **interactive runtime** (full runtime minus billable idle intervals via `logind.IdleHint`, with a configurable cutscene-grace window so non-skippable cutscenes and dialogue trees aren't read as "user stepped away").
 
 The primary target is KDE Plasma 6 on Wayland. X11 support is on the roadmap (the gate code already expects an `_NET_ACTIVE_WINDOW` source) but no X11 foreground source is wired up today — on X11 the launcher-based paths (Steam log tailing) still work, but the foreground fallback does not.
 
