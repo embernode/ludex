@@ -77,19 +77,27 @@ impl Default for GateConfig {
 /// Kept to vars that are only set on the *game's* own process
 /// (not inherited by unrelated children of the user shell): Steam's
 /// `SteamGameId` / `SteamAppId`, Proton's `STEAM_COMPAT_APP_ID`,
-/// Lutris's `LUTRIS_GAME_UUID`, Heroic's `HEROIC_APP_NAME`.
+/// Heroic's `HEROIC_APP_NAME`.
 ///
 /// Inherited-wrapper variables (`STEAM_RUNTIME`, `STEAM_BASE_FOLDER`,
 /// `PRESSURE_VESSEL_*`) are deliberately **not** included: they show
 /// up in every Steam-originating child shell too and would cause
 /// false rejections.
+///
+/// `LUTRIS_GAME_UUID` is also intentionally absent: Lutris doesn't
+/// expose a lifecycle signal (no `Started` / `Stopped`), so unlike
+/// Steam there is no authoritative source picking those games up.
+/// Rejecting on `LUTRIS_GAME_UUID` would simply drop every Lutris-
+/// launched game on the floor. The foreground-window source instead
+/// accepts them as `Native`, and the Lutris pga.db enricher fills in
+/// the proper product name (and, for Battle.net's curated catalogue,
+/// the publisher).
 #[must_use]
 pub fn default_launcher_env_vars() -> HashSet<String> {
     [
         "SteamGameId",
         "SteamAppId",
         "STEAM_COMPAT_APP_ID",
-        "LUTRIS_GAME_UUID",
         "HEROIC_APP_NAME",
     ]
     .iter()
@@ -500,7 +508,13 @@ mod tests {
     }
 
     #[test]
-    fn lutris_uuid_env_rejects() {
+    fn lutris_uuid_env_does_not_reject() {
+        // Lutris doesn't expose a lifecycle signal (no Started/Stopped
+        // counterpart to the Steam ACF source), so the foreground-
+        // window source is the only path that can pick up
+        // Lutris-launched games. Rejecting on `LUTRIS_GAME_UUID`
+        // would drop every one of them; the Lutris pga.db enricher
+        // is what fills in the proper name afterwards.
         let exe = PathBuf::from("/home/u/games/foo");
         let env = env_of(&[("LUTRIS_GAME_UUID", "abc-123")]);
         let d = decide_from_inputs(
@@ -512,9 +526,9 @@ mod tests {
             false,
             &cfg(),
         );
-        assert_eq!(
-            d,
-            GateDecision::Reject(RejectionReason::AttributedToLauncher)
+        assert!(
+            matches!(d, GateDecision::Accept(_)),
+            "Lutris-attributed games must pass the gate; got {d:?}",
         );
     }
 
@@ -632,11 +646,16 @@ mod tests {
             "SteamGameId",
             "SteamAppId",
             "STEAM_COMPAT_APP_ID",
-            "LUTRIS_GAME_UUID",
             "HEROIC_APP_NAME",
         ] {
             assert!(vars.contains(expected), "missing {expected}");
         }
+        // `LUTRIS_GAME_UUID` is intentionally excluded — see the
+        // doc comment on `default_launcher_env_vars`.
+        assert!(
+            !vars.contains("LUTRIS_GAME_UUID"),
+            "LUTRIS_GAME_UUID must not gate-reject; Lutris has no lifecycle source",
+        );
     }
 
     #[test]

@@ -15,6 +15,10 @@ freedesktop-desktop-entry = { workspace = true }
 pelite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Read-only access to Lutris's `pga.db` for the Lutris enricher.
+# Workspace pin is already configured for the daemon's own SQLite use,
+# so reusing it keeps both crates on the same client and feature set.
+sqlx = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }

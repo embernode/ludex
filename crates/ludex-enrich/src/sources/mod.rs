@@ -6,5 +6,6 @@
 
 pub mod desktop;
 pub mod gog;
+pub mod lutris;
 pub mod pe;
 pub mod steam;
