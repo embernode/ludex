@@ -1,6 +1,11 @@
-# ludex
+<p align="center">
+  <img src="assets/logo_256_light.png#gh-dark-mode-only" alt="ludex" width="128">
+  <img src="assets/logo_256_dark.png#gh-light-mode-only" alt="ludex" width="128">
+</p>
 
-A launcher-agnostic playtime tracker for Linux.
+<h1 align="center">ludex</h1>
+
+<p align="center">A launcher-agnostic playtime tracker for Linux.</p>
 
 **Status: 0.2.0.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris-managed wine prefixes. The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. No released binaries yet.
 
