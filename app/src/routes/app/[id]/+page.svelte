@@ -3,6 +3,7 @@
     import { page } from '$app/state';
     import type { UnlistenFn } from '@tauri-apps/api/event';
     import { openUrl } from '@tauri-apps/plugin-opener';
+    import ConfirmDialog from '$lib/ConfirmDialog.svelte';
     import {
         deleteSession,
         getApplication,
@@ -109,31 +110,20 @@
         return Boolean(s.exit_reason) && s.fragment_count === 1;
     }
 
-    /** Native `<dialog>` reference; bound by the template. */
+    /** Underlying `<dialog>` element, owned by the `ConfirmDialog`
+     *  component but threaded back here via two-way binding so we
+     *  can call `showModal()` / `close()` imperatively. */
     let deleteDialog = $state<HTMLDialogElement | null>(null);
     /** Session queued for deletion while the dialog is open. */
     let pendingDelete = $state<SessionSummary | null>(null);
-    /** Tracks the in-flight RPC so the dialog can disable its
-     *  Confirm button and show "Deleting…" while the daemon works. */
-    let deleting = $state<boolean>(false);
 
     function openDeleteDialog(s: SessionSummary) {
         pendingDelete = s;
-        deleting = false;
-        // `showModal` traps focus, paints the ::backdrop, and ESC
-        // dismisses for free — none of which the older
-        // `window.confirm` could give us inside a webview.
         deleteDialog?.showModal();
-    }
-
-    function cancelDelete() {
-        deleteDialog?.close();
-        pendingDelete = null;
     }
 
     async function performDelete() {
         if (!pendingDelete) return;
-        deleting = true;
         try {
             await deleteSession(pendingDelete.id);
             deleteDialog?.close();
@@ -143,10 +133,11 @@
             await refresh();
         } catch (e) {
             error = String(e);
-            // Leave the dialog open so the user sees the error
-            // surface above; they can dismiss with Cancel/ESC.
-        } finally {
-            deleting = false;
+            // Re-throw so the dialog catches it and clears its
+            // own busy state — the dialog stays open so the user
+            // sees the error banner above and can dismiss with
+            // Cancel/ESC.
+            throw e;
         }
     }
 
@@ -303,52 +294,38 @@
         </section>
     {/if}
 
-    <!-- Native <dialog> for delete confirmation. `showModal()`
-         traps focus, draws ::backdrop, and ESC dismisses — none of
-         which `window.confirm` does inside the webview, and which
-         in our case also leaks the http://localhost dev URL into
-         a system title bar. -->
-    <dialog class="confirm-dialog" bind:this={deleteDialog}>
-        {#if pendingDelete}
-            <h2>Delete this session?</h2>
-            <dl class="confirm-facts">
-                <dt>Started</dt>
-                <dd>{formatTimestamp(pendingDelete.started_at, tsFormat)}</dd>
-                <dt>Ended</dt>
-                <dd>{formatTimestamp(pendingDelete.ended_at, tsFormat)}</dd>
-                <dt>Full</dt>
-                <dd>{formatSeconds(pendingDelete.full_runtime_seconds)}</dd>
-                <dt>Interactive</dt>
-                <dd>
-                    {formatSeconds(
-                        pendingDelete.interactive_runtime_seconds,
-                    )}
-                </dd>
-            </dl>
-            <p class="confirm-warning">
-                This cannot be undone. Aggregate stats for
-                <strong>{app?.product_name}</strong> are recomputed from
-                the surviving sessions.
-            </p>
-            <div class="confirm-actions">
-                <button
-                    type="button"
-                    onclick={cancelDelete}
-                    disabled={deleting}
-                >
-                    Cancel
-                </button>
-                <button
-                    type="button"
-                    class="danger"
-                    onclick={performDelete}
-                    disabled={deleting}
-                >
-                    {deleting ? 'Deleting…' : 'Delete session'}
-                </button>
-            </div>
-        {/if}
-    </dialog>
+    <ConfirmDialog
+        bind:dialog={deleteDialog}
+        title="Delete this session?"
+        confirmLabel="Delete session"
+        confirmBusyLabel="Deleting…"
+        danger
+        onconfirm={performDelete}
+    >
+        {#snippet body()}
+            {#if pendingDelete}
+                <dl class="confirm-facts">
+                    <dt>Started</dt>
+                    <dd>{formatTimestamp(pendingDelete.started_at, tsFormat)}</dd>
+                    <dt>Ended</dt>
+                    <dd>{formatTimestamp(pendingDelete.ended_at, tsFormat)}</dd>
+                    <dt>Full</dt>
+                    <dd>{formatSeconds(pendingDelete.full_runtime_seconds)}</dd>
+                    <dt>Interactive</dt>
+                    <dd>
+                        {formatSeconds(
+                            pendingDelete.interactive_runtime_seconds,
+                        )}
+                    </dd>
+                </dl>
+                <p class="confirm-warning">
+                    This cannot be undone. Aggregate stats for
+                    <strong>{app?.product_name}</strong> are recomputed
+                    from the surviving sessions.
+                </p>
+            {/if}
+        {/snippet}
+    </ConfirmDialog>
 </main>
 
 <style>
@@ -461,20 +438,6 @@
         font-size: 0.9rem;
     }
 
-    .link-button {
-        background: none;
-        border: none;
-        padding: 0;
-        color: var(--accent);
-        font: inherit;
-        cursor: pointer;
-        text-align: left;
-    }
-
-    .link-button:hover {
-        text-decoration: underline;
-    }
-
     table {
         width: 100%;
         border-collapse: collapse;
@@ -553,48 +516,11 @@
         border-color: var(--error-border, #ef4444);
     }
 
-    /* Match the existing visually-hidden helper from Settings so the
-       header stays accessible without taking visible space. */
-    .visually-hidden {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0, 0, 0, 0);
-        white-space: nowrap;
-        border: 0;
-    }
-
-    /* Native <dialog> styling. The browser positions and centres
-       it; we restyle to match the rest of the surface (card-shaped,
-       same border + radius vocabulary as .stat-card). The
-       ::backdrop pseudo paints the dimming behind the dialog;
-       :modal selector targets the open state so we can transition
-       in cleanly. */
-    .confirm-dialog {
-        border: 1px solid var(--border);
-        background: var(--bg-surface);
-        color: var(--text-primary);
-        border-radius: 10px;
-        padding: 1.5rem 1.75rem;
-        max-width: 28rem;
-        width: calc(100vw - 2rem);
-        font: inherit;
-        box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
-    }
-
-    .confirm-dialog::backdrop {
-        background: rgba(0, 0, 0, 0.55);
-    }
-
-    .confirm-dialog h2 {
-        font-size: 1.05rem;
-        margin: 0 0 1rem;
-        color: var(--text-label);
-    }
-
+    /* Body content rendered into the ConfirmDialog component's
+       `body` snippet. The component owns the dialog frame /
+       buttons / ::backdrop; the parent supplies the content and
+       its styling — Svelte's scoped CSS keeps these from leaking
+       to other surfaces. */
     .confirm-facts {
         display: grid;
         grid-template-columns: max-content 1fr;
@@ -626,23 +552,5 @@
 
     .confirm-warning strong {
         color: var(--text-primary);
-    }
-
-    .confirm-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 0.6rem;
-    }
-
-    /* The destructive action gets accent colouring on hover so the
-       user has one extra confirmation moment before clicking. */
-    .confirm-actions .danger {
-        border-color: var(--error-border, #ef4444);
-        color: var(--error-text, #ef4444);
-    }
-
-    .confirm-actions .danger:hover:not(:disabled) {
-        background: var(--error-border, #ef4444);
-        color: white;
     }
 </style>

@@ -238,6 +238,160 @@
         text-align: center;
     }
 
+    /* Visually-hide a label that's only there for screen readers
+       (a sortable column with no visible header text, etc.).
+       Lifted from per-page declarations so it lives in one place. */
+    :global(.visually-hidden) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    /* A button that visually reads as a link — used wherever an
+       inline `<a>` would be wrong (we need a button so the action
+       can run JavaScript, but we want link-shaped chrome). */
+    :global(.link-button) {
+        background: none;
+        border: none;
+        padding: 0;
+        color: var(--accent);
+        font: inherit;
+        cursor: pointer;
+        text-align: left;
+    }
+
+    :global(.link-button:hover) {
+        text-decoration: underline;
+    }
+
+    /* Card-shaped surface used by every Settings panel and any
+       future page that wants the same chrome. The matching `h2`
+       rule below pins the heading style so cards don't have to
+       re-declare it. Form fields, action rows, and toggles inside
+       a `.settings-card` get a uniform look from the rules
+       further down so each card stays small. */
+    :global(.settings-card) {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    :global(.settings-card h2) {
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--text-label);
+        margin: 0 0 0.5rem;
+    }
+
+    :global(.settings-card .description) {
+        color: var(--text-muted);
+        font-size: 0.88rem;
+        margin: 0 0 1rem;
+        line-height: 1.5;
+    }
+
+    /* Second `.description` block within a card — used to separate
+       two distinct sub-sections on the same surface (e.g. the
+       cutscene-grace section under the alt-tab grace). */
+    :global(.settings-card .sub-description) {
+        margin-top: 1.5rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border-soft);
+    }
+
+    :global(.settings-card .sub-description code) {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        background: var(--code-bg);
+        color: var(--code-text);
+        padding: 0.05rem 0.3rem;
+        border-radius: 4px;
+        font-size: 0.78rem;
+    }
+
+    /* Labelled form field: caption above input. `max-width` keeps
+       single-value inputs (numbers, short strings) from stretching
+       across the card. */
+    :global(.settings-card .field) {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+        max-width: 18rem;
+    }
+
+    :global(.settings-card .field-label) {
+        font-size: 0.82rem;
+        color: var(--text-label);
+    }
+
+    :global(.settings-card input[type='number']),
+    :global(.settings-card input[type='search']),
+    :global(.settings-card select) {
+        font: inherit;
+        padding: 0.45rem 0.6rem;
+        border: 1px solid var(--button-border);
+        background: var(--bg-surface);
+        color: var(--text-primary);
+        border-radius: 6px;
+        font-variant-numeric: tabular-nums;
+    }
+
+    :global(.settings-card input[type='number']:focus),
+    :global(.settings-card input[type='search']:focus),
+    :global(.settings-card select:focus) {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+    }
+
+    :global(.settings-card input[type='number']:disabled) {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+
+    /* Save / cancel / open-now button row. */
+    :global(.settings-card .actions) {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-top: 0.75rem;
+    }
+
+    /* Inline checkbox + label, used for the "pause when backgrounded"
+       toggle and any future binary settings. */
+    :global(.settings-card .toggle) {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin-bottom: 1rem;
+        font-size: 0.88rem;
+        color: var(--text-body);
+        cursor: pointer;
+    }
+
+    :global(.settings-card .toggle input[type='checkbox']) {
+        margin: 0;
+        accent-color: var(--accent);
+    }
+
+    /* Inline variant of the global `.error` block used for
+       per-action failures so the form stays visible. Rendered
+       above the cards in the Settings page wrapper. */
+    :global(.error.inline) {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.6rem 0.9rem;
+        margin-bottom: 1rem;
+    }
+
     .app {
         min-height: 100vh;
         display: flex;
