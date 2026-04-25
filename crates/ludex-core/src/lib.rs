@@ -26,6 +26,7 @@ mod key;
 mod paths;
 pub mod repo;
 mod session;
+pub mod session_merge;
 mod types;
 pub mod vdf;
 

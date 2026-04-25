@@ -41,8 +41,11 @@
     }
 
     function statusLabel(s: SessionSummary): string {
-        if (!s.exit_reason) return 'open';
-        return s.exit_reason.replace(/_/g, ' ');
+        const base = s.exit_reason ? s.exit_reason.replace(/_/g, ' ') : 'open';
+        if (s.fragment_count > 1) {
+            return `${base} · ${s.fragment_count} merged`;
+        }
+        return base;
     }
 
     onMount(() => {

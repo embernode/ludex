@@ -44,6 +44,9 @@ use ludex_core::repo::{
     DEFAULT_GPU_MEMORY_THRESHOLD_BYTES, DEFAULT_PAUSE_WHEN_BACKGROUNDED,
     GPU_MEMORY_THRESHOLD_BYTES, PAUSE_WHEN_BACKGROUNDED,
 };
+use ludex_core::session_merge::{
+    merge_adjacent_recent, merge_adjacent_session, DEFAULT_MERGE_GAP_SECONDS,
+};
 use ludex_core::{default_backup_dir, Database, LauncherType, Session};
 pub use ludex_dbus_types::{
     ApplicationSummary, BackupStats, DailyPlaytime, SessionSummary, OBJECT_PATH, SERVICE_NAME,
@@ -150,6 +153,16 @@ impl Tracker {
     /// The most recent `limit` sessions across every application
     /// (joined to the application's product name). `limit` is
     /// clamped to `[1, 1000]`.
+    ///
+    /// Adjacent same-application sessions whose end-to-start gap is
+    /// shorter than [`DEFAULT_MERGE_GAP_SECONDS`] are folded into
+    /// single rows before serving — alt-tabbing to a chat window for
+    /// a few seconds shouldn't fragment one play into N "sessions"
+    /// in the GUI. The fragment count rides along on each row so a
+    /// future "show fragments" toggle can rebuild the raw list. `limit`
+    /// is the cap on raw rows fetched from the DB; merging only
+    /// shrinks, so callers may receive fewer rows than they asked
+    /// for and that's the desired behaviour (less noise).
     async fn list_recent_sessions(&self, limit: u32) -> zbus::fdo::Result<Vec<SessionSummary>> {
         let limit = limit.clamp(1, 1000);
         let rows = self
@@ -158,9 +171,13 @@ impl Tracker {
             .list_recent_with_app(limit)
             .await
             .map_err(|e| into_fdo(&e))?;
-        Ok(rows
+        let merged = merge_adjacent_recent(
+            rows,
+            std::time::Duration::from_secs(DEFAULT_MERGE_GAP_SECONDS),
+        );
+        Ok(merged
             .into_iter()
-            .map(|row| SessionSummary {
+            .map(|(row, fragment_count)| SessionSummary {
                 id: row.id,
                 application_id: row.application_id,
                 product_name: row.product_name,
@@ -169,6 +186,7 @@ impl Tracker {
                 full_runtime_seconds: row.full_runtime_seconds,
                 interactive_runtime_seconds: row.interactive_runtime_seconds,
                 exit_reason: row.exit_reason.map(|r| r.to_string()).unwrap_or_default(),
+                fragment_count,
             })
             .collect())
     }
@@ -220,9 +238,15 @@ impl Tracker {
             .list_for_application(application_id, limit)
             .await
             .map_err(|e| into_fdo(&e))?;
-        Ok(sessions
-            .iter()
-            .map(|s| session_summary_for(application_id, product_name.clone(), s))
+        let merged = merge_adjacent_session(
+            sessions,
+            std::time::Duration::from_secs(DEFAULT_MERGE_GAP_SECONDS),
+        );
+        Ok(merged
+            .into_iter()
+            .map(|(s, fragment_count)| {
+                session_summary_for(application_id, product_name.clone(), &s, fragment_count)
+            })
             .collect())
     }
 
@@ -562,7 +586,12 @@ fn application_summary_from(app: ludex_core::Application) -> ApplicationSummary 
     }
 }
 
-fn session_summary_for(application_id: i64, product_name: String, s: &Session) -> SessionSummary {
+fn session_summary_for(
+    application_id: i64,
+    product_name: String,
+    s: &Session,
+    fragment_count: i64,
+) -> SessionSummary {
     SessionSummary {
         id: s.id,
         application_id,
@@ -572,6 +601,7 @@ fn session_summary_for(application_id: i64, product_name: String, s: &Session) -
         full_runtime_seconds: s.full_runtime_seconds,
         interactive_runtime_seconds: s.interactive_runtime_seconds,
         exit_reason: s.exit_reason.map(|r| r.to_string()).unwrap_or_default(),
+        fragment_count,
     }
 }
 

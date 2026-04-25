@@ -126,4 +126,12 @@ pub struct SessionSummary {
     /// Reason for closure (`"terminated"`, `"foreground_changed"`,
     /// `"recovered"`, `"sleep_split"`); empty for open sessions.
     pub exit_reason: String,
+    /// Number of underlying database session rows folded into this
+    /// summary. `1` for a row that wasn't merged with any neighbour;
+    /// values above one mean the daemon collapsed consecutive
+    /// same-application sessions whose end-to-start gap was shorter
+    /// than the merge threshold. The fields above (started_at,
+    /// runtime totals, exit_reason, …) reflect the merged span;
+    /// `id` is the most recent fragment's primary key.
+    pub fragment_count: i64,
 }

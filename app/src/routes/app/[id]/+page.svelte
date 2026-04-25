@@ -49,8 +49,11 @@
     }
 
     function statusLabel(s: SessionSummary): string {
-        if (!s.exit_reason) return 'open';
-        return s.exit_reason.replace(/_/g, ' ');
+        const base = s.exit_reason ? s.exit_reason.replace(/_/g, ' ') : 'open';
+        if (s.fragment_count > 1) {
+            return `${base} · ${s.fragment_count} merged`;
+        }
+        return base;
     }
 
     // Re-fetch when the route id changes. `$effect` replaces Svelte 4's
@@ -79,7 +82,7 @@
 
 <main>
     <nav class="crumb">
-        <a href="/">← Applications</a>
+        <a href="/">← Games</a>
     </nav>
 
     {#if loading && !app}

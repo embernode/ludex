@@ -55,6 +55,14 @@ export interface SessionSummary {
     interactive_runtime_seconds: number;
     /** Empty string while the session is still open. */
     exit_reason: string;
+    /**
+     * Number of database rows folded into this summary. `1` means
+     * an unmerged row; values above one mean the daemon collapsed
+     * consecutive same-application sessions whose end-to-start gap
+     * was shorter than the merge threshold (about a minute today).
+     * Time totals reflect the merged span.
+     */
+    fragment_count: number;
 }
 
 /** One day's aggregate runtime from `net.ludex.Tracker1.ListDailyPlaytime`. */
