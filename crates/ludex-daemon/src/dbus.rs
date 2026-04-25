@@ -216,6 +216,33 @@ impl Tracker {
             .collect())
     }
 
+    /// Delete a closed session row by primary key. Used by the GUI's
+    /// per-session delete affordance on the game-detail view.
+    /// Returns `true` when a row was removed, `false` when no row
+    /// matched the id (already gone — no-op).
+    ///
+    /// The owning application's denormalized stats
+    /// (`stat_run_count`, `stat_total_full`, `stat_total_interactive`,
+    /// `stat_longest_full`, `last_played_at`) are recomputed from
+    /// the surviving sessions in the same transaction.
+    ///
+    /// Refuses to delete an open session — the session manager owns
+    /// in-flight rows and silently dropping one would lose actively
+    /// tracked runtime. The error message tells the user to stop
+    /// the game first.
+    async fn delete_session(&self, id: i64) -> zbus::fdo::Result<bool> {
+        let removed = self
+            .db
+            .sessions()
+            .delete_and_recompute(id)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        if removed {
+            info!(session_id = id, "session deleted via D-Bus");
+        }
+        Ok(removed)
+    }
+
     /// Sessions for a single application, most-recent first.
     async fn list_sessions_for_application(
         &self,

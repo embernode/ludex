@@ -54,6 +54,7 @@ pub fn run() {
             bridge::list_blocked_application_ids,
             bridge::block_application,
             bridge::unblock_application,
+            bridge::delete_session,
             bridge::get_gpu_memory_threshold_bytes,
             bridge::set_gpu_memory_threshold_bytes,
             bridge::get_alt_tab_grace_seconds,

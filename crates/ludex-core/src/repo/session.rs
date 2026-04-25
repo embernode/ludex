@@ -254,4 +254,69 @@ impl<'a> SessionRepo<'a> {
         tx.commit().await?;
         Ok(())
     }
+
+    /// Delete a closed session row and rebuild its owning
+    /// application's denormalized aggregate stats from the rows
+    /// that remain. The whole operation runs in one transaction so
+    /// the application's counters can never observe a half-deleted
+    /// session.
+    ///
+    /// Returns `true` when a row was actually deleted, `false`
+    /// when the id didn't match any row (already gone — no-op).
+    /// Refuses to delete an open session ([`Error::Invariant`]):
+    /// the session manager is the authoritative writer for an
+    /// in-flight session, and silently dropping its row mid-play
+    /// would lose runtime that's actively being tracked. The user
+    /// can stop the game and try again.
+    ///
+    /// Stats are rebuilt by re-querying the surviving sessions
+    /// rather than computed-and-subtracted; that keeps
+    /// `stat_longest_full` correct even when the deleted row was
+    /// the previous longest, and avoids any drift between the
+    /// counters and the row sums after enough deletes.
+    pub async fn delete_and_recompute(&self, session_id: i64) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+
+        let row: Option<(i64, Option<OffsetDateTime>)> = sqlx::query_as(
+            "SELECT application_id, ended_at FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((application_id, ended_at)) = row else {
+            tx.rollback().await?;
+            return Ok(false);
+        };
+        if ended_at.is_none() {
+            tx.rollback().await?;
+            return Err(Error::Invariant(
+                "cannot delete an open session; stop the game first",
+            ));
+        }
+
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(
+            "UPDATE applications SET \
+                stat_run_count         = (SELECT COUNT(*) FROM sessions WHERE application_id = ?1), \
+                stat_total_full        = COALESCE((SELECT SUM(full_runtime_seconds) \
+                                                     FROM sessions WHERE application_id = ?1), 0), \
+                stat_total_interactive = COALESCE((SELECT SUM(interactive_runtime_seconds) \
+                                                     FROM sessions WHERE application_id = ?1), 0), \
+                stat_longest_full      = COALESCE((SELECT MAX(full_runtime_seconds) \
+                                                     FROM sessions WHERE application_id = ?1), 0), \
+                last_played_at         = (SELECT MAX(ended_at) FROM sessions \
+                                            WHERE application_id = ?1 AND ended_at IS NOT NULL) \
+             WHERE id = ?1",
+        )
+        .bind(application_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(true)
+    }
 }

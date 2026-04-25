@@ -135,6 +135,17 @@ export async function unblockApplication(id: number): Promise<void> {
     return invoke<void>('unblock_application', { id });
 }
 
+/**
+ * Delete a closed session row and recompute the owning
+ * application's denormalized stats. Resolves with `true` when a
+ * row was actually removed, `false` when no row matched the id
+ * (already gone). The daemon refuses to delete open sessions
+ * and surfaces a clear error string the GUI can display.
+ */
+export async function deleteSession(id: number): Promise<boolean> {
+    return invoke<boolean>('delete_session', { id });
+}
+
 /** Read the per-process GPU memory threshold (bytes) used by the gate. */
 export async function getGpuMemoryThresholdBytes(): Promise<number> {
     return invoke<number>('get_gpu_memory_threshold_bytes');

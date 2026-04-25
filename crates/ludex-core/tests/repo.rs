@@ -315,6 +315,106 @@ async fn close_and_rollup_updates_app_stats_atomically() {
     assert_eq!(app_after.last_played_at, Some(end));
 }
 
+/// Deleting a closed session via `delete_and_recompute` must remove
+/// the row and rebuild the owning application's denormalized stats
+/// from the rows that remain. The rebuild — rather than a subtract —
+/// is what keeps `stat_longest_full` correct when the deleted
+/// session was the previous longest, and what prevents drift after
+/// repeated deletes.
+#[tokio::test]
+async fn delete_and_recompute_rebuilds_aggregate_stats() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // Three sessions: a long one (the future "longest"), a medium,
+    // a short. We'll delete the long one and watch
+    // `stat_longest_full` drop to the medium.
+    let runs: [(OffsetDateTime, i64, i64); 3] = [
+        (datetime!(2026-03-01 10:00:00 UTC), 7_200, 6_000), // 2h longest
+        (datetime!(2026-03-02 10:00:00 UTC), 1_800, 1_500),
+        (datetime!(2026-03-03 10:00:00 UTC), 600, 500),
+    ];
+    let mut ids = Vec::new();
+    for (start, full, interactive) in runs {
+        let s = sessions.begin(app.id, start).await.unwrap();
+        sessions
+            .close_and_rollup(
+                s.id,
+                app.id,
+                RuntimeSnapshot {
+                    full_runtime_seconds: full,
+                    interactive_runtime_seconds: interactive,
+                    at: start + Duration::seconds(full),
+                },
+                ExitReason::Terminated,
+            )
+            .await
+            .unwrap();
+        ids.push(s.id);
+    }
+
+    // Pre-delete sanity: 3 runs, longest = 7200, totals match.
+    let before = apps.find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(before.stat_run_count, 3);
+    assert_eq!(before.stat_total_full, 7_200 + 1_800 + 600);
+    assert_eq!(before.stat_longest_full, 7_200);
+
+    // Delete the long one.
+    let deleted = sessions.delete_and_recompute(ids[0]).await.unwrap();
+    assert!(deleted, "delete_and_recompute reports the row was removed");
+
+    let after = apps.find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.stat_run_count, 2);
+    assert_eq!(after.stat_total_full, 1_800 + 600);
+    assert_eq!(after.stat_total_interactive, 1_500 + 500);
+    assert_eq!(
+        after.stat_longest_full, 1_800,
+        "longest must reflect the surviving rows, not a stale max",
+    );
+    assert_eq!(
+        after.last_played_at,
+        Some(datetime!(2026-03-03 10:10:00 UTC)),
+        "last_played_at points at the surviving newest session's end",
+    );
+
+    // The session row itself is gone.
+    assert!(sessions.find_by_id(ids[0]).await.unwrap().is_none());
+}
+
+/// Deleting a non-existent session is a quiet no-op rather than an
+/// error — keeps the GUI's "click delete twice in quick succession"
+/// path simple.
+#[tokio::test]
+async fn delete_and_recompute_missing_id_is_no_op() {
+    let db = Database::open_memory().await.unwrap();
+    let deleted = db.sessions().delete_and_recompute(99_999).await.unwrap();
+    assert!(!deleted);
+}
+
+/// Refusing to delete an open session protects in-flight runtime
+/// from being silently dropped. The session manager is the
+/// authoritative writer for an open row; the GUI must stop the
+/// game before deleting.
+#[tokio::test]
+async fn delete_and_recompute_refuses_open_session() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    let open = sessions
+        .begin(app.id, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let result = sessions.delete_and_recompute(open.id).await;
+    assert!(matches!(result, Err(ludex_core::Error::Invariant(_))));
+
+    // Session row must still exist after the refused delete.
+    assert!(sessions.find_by_id(open.id).await.unwrap().is_some());
+}
+
 /// Daily aggregation buckets by `DATE(started_at)` in UTC, sums
 /// per-session runtimes, counts rows, and returns the days in
 /// chronological order. The result skips days that have no sessions,
