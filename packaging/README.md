@@ -121,12 +121,39 @@ subsequent runs are fast.
 
 ### If the icon still doesn't show
 
-Confirm the running window's app-id actually matches the
-`StartupWMClass=net.ludex.gui` line in the `.desktop` file. On
-Plasma 6 Wayland: open the **System Monitor** widget, right-click
-the ludex process, **Properties** → **App ID**. Adjust the
-`StartupWMClass` in the desktop entry if it differs (and rebuild
-the package).
+If the panel / Kickoff still renders a black silhouette after a
+clean install on KDE Plasma 6, it's almost always one of two
+things:
+
+1. **Plasma's icon cache is stale.** `pacman -U` updates the
+   PNG on disk but Plasma keeps the previous render in
+   `~/.cache/icon-cache.kcache` plus its in-memory copy.
+   Force a refresh:
+
+   ```sh
+   rm -f ~/.cache/icon-cache.kcache
+   kbuildsycoca6 --noincremental
+   kquitapp6 plasmashell && setsid plasmashell >/dev/null 2>&1 &
+   ```
+
+   Then close + reopen the GUI window so its taskbar entry
+   re-resolves against the fresh icon.
+
+2. **The window's app-id doesn't match the `.desktop`'s
+   `StartupWMClass`.** Tauri 2 / wry on Wayland sets the
+   xdg-toplevel app-id from the binary basename
+   (`ludex-gui`), not the bundle identifier
+   (`net.ludex.gui`) — so the `.desktop` declares
+   `StartupWMClass=ludex-gui` to match. Confirm what KDE
+   actually sees:
+
+   ```sh
+   qdbus6 org.kde.KWin /KWin org.kde.KWin.queryWindowInfo
+   # click the GUI window when prompted; check `desktopFile:`
+   ```
+
+   `desktopFile: ludex-gui` is correct. If it's something
+   else, adjust `StartupWMClass` to match and rebuild.
 
 ## (planned) AUR PKGBUILD
 

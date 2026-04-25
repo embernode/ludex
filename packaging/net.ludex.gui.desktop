@@ -9,10 +9,15 @@ Terminal=false
 Categories=Game;Utility;
 Keywords=games;playtime;tracker;steam;
 StartupNotify=true
-# Tauri 2 on Linux uses the bundle identifier as the GTK application
-# id, which is what KDE's task manager reads as the app-id (Wayland)
-# or WM_CLASS (Xwayland). Matching it here is what links the
-# running window to this entry — without that link, the taskbar
-# icon falls back to a generic placeholder no matter what `Icon=`
-# above resolves to.
-StartupWMClass=net.ludex.gui
+# Tauri 2 sets the GTK application id from `tauri.conf.json`'s
+# `identifier` (net.ludex.gui), but on Wayland the wry backend
+# ends up calling `xdg_toplevel.set_app_id` with the *binary
+# basename* (`ludex-gui`) instead. KDE's task manager reads the
+# Wayland app-id when matching windows to .desktop entries, so
+# `StartupWMClass` here has to match what actually reaches the
+# compositor — the binary name — not the reverse-DNS bundle id.
+# Confirm via:
+#   qdbus6 org.kde.KWin /KWin org.kde.KWin.queryWindowInfo
+# (click the GUI window when prompted; the `desktopFile` field
+# is what KDE expects this entry to be named/match against).
+StartupWMClass=ludex-gui
