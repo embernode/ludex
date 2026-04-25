@@ -10,16 +10,14 @@
 
 #![allow(dead_code)]
 
-use ludex_core::{
-    GraphicsPlatform, Icons, LauncherType, NewApplication, ProcessArchitecture,
-};
+use ludex_core::{GraphicsPlatform, Icons, LauncherType, NewApplication, ProcessArchitecture};
 use time::OffsetDateTime;
 
 /// Reasonable default `NewApplication` for tests that need an
 /// application row to attach sessions / blocked entries / merges
 /// to. Caller adjusts launcher_type / launcher_id / product_name
 /// as needed for the scenario.
-pub fn sample_new_app() -> NewApplication {
+pub(crate) fn sample_new_app() -> NewApplication {
     NewApplication {
         launcher_type: LauncherType::Steam,
         launcher_id: "440".into(),

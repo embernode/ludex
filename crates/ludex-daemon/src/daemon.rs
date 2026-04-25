@@ -246,8 +246,12 @@ async fn spawn_sources(
 /// errors. A transient DB read error must never stop the daemon
 /// from starting — log it and use the default.
 async fn resolve_tracker_config(db: &Database) -> TrackerConfig {
-    let gpu_memory_threshold_bytes =
-        load_u64(db, GPU_MEMORY_THRESHOLD_BYTES, DEFAULT_GPU_MEMORY_THRESHOLD_BYTES).await;
+    let gpu_memory_threshold_bytes = load_u64(
+        db,
+        GPU_MEMORY_THRESHOLD_BYTES,
+        DEFAULT_GPU_MEMORY_THRESHOLD_BYTES,
+    )
+    .await;
     let alt_tab_grace_seconds =
         load_u64(db, ALT_TAB_GRACE_SECONDS, DEFAULT_ALT_TAB_GRACE_SECONDS).await;
     let pause_when_backgrounded =

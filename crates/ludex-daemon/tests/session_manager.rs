@@ -528,11 +528,7 @@ async fn idle_under_grace_is_fully_forgiven() {
         .await
         .unwrap()
         .unwrap();
-    let session = &db
-        .sessions()
-        .list_for_application(app.id, 1)
-        .await
-        .unwrap()[0];
+    let session = &db.sessions().list_for_application(app.id, 1).await.unwrap()[0];
     assert_eq!(session.full_runtime_seconds, 120);
     assert_eq!(
         session.interactive_runtime_seconds, 120,
@@ -592,11 +588,7 @@ async fn idle_above_grace_bills_only_the_tail() {
         .await
         .unwrap()
         .unwrap();
-    let session = &db
-        .sessions()
-        .list_for_application(app.id, 1)
-        .await
-        .unwrap()[0];
+    let session = &db.sessions().list_for_application(app.id, 1).await.unwrap()[0];
     assert_eq!(session.full_runtime_seconds, 20 * 60);
     // billable_idle = max(0, 600 - 60) = 540
     // interactive = full - billable = 1200 - 540 = 660

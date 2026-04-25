@@ -153,7 +153,10 @@ pub(crate) fn install<R: Runtime>(
     // like. A later `ThemeChanged(Light)` event will flip us back
     // to the light-shape variant if the user really is on a
     // light desktop.
-    let initial_is_dark = match app.get_webview_window(MAIN_WINDOW).and_then(|w| w.theme().ok()) {
+    let initial_is_dark = match app
+        .get_webview_window(MAIN_WINDOW)
+        .and_then(|w| w.theme().ok())
+    {
         Some(Theme::Light) => false,
         // `Some(Theme::Dark)` → dark, `None`/`Err` → default dark
         // (the Theme enum is #[non_exhaustive], so the wildcard
@@ -305,10 +308,7 @@ async fn apply_tooltip<R: Runtime>(
         .await;
 }
 
-async fn apply_theme<R: Runtime>(
-    handle_slot: &Arc<OnceLock<Handle<LudexTray<R>>>>,
-    is_dark: bool,
-) {
+async fn apply_theme<R: Runtime>(handle_slot: &Arc<OnceLock<Handle<LudexTray<R>>>>, is_dark: bool) {
     let Some(handle) = handle_slot.get().cloned() else {
         return;
     };
@@ -320,7 +320,11 @@ async fn apply_theme<R: Runtime>(
 }
 
 fn apply_window_icon<R: Runtime>(window: &tauri::WebviewWindow<R>, is_dark: bool) {
-    let bytes = if is_dark { ICON_PNG_DARK } else { ICON_PNG_LIGHT };
+    let bytes = if is_dark {
+        ICON_PNG_DARK
+    } else {
+        ICON_PNG_LIGHT
+    };
     match Image::from_bytes(bytes) {
         Ok(img) => {
             if let Err(e) = window.set_icon(img) {

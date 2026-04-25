@@ -45,11 +45,15 @@ pub const DEFAULT_MERGE_GAP_SECONDS: u64 = 60;
 /// disabled state for callers that want to bypass merging without a
 /// separate code path.
 #[must_use]
-pub fn merge_adjacent_recent(
-    rows: Vec<RecentSession>,
-    gap: Duration,
-) -> Vec<(RecentSession, i64)> {
-    fold(rows, gap, |row| row.application_id, |row| row.started_at, |row| row.ended_at, merge_recent)
+pub fn merge_adjacent_recent(rows: Vec<RecentSession>, gap: Duration) -> Vec<(RecentSession, i64)> {
+    fold(
+        rows,
+        gap,
+        |row| row.application_id,
+        |row| row.started_at,
+        |row| row.ended_at,
+        merge_recent,
+    )
 }
 
 /// [`merge_adjacent_recent`] for the bare [`Session`] shape (no
@@ -58,7 +62,14 @@ pub fn merge_adjacent_recent(
 /// row.
 #[must_use]
 pub fn merge_adjacent_session(rows: Vec<Session>, gap: Duration) -> Vec<(Session, i64)> {
-    fold(rows, gap, |row| row.application_id, |row| row.started_at, |row| row.ended_at, merge_session)
+    fold(
+        rows,
+        gap,
+        |row| row.application_id,
+        |row| row.started_at,
+        |row| row.ended_at,
+        merge_session,
+    )
 }
 
 /// Generic fold parameterised on the row type. Kept private — the
@@ -117,7 +128,9 @@ where
 fn merge_recent(acc: &mut RecentSession, older: &RecentSession) {
     // Extend the merged span backward in time.
     acc.started_at = older.started_at;
-    acc.full_runtime_seconds = acc.full_runtime_seconds.saturating_add(older.full_runtime_seconds);
+    acc.full_runtime_seconds = acc
+        .full_runtime_seconds
+        .saturating_add(older.full_runtime_seconds);
     acc.interactive_runtime_seconds = acc
         .interactive_runtime_seconds
         .saturating_add(older.interactive_runtime_seconds);
@@ -129,7 +142,9 @@ fn merge_recent(acc: &mut RecentSession, older: &RecentSession) {
 
 fn merge_session(acc: &mut Session, older: &Session) {
     acc.started_at = older.started_at;
-    acc.full_runtime_seconds = acc.full_runtime_seconds.saturating_add(older.full_runtime_seconds);
+    acc.full_runtime_seconds = acc
+        .full_runtime_seconds
+        .saturating_add(older.full_runtime_seconds);
     acc.interactive_runtime_seconds = acc
         .interactive_runtime_seconds
         .saturating_add(older.interactive_runtime_seconds);
@@ -142,7 +157,12 @@ mod tests {
     use super::*;
     use time::macros::datetime;
 
-    fn r(id: i64, app: i64, start: time::OffsetDateTime, end: time::OffsetDateTime) -> RecentSession {
+    fn r(
+        id: i64,
+        app: i64,
+        start: time::OffsetDateTime,
+        end: time::OffsetDateTime,
+    ) -> RecentSession {
         RecentSession {
             id,
             application_id: app,
@@ -182,8 +202,18 @@ mod tests {
     fn unmergeable_rows_pass_through_with_count_one() {
         // Two different apps, no merging.
         let rows = vec![
-            r(2, 1, datetime!(2026-01-01 12:10 UTC), datetime!(2026-01-01 12:20 UTC)),
-            r(1, 2, datetime!(2026-01-01 12:00 UTC), datetime!(2026-01-01 12:05 UTC)),
+            r(
+                2,
+                1,
+                datetime!(2026-01-01 12:10 UTC),
+                datetime!(2026-01-01 12:20 UTC),
+            ),
+            r(
+                1,
+                2,
+                datetime!(2026-01-01 12:00 UTC),
+                datetime!(2026-01-01 12:05 UTC),
+            ),
         ];
         let merged = merge_adjacent_recent(rows, Duration::from_mins(1));
         assert_eq!(merged.len(), 2);
@@ -194,8 +224,18 @@ mod tests {
     fn small_gap_same_app_merges() {
         // Newest at top: ends 12:30. Older below: ends 12:14:30,
         // newer starts 12:15:00 — gap 30s, under threshold.
-        let newer = r(2, 1, datetime!(2026-01-01 12:15 UTC), datetime!(2026-01-01 12:30 UTC));
-        let older = r(1, 1, datetime!(2026-01-01 12:00 UTC), datetime!(2026-01-01 12:14:30 UTC));
+        let newer = r(
+            2,
+            1,
+            datetime!(2026-01-01 12:15 UTC),
+            datetime!(2026-01-01 12:30 UTC),
+        );
+        let older = r(
+            1,
+            1,
+            datetime!(2026-01-01 12:00 UTC),
+            datetime!(2026-01-01 12:14:30 UTC),
+        );
         let merged = merge_adjacent_recent(vec![newer, older], Duration::from_mins(1));
         assert_eq!(merged.len(), 1);
         let (span, count) = &merged[0];
@@ -210,8 +250,18 @@ mod tests {
     #[test]
     fn large_gap_does_not_merge() {
         // Two same-app rows with a 5-minute gap; default 60s threshold.
-        let newer = r(2, 1, datetime!(2026-01-01 12:10 UTC), datetime!(2026-01-01 12:20 UTC));
-        let older = r(1, 1, datetime!(2026-01-01 12:00 UTC), datetime!(2026-01-01 12:05 UTC));
+        let newer = r(
+            2,
+            1,
+            datetime!(2026-01-01 12:10 UTC),
+            datetime!(2026-01-01 12:20 UTC),
+        );
+        let older = r(
+            1,
+            1,
+            datetime!(2026-01-01 12:00 UTC),
+            datetime!(2026-01-01 12:05 UTC),
+        );
         let merged = merge_adjacent_recent(vec![newer, older], Duration::from_mins(1));
         assert_eq!(merged.len(), 2);
     }
@@ -219,9 +269,24 @@ mod tests {
     #[test]
     fn three_in_a_row_collapse_into_one() {
         // Each gap is 10s; threshold 60s.
-        let a = r(3, 1, datetime!(2026-01-01 12:30 UTC), datetime!(2026-01-01 12:40 UTC));
-        let b = r(2, 1, datetime!(2026-01-01 12:20 UTC), datetime!(2026-01-01 12:29:50 UTC));
-        let c = r(1, 1, datetime!(2026-01-01 12:00 UTC), datetime!(2026-01-01 12:19:50 UTC));
+        let a = r(
+            3,
+            1,
+            datetime!(2026-01-01 12:30 UTC),
+            datetime!(2026-01-01 12:40 UTC),
+        );
+        let b = r(
+            2,
+            1,
+            datetime!(2026-01-01 12:20 UTC),
+            datetime!(2026-01-01 12:29:50 UTC),
+        );
+        let c = r(
+            1,
+            1,
+            datetime!(2026-01-01 12:00 UTC),
+            datetime!(2026-01-01 12:19:50 UTC),
+        );
         let merged = merge_adjacent_recent(vec![a, b, c], Duration::from_mins(1));
         assert_eq!(merged.len(), 1);
         let (span, count) = &merged[0];
@@ -236,7 +301,12 @@ mod tests {
         // closed 30s before the open one started should still merge —
         // matches "user closed the game and immediately reopened it".
         let open = r_open(2, 1, datetime!(2026-01-01 12:30 UTC));
-        let older = r(1, 1, datetime!(2026-01-01 12:00 UTC), datetime!(2026-01-01 12:29:30 UTC));
+        let older = r(
+            1,
+            1,
+            datetime!(2026-01-01 12:00 UTC),
+            datetime!(2026-01-01 12:29:30 UTC),
+        );
         let merged = merge_adjacent_recent(vec![open, older], Duration::from_mins(1));
         assert_eq!(merged.len(), 1);
         let (span, count) = &merged[0];
@@ -251,9 +321,24 @@ mod tests {
         // the second hop must not fuse across the foreign row even
         // though gaps are small.
         let rows = vec![
-            r(3, 1, datetime!(2026-01-01 12:30 UTC), datetime!(2026-01-01 12:40 UTC)),
-            r(2, 2, datetime!(2026-01-01 12:25 UTC), datetime!(2026-01-01 12:29 UTC)),
-            r(1, 1, datetime!(2026-01-01 12:00 UTC), datetime!(2026-01-01 12:24 UTC)),
+            r(
+                3,
+                1,
+                datetime!(2026-01-01 12:30 UTC),
+                datetime!(2026-01-01 12:40 UTC),
+            ),
+            r(
+                2,
+                2,
+                datetime!(2026-01-01 12:25 UTC),
+                datetime!(2026-01-01 12:29 UTC),
+            ),
+            r(
+                1,
+                1,
+                datetime!(2026-01-01 12:00 UTC),
+                datetime!(2026-01-01 12:24 UTC),
+            ),
         ];
         let merged = merge_adjacent_recent(rows, Duration::from_mins(1));
         assert_eq!(merged.len(), 3);
@@ -264,12 +349,19 @@ mod tests {
     fn zero_gap_only_merges_touching_rows() {
         // Threshold zero accepts only end == start. A 1-second gap
         // is enough to keep the rows separate.
-        let touching_newer = r(2, 1, datetime!(2026-01-01 12:10 UTC), datetime!(2026-01-01 12:20 UTC));
-        let touching_older = r(1, 1, datetime!(2026-01-01 12:00 UTC), datetime!(2026-01-01 12:10 UTC));
-        let merged = merge_adjacent_recent(
-            vec![touching_newer, touching_older],
-            Duration::ZERO,
+        let touching_newer = r(
+            2,
+            1,
+            datetime!(2026-01-01 12:10 UTC),
+            datetime!(2026-01-01 12:20 UTC),
         );
+        let touching_older = r(
+            1,
+            1,
+            datetime!(2026-01-01 12:00 UTC),
+            datetime!(2026-01-01 12:10 UTC),
+        );
+        let merged = merge_adjacent_recent(vec![touching_newer, touching_older], Duration::ZERO);
         assert_eq!(merged.len(), 1, "touching rows still merge with zero gap");
     }
 }

@@ -369,8 +369,8 @@ impl SessionManager {
         // Read the live grace setting once per heartbeat batch — the
         // alternative (one read per open session) would be redundant
         // because in practice there's at most one open session.
-        let grace_seconds = i64::try_from(self.config.read().await.idle_grace.as_secs())
-            .unwrap_or(i64::MAX);
+        let grace_seconds =
+            i64::try_from(self.config.read().await.idle_grace.as_secs()).unwrap_or(i64::MAX);
         for open in self.open.values() {
             let (full, interactive) = self.runtimes_for(open, now, grace_seconds);
             self.db
@@ -430,8 +430,8 @@ impl SessionManager {
         ended_at: OffsetDateTime,
         reason: ExitReason,
     ) -> Result<(), Error> {
-        let grace_seconds = i64::try_from(self.config.read().await.idle_grace.as_secs())
-            .unwrap_or(i64::MAX);
+        let grace_seconds =
+            i64::try_from(self.config.read().await.idle_grace.as_secs()).unwrap_or(i64::MAX);
         let (full, interactive) = self.runtimes_for(&open, ended_at, grace_seconds);
         self.db
             .sessions()

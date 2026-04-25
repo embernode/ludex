@@ -111,11 +111,7 @@ impl IdleTracker {
     /// minus the grace. The slight over-forgiveness is acceptable
     /// for the edge case it covers.
     #[must_use]
-    pub fn billable_idle_seconds_since(
-        &self,
-        baseline_count: usize,
-        grace_seconds: i64,
-    ) -> i64 {
+    pub fn billable_idle_seconds_since(&self, baseline_count: usize, grace_seconds: i64) -> i64 {
         let s = self.state.lock().expect("idle tracker mutex poisoned");
         let mut total: i64 = 0;
         for dur in s.closed_intervals_seconds.iter().skip(baseline_count) {
@@ -310,7 +306,7 @@ mod tests {
         // Two cutscene-shaped intervals under the grace.
         t.record_idle_interval(120); // 2 min
         t.record_idle_interval(180); // 3 min
-        // Grace 5 min: both fully forgiven, both billable values 0.
+                                     // Grace 5 min: both fully forgiven, both billable values 0.
         assert_eq!(t.billable_idle_seconds_since(0, 300), 0);
     }
 
@@ -318,7 +314,7 @@ mod tests {
     fn billable_long_interval_is_billed_minus_grace() {
         let t = IdleTracker::new();
         t.record_idle_interval(30 * 60); // 30 min AFK
-        // Grace 5 min: billable = 25 min.
+                                         // Grace 5 min: billable = 25 min.
         assert_eq!(t.billable_idle_seconds_since(0, 5 * 60), 25 * 60);
     }
 

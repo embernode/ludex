@@ -7,9 +7,7 @@
 mod common;
 
 use common::sample_new_app;
-use ludex_core::{
-    Database, ExitReason, GameKey, PlaybackDelta, RuntimeSnapshot,
-};
+use ludex_core::{Database, ExitReason, GameKey, PlaybackDelta, RuntimeSnapshot};
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
 

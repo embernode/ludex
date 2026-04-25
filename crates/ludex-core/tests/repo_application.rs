@@ -7,8 +7,8 @@ mod common;
 
 use common::sample_new_app;
 use ludex_core::{
-    Database, ExitReason, GameKey, GraphicsPlatform, IdentityUpdate, LauncherType,
-    PlaybackDelta, RuntimeSnapshot,
+    Database, ExitReason, GameKey, GraphicsPlatform, IdentityUpdate, LauncherType, PlaybackDelta,
+    RuntimeSnapshot,
 };
 use time::{Duration, OffsetDateTime};
 

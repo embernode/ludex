@@ -277,12 +277,11 @@ impl<'a> SessionRepo<'a> {
     pub async fn delete_and_recompute(&self, session_id: i64) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
 
-        let row: Option<(i64, Option<OffsetDateTime>)> = sqlx::query_as(
-            "SELECT application_id, ended_at FROM sessions WHERE id = ?",
-        )
-        .bind(session_id)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let row: Option<(i64, Option<OffsetDateTime>)> =
+            sqlx::query_as("SELECT application_id, ended_at FROM sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&mut *tx)
+                .await?;
         let Some((application_id, ended_at)) = row else {
             tx.rollback().await?;
             return Ok(false);

@@ -118,7 +118,10 @@ fn resolve_identity(lutris_name: &str, exe_path: &Path) -> (String, Option<Strin
     if lutris_name.eq_ignore_ascii_case("Battle.net") {
         if let Some(basename) = exe_path.file_name().and_then(|s| s.to_str()) {
             if let Some(curated) = curated_battlenet_game(basename) {
-                return (curated.to_owned(), Some("Blizzard Entertainment".to_owned()));
+                return (
+                    curated.to_owned(),
+                    Some("Blizzard Entertainment".to_owned()),
+                );
             }
         }
         // Fall through: we matched the Battle.net wine prefix but the
@@ -204,10 +207,7 @@ mod tests {
         // directory should win so the dedicated row's name is used.
         let g = games(&[
             ("Battle.net", "/home/u/Games/battlenet"),
-            (
-                "Some Standalone Game",
-                "/home/u/Games/battlenet/standalone",
-            ),
+            ("Some Standalone Game", "/home/u/Games/battlenet/standalone"),
         ]);
         let exe = PathBuf::from("/home/u/Games/battlenet/standalone/Game.exe");
         let m = best_match(&g, &exe).expect("should match");
@@ -216,8 +216,7 @@ mod tests {
 
     #[test]
     fn battlenet_curation_resolves_known_titles() {
-        let exe =
-            PathBuf::from("/home/u/Games/battlenet/drive_c/.../Diablo IV/Diablo IV.exe");
+        let exe = PathBuf::from("/home/u/Games/battlenet/drive_c/.../Diablo IV/Diablo IV.exe");
         let (name, publisher) = resolve_identity("Battle.net", &exe);
         assert_eq!(name, "Diablo IV");
         assert_eq!(publisher.as_deref(), Some("Blizzard Entertainment"));
@@ -294,7 +293,11 @@ mod tests {
         drop(conn);
 
         let rows = read_installed_games(&db_path).await.unwrap();
-        assert_eq!(rows.len(), 1, "only the installed row with a directory should be returned");
+        assert_eq!(
+            rows.len(),
+            1,
+            "only the installed row with a directory should be returned"
+        );
         assert_eq!(rows[0].name, "Installed Game");
     }
 }
