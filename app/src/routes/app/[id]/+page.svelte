@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import { page } from '$app/state';
     import type { UnlistenFn } from '@tauri-apps/api/event';
+    import { openUrl } from '@tauri-apps/plugin-opener';
     import {
         getApplication,
         listSessionsForApplication,
@@ -26,6 +27,28 @@
 
     // Route param is a string; convert once per navigation.
     const id = $derived(Number(page.params.id));
+
+    /**
+     * ProtonDB URL for this application, when one applies. ProtonDB
+     * is keyed by Steam appid; non-Steam applications and Steam apps
+     * with non-numeric launcher_ids (shouldn't happen, but defensive)
+     * return `null` so the link is hidden rather than broken.
+     */
+    const protondbUrl = $derived.by(() => {
+        if (!app || app.launcher_type !== 'steam') return null;
+        const appid = app.launcher_id.trim();
+        if (!appid || !/^\d+$/.test(appid)) return null;
+        return `https://www.protondb.com/app/${appid}`;
+    });
+
+    async function openProtondb() {
+        if (!protondbUrl) return;
+        try {
+            await openUrl(protondbUrl);
+        } catch (e) {
+            error = String(e);
+        }
+    }
 
     async function refresh() {
         if (!Number.isFinite(id) || id <= 0) {
@@ -139,6 +162,18 @@
             <dl>
                 <dt>Launcher</dt>
                 <dd><code>{app.launcher_type}:{app.launcher_id}</code></dd>
+                {#if protondbUrl}
+                    <dt>ProtonDB</dt>
+                    <dd>
+                        <button
+                            type="button"
+                            class="link-button"
+                            onclick={openProtondb}
+                        >
+                            View compatibility report ↗
+                        </button>
+                    </dd>
+                {/if}
             </dl>
         </section>
 
@@ -290,6 +325,20 @@
     .identity dd {
         margin: 0;
         font-size: 0.9rem;
+    }
+
+    .link-button {
+        background: none;
+        border: none;
+        padding: 0;
+        color: var(--accent);
+        font: inherit;
+        cursor: pointer;
+        text-align: left;
+    }
+
+    .link-button:hover {
+        text-decoration: underline;
     }
 
     table {
