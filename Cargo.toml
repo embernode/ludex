@@ -17,6 +17,14 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/embernode/ludex"
 authors = ["embernode and contributors"]
 readme = "README.md"
+# Workspace crates are internal to ludex — `ludex-cli` /
+# `ludex-daemon` / `ludex-gui` ship as binaries through PKGBUILD
+# (eventually AUR / .deb), and `ludex-core` / `ludex-enrich` /
+# `ludex-dbus-types` are pure implementation details. Marking
+# the whole workspace as non-publishable makes that explicit and
+# lets cargo-deny's `allow-wildcard-paths` apply to our internal
+# `path = "../foo"` deps without a per-crate exemption.
+publish = false
 
 [workspace.dependencies]
 # Core async

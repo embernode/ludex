@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 readme.workspace = true
+publish.workspace = true
 description = "Wire types for the net.ludex.Tracker1 D-Bus API"
 
 [dependencies]

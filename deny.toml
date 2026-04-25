@@ -4,6 +4,38 @@ all-features = true
 [advisories]
 version = 2
 yanked = "warn"
+# Transitive unmaintained deps we can't fix at this layer — all
+# reach us through Tauri 2's Linux backend (`tauri-runtime-wry`
+# pulls the gtk-rs GTK3 bindings; `tauri-utils` →  `urlpattern`
+# pulls the rust-unic family). They will only clear when Tauri
+# moves to GTK4 / WebKitGTK 6.0; tracked upstream at
+# https://github.com/tauri-apps/webkit2gtk-rs/issues/94 (GTK4
+# support) and https://github.com/tauri-apps/tauri-docs/issues/3143
+# (Tauri V3 announcement). Re-run `cargo deny check` periodically
+# and drop entries that no longer match — the IDs below are the
+# real ones reported as of the last audit.
+ignore = [
+    # gtk-rs GTK3 binding family (atk, gdk, gtk, gdkx11, …).
+    "RUSTSEC-2024-0411",
+    "RUSTSEC-2024-0412",
+    "RUSTSEC-2024-0413",
+    "RUSTSEC-2024-0414",
+    "RUSTSEC-2024-0415",
+    "RUSTSEC-2024-0416",
+    "RUSTSEC-2024-0417",
+    "RUSTSEC-2024-0418",
+    "RUSTSEC-2024-0419",
+    "RUSTSEC-2024-0420",
+    # rust-unic family (transitive via tauri-utils → urlpattern).
+    "RUSTSEC-2025-0075",  # unic-char-range
+    "RUSTSEC-2025-0080",  # unic-common
+    "RUSTSEC-2025-0081",  # unic-char-property
+    "RUSTSEC-2025-0098",  # unic-ucd-version
+    "RUSTSEC-2025-0100",  # unic-ucd-ident
+    # Older unmaintained transitives.
+    "RUSTSEC-2024-0370",  # proc-macro-error
+    "RUSTSEC-2025-0057",  # fxhash
+]
 
 [licenses]
 version = 2
@@ -20,12 +52,22 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "OpenSSL",
+    # Used by `ksni` (the pure-Rust StatusNotifierItem tray crate
+    # we use to avoid the abandoned `libappindicator-rs` C wrapper).
+    # OSI-approved and FSF-Free — equivalent to public-domain.
+    "Unlicense",
 ]
 confidence-threshold = 0.92
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace internal `{ path = "../foo" }` deps don't carry a
+# version pin; cargo-deny otherwise reads that as a `*` wildcard
+# and rejects them under the `wildcards = "deny"` rule above.
+# `allow-wildcard-paths` exempts path-only deps without weakening
+# the rule for proper registry deps.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "warn"
