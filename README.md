@@ -17,6 +17,15 @@ Each recognised game has its sessions persisted to SQLite with two runtime figur
 
 The primary target is KDE Plasma 6 on Wayland. X11 support is on the roadmap (the gate code already expects an `_NET_ACTIVE_WINDOW` source) but no X11 foreground source is wired up today — on X11 the launcher-based paths (Steam log tailing) still work, but the foreground fallback does not.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Games list](screenshots/main.png) | ![Recent sessions](screenshots/recent.png) |
+| **Games** — every tracked application, sortable by last played / name / total runtime. | **Recent sessions** — chronological feed of the latest plays. |
+| ![Dashboard](screenshots/dashboard.png) | ![Game detail](screenshots/game_details.png) |
+| **Dashboard** — daily playtime line, calendar heatmap, sessions-this-week bar (ECharts). | **Game detail** — per-game stats, ProtonDB link for Steam titles, full session history with merged-fragment annotations and per-row delete. |
+
 ## Design principles
 
 - **No telemetry.** No network I/O at runtime, full stop.
