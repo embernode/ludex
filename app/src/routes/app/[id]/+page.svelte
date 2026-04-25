@@ -4,6 +4,7 @@
     import type { UnlistenFn } from '@tauri-apps/api/event';
     import { openUrl } from '@tauri-apps/plugin-opener';
     import {
+        deleteSession,
         getApplication,
         listSessionsForApplication,
         onDaemonReconnected,
@@ -29,22 +30,38 @@
     const id = $derived(Number(page.params.id));
 
     /**
-     * ProtonDB URL for this application, when one applies. ProtonDB
-     * is keyed by Steam appid; non-Steam applications and Steam apps
-     * with non-numeric launcher_ids (shouldn't happen, but defensive)
-     * return `null` so the link is hidden rather than broken.
+     * ProtonDB destination for this application. Steam-launched
+     * games with a numeric appid go directly to the app's
+     * compatibility-report page; everything else (non-Steam games,
+     * Lutris-managed wine titles, Battle.net curated entries)
+     * falls back to a name-keyed search since ProtonDB indexes
+     * non-Steam titles too. `null` only when the product name is
+     * empty — at which point a search would land on a useless
+     * results page.
      */
-    const protondbUrl = $derived.by(() => {
-        if (!app || app.launcher_type !== 'steam') return null;
-        const appid = app.launcher_id.trim();
-        if (!appid || !/^\d+$/.test(appid)) return null;
-        return `https://www.protondb.com/app/${appid}`;
+    const protondb = $derived.by(() => {
+        if (!app) return null;
+        if (app.launcher_type === 'steam') {
+            const appid = app.launcher_id.trim();
+            if (appid && /^\d+$/.test(appid)) {
+                return {
+                    url: `https://www.protondb.com/app/${appid}`,
+                    label: 'View compatibility report ↗',
+                };
+            }
+        }
+        const query = app.product_name.trim();
+        if (!query) return null;
+        return {
+            url: `https://www.protondb.com/search?q=${encodeURIComponent(query)}`,
+            label: 'Search compatibility reports ↗',
+        };
     });
 
     async function openProtondb() {
-        if (!protondbUrl) return;
+        if (!protondb) return;
         try {
-            await openUrl(protondbUrl);
+            await openUrl(protondb.url);
         } catch (e) {
             error = String(e);
         }
@@ -77,6 +94,60 @@
             return `${base} · ${s.fragment_count} merged`;
         }
         return base;
+    }
+
+    /**
+     * Whether this session row is safe to delete from the GUI.
+     * Open sessions belong to the daemon and would lose in-flight
+     * runtime if dropped. Merged spans hide N underlying rows
+     * behind one display row; removing the visible one would
+     * leave the others orphaned without telling the user. Both
+     * cases are better handled by stopping the game first / by a
+     * future "show fragments" toggle than by a one-shot delete.
+     */
+    function canDelete(s: SessionSummary): boolean {
+        return Boolean(s.exit_reason) && s.fragment_count === 1;
+    }
+
+    /** Native `<dialog>` reference; bound by the template. */
+    let deleteDialog = $state<HTMLDialogElement | null>(null);
+    /** Session queued for deletion while the dialog is open. */
+    let pendingDelete = $state<SessionSummary | null>(null);
+    /** Tracks the in-flight RPC so the dialog can disable its
+     *  Confirm button and show "Deleting…" while the daemon works. */
+    let deleting = $state<boolean>(false);
+
+    function openDeleteDialog(s: SessionSummary) {
+        pendingDelete = s;
+        deleting = false;
+        // `showModal` traps focus, paints the ::backdrop, and ESC
+        // dismisses for free — none of which the older
+        // `window.confirm` could give us inside a webview.
+        deleteDialog?.showModal();
+    }
+
+    function cancelDelete() {
+        deleteDialog?.close();
+        pendingDelete = null;
+    }
+
+    async function performDelete() {
+        if (!pendingDelete) return;
+        deleting = true;
+        try {
+            await deleteSession(pendingDelete.id);
+            deleteDialog?.close();
+            pendingDelete = null;
+            // Refresh both the session list and the application
+            // stats card; both move when a row is removed.
+            await refresh();
+        } catch (e) {
+            error = String(e);
+            // Leave the dialog open so the user sees the error
+            // surface above; they can dismiss with Cancel/ESC.
+        } finally {
+            deleting = false;
+        }
     }
 
     // Re-fetch when the route id changes. `$effect` replaces Svelte 4's
@@ -162,7 +233,7 @@
             <dl>
                 <dt>Launcher</dt>
                 <dd><code>{app.launcher_type}:{app.launcher_id}</code></dd>
-                {#if protondbUrl}
+                {#if protondb}
                     <dt>ProtonDB</dt>
                     <dd>
                         <button
@@ -170,7 +241,7 @@
                             class="link-button"
                             onclick={openProtondb}
                         >
-                            View compatibility report ↗
+                            {protondb.label}
                         </button>
                     </dd>
                 {/if}
@@ -190,6 +261,9 @@
                             <th>Full</th>
                             <th>Interactive</th>
                             <th>Status</th>
+                            <th class="actions-col"
+                                ><span class="visually-hidden">Actions</span></th
+                            >
                         </tr>
                     </thead>
                     <tbody>
@@ -208,6 +282,19 @@
                                 <td class="status" class:open={!s.exit_reason}
                                     >{statusLabel(s)}</td
                                 >
+                                <td class="actions-col">
+                                    {#if canDelete(s)}
+                                        <button
+                                            type="button"
+                                            class="row-action delete"
+                                            title="Delete this session"
+                                            aria-label="Delete this session"
+                                            onclick={() => openDeleteDialog(s)}
+                                        >
+                                            ✕
+                                        </button>
+                                    {/if}
+                                </td>
                             </tr>
                         {/each}
                     </tbody>
@@ -215,6 +302,53 @@
             {/if}
         </section>
     {/if}
+
+    <!-- Native <dialog> for delete confirmation. `showModal()`
+         traps focus, draws ::backdrop, and ESC dismisses — none of
+         which `window.confirm` does inside the webview, and which
+         in our case also leaks the http://localhost dev URL into
+         a system title bar. -->
+    <dialog class="confirm-dialog" bind:this={deleteDialog}>
+        {#if pendingDelete}
+            <h2>Delete this session?</h2>
+            <dl class="confirm-facts">
+                <dt>Started</dt>
+                <dd>{formatTimestamp(pendingDelete.started_at, tsFormat)}</dd>
+                <dt>Ended</dt>
+                <dd>{formatTimestamp(pendingDelete.ended_at, tsFormat)}</dd>
+                <dt>Full</dt>
+                <dd>{formatSeconds(pendingDelete.full_runtime_seconds)}</dd>
+                <dt>Interactive</dt>
+                <dd>
+                    {formatSeconds(
+                        pendingDelete.interactive_runtime_seconds,
+                    )}
+                </dd>
+            </dl>
+            <p class="confirm-warning">
+                This cannot be undone. Aggregate stats for
+                <strong>{app?.product_name}</strong> are recomputed from
+                the surviving sessions.
+            </p>
+            <div class="confirm-actions">
+                <button
+                    type="button"
+                    onclick={cancelDelete}
+                    disabled={deleting}
+                >
+                    Cancel
+                </button>
+                <button
+                    type="button"
+                    class="danger"
+                    onclick={performDelete}
+                    disabled={deleting}
+                >
+                    {deleting ? 'Deleting…' : 'Delete session'}
+                </button>
+            </div>
+        {/if}
+    </dialog>
 </main>
 
 <style>
@@ -388,5 +522,127 @@
     .status.open {
         color: var(--status-open);
         font-weight: 500;
+    }
+
+    /* Trailing-action column: narrow, right-aligned, only renders
+       a control on rows that are eligible (closed + unmerged). */
+    .actions-col {
+        width: 1%;
+        text-align: right;
+        white-space: nowrap;
+    }
+
+    .row-action {
+        background: none;
+        border: 1px solid transparent;
+        color: var(--text-subtle);
+        font-size: 0.85rem;
+        line-height: 1;
+        padding: 0.2rem 0.45rem;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+
+    .row-action:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+    }
+
+    .row-action.delete:hover {
+        color: var(--error-text, #ef4444);
+        border-color: var(--error-border, #ef4444);
+    }
+
+    /* Match the existing visually-hidden helper from Settings so the
+       header stays accessible without taking visible space. */
+    .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    /* Native <dialog> styling. The browser positions and centres
+       it; we restyle to match the rest of the surface (card-shaped,
+       same border + radius vocabulary as .stat-card). The
+       ::backdrop pseudo paints the dimming behind the dialog;
+       :modal selector targets the open state so we can transition
+       in cleanly. */
+    .confirm-dialog {
+        border: 1px solid var(--border);
+        background: var(--bg-surface);
+        color: var(--text-primary);
+        border-radius: 10px;
+        padding: 1.5rem 1.75rem;
+        max-width: 28rem;
+        width: calc(100vw - 2rem);
+        font: inherit;
+        box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+    }
+
+    .confirm-dialog::backdrop {
+        background: rgba(0, 0, 0, 0.55);
+    }
+
+    .confirm-dialog h2 {
+        font-size: 1.05rem;
+        margin: 0 0 1rem;
+        color: var(--text-label);
+    }
+
+    .confirm-facts {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.3rem 1rem;
+        margin: 0 0 1rem;
+        font-size: 0.85rem;
+    }
+
+    .confirm-facts dt {
+        color: var(--text-subtle);
+        text-transform: uppercase;
+        font-size: 0.72rem;
+        letter-spacing: 0.03em;
+        align-self: center;
+    }
+
+    .confirm-facts dd {
+        margin: 0;
+        color: var(--text-secondary);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .confirm-warning {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        line-height: 1.5;
+        margin: 0 0 1.25rem;
+    }
+
+    .confirm-warning strong {
+        color: var(--text-primary);
+    }
+
+    .confirm-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.6rem;
+    }
+
+    /* The destructive action gets accent colouring on hover so the
+       user has one extra confirmation moment before clicking. */
+    .confirm-actions .danger {
+        border-color: var(--error-border, #ef4444);
+        color: var(--error-text, #ef4444);
+    }
+
+    .confirm-actions .danger:hover:not(:disabled) {
+        background: var(--error-border, #ef4444);
+        color: white;
     }
 </style>
