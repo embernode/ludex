@@ -63,21 +63,26 @@ pub async fn run_cascade(
 /// 1. `.desktop` entry
 /// 2. PE `FileVersionInfo` (Proton/Wine games only)
 /// 3. GOG `goggame-*.info`
-/// 4. Heroic store JSON (stubbed in this tranche)
+/// 4. Heroic store JSON
 /// 5. Lutris `pga.db`
 /// 6. Steam `appmanifest_*.acf`
 ///
-/// Lutris sits above PE/GOG because its `name` column is curated by
-/// the user (or the Lutris installer scripts) and reads the same as
-/// the original launcher would; PE FileVersionInfo on a wine binary
-/// often reports the engine ("Unreal Engine 4") rather than the game.
-/// Steam stays last because its ACF is canonical for Steam-attributed
-/// games and shouldn't be overwritten by anything else.
+/// Heroic and Lutris both sit above PE/GOG because their library
+/// caches carry curated titles (the same string the user sees in the
+/// launcher UI) whereas PE FileVersionInfo on a wine binary often
+/// reports the engine ("Unreal Engine 4") rather than the game.
+/// Heroic comes before Lutris because a game can be present in both
+/// (Heroic-installed games sometimes also show in Lutris when the
+/// user adds them manually) and Lutris's curated row name is the
+/// stronger signal there. Steam stays last because its ACF is
+/// canonical for Steam-attributed games and shouldn't be overwritten
+/// by anything else.
 pub async fn build_patch(app: &Application, ctx: &EnrichmentContext) -> IdentityUpdate {
     let mut acc = IdentityUpdate::default();
     merge::merge_into(&mut acc, sources::desktop::enrich(app, ctx).await);
     merge::merge_into(&mut acc, sources::pe::enrich(app, ctx).await);
     merge::merge_into(&mut acc, sources::gog::enrich(app, ctx).await);
+    merge::merge_into(&mut acc, sources::heroic::enrich(app, ctx).await);
     merge::merge_into(&mut acc, sources::lutris::enrich(app, ctx).await);
     merge::merge_into(&mut acc, sources::steam::enrich(app, ctx).await);
     acc

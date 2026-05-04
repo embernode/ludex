@@ -76,33 +76,27 @@ impl Default for GateConfig {
 ///
 /// Kept to vars that are only set on the *game's* own process
 /// (not inherited by unrelated children of the user shell): Steam's
-/// `SteamGameId` / `SteamAppId`, Proton's `STEAM_COMPAT_APP_ID`,
-/// Heroic's `HEROIC_APP_NAME`.
+/// `SteamGameId` / `SteamAppId`, Proton's `STEAM_COMPAT_APP_ID`.
 ///
 /// Inherited-wrapper variables (`STEAM_RUNTIME`, `STEAM_BASE_FOLDER`,
 /// `PRESSURE_VESSEL_*`) are deliberately **not** included: they show
 /// up in every Steam-originating child shell too and would cause
 /// false rejections.
 ///
-/// `LUTRIS_GAME_UUID` is also intentionally absent: Lutris doesn't
-/// expose a lifecycle signal (no `Started` / `Stopped`), so unlike
-/// Steam there is no authoritative source picking those games up.
-/// Rejecting on `LUTRIS_GAME_UUID` would simply drop every Lutris-
-/// launched game on the floor. The foreground-window source instead
-/// accepts them as `Native`, and the Lutris pga.db enricher fills in
-/// the proper product name (and, for Battle.net's curated catalogue,
-/// the publisher).
+/// `LUTRIS_GAME_UUID` and `HEROIC_APP_NAME` are also intentionally
+/// absent: neither Lutris nor Heroic exposes a lifecycle signal (no
+/// `Started` / `Stopped`) we can subscribe to, so unlike Steam there
+/// is no authoritative source picking those games up. Rejecting on
+/// either variable would simply drop every Lutris- or Heroic-launched
+/// game on the floor. The foreground-window source instead accepts
+/// them as `Native`, and the Lutris pga.db / Heroic store-cache
+/// enrichers fill in the proper product name and publisher.
 #[must_use]
 pub fn default_launcher_env_vars() -> HashSet<String> {
-    [
-        "SteamGameId",
-        "SteamAppId",
-        "STEAM_COMPAT_APP_ID",
-        "HEROIC_APP_NAME",
-    ]
-    .iter()
-    .map(|s| (*s).to_owned())
-    .collect()
+    ["SteamGameId", "SteamAppId", "STEAM_COMPAT_APP_ID"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
 }
 
 /// Baseline never-track binaries on KDE Plasma.
@@ -533,8 +527,12 @@ mod tests {
     }
 
     #[test]
-    fn heroic_env_rejects() {
-        let exe = PathBuf::from("/home/u/Games/legendary/foo/foo.exe");
+    fn heroic_app_name_env_does_not_reject() {
+        // Heroic, like Lutris, has no lifecycle source — it's the
+        // foreground-window source plus the Heroic store-cache enricher
+        // that pick these games up. Rejecting on `HEROIC_APP_NAME`
+        // would drop every Heroic-launched game on the floor.
+        let exe = PathBuf::from("/home/u/Games/Heroic/Foo/foo.exe");
         let env = env_of(&[("HEROIC_APP_NAME", "com.example.foo")]);
         let d = decide_from_inputs(
             Some(&exe),
@@ -545,9 +543,9 @@ mod tests {
             false,
             &cfg(),
         );
-        assert_eq!(
-            d,
-            GateDecision::Reject(RejectionReason::AttributedToLauncher)
+        assert!(
+            matches!(d, GateDecision::Accept(_)),
+            "Heroic-attributed games must pass the gate; got {d:?}",
         );
     }
 
@@ -642,20 +640,17 @@ mod tests {
     #[test]
     fn default_launcher_env_vars_covers_expected_names() {
         let vars = default_launcher_env_vars();
-        for expected in [
-            "SteamGameId",
-            "SteamAppId",
-            "STEAM_COMPAT_APP_ID",
-            "HEROIC_APP_NAME",
-        ] {
+        for expected in ["SteamGameId", "SteamAppId", "STEAM_COMPAT_APP_ID"] {
             assert!(vars.contains(expected), "missing {expected}");
         }
-        // `LUTRIS_GAME_UUID` is intentionally excluded — see the
-        // doc comment on `default_launcher_env_vars`.
-        assert!(
-            !vars.contains("LUTRIS_GAME_UUID"),
-            "LUTRIS_GAME_UUID must not gate-reject; Lutris has no lifecycle source",
-        );
+        // `LUTRIS_GAME_UUID` and `HEROIC_APP_NAME` are intentionally
+        // excluded — see the doc comment on `default_launcher_env_vars`.
+        for excluded in ["LUTRIS_GAME_UUID", "HEROIC_APP_NAME"] {
+            assert!(
+                !vars.contains(excluded),
+                "{excluded} must not gate-reject; no lifecycle source for it",
+            );
+        }
     }
 
     #[test]
