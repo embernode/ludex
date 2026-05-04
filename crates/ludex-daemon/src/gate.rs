@@ -52,13 +52,24 @@ pub struct GateConfig {
     pub gpu_memory_threshold_bytes: u64,
 
     /// Environment-variable names that mark a process as launched by a
-    /// known launcher. A process whose `/proc/<pid>/environ` contains
-    /// any of these is handled by the corresponding launcher source
-    /// (Steam / Lutris / Heroic), not by the foreground fallback.
-    /// Without this list the daemon double-counts every Proton game:
-    /// once via `SteamSource.content_log`, once via
-    /// `KWinForegroundSource` on the Wine process's foreground window.
+    /// launcher with its own authoritative lifecycle source (today:
+    /// Steam, via `SteamSource.content_log`). A process whose
+    /// `/proc/<pid>/environ` contains any of these is handled by the
+    /// corresponding launcher source, not by the foreground fallback —
+    /// without this list the daemon double-counts every Proton game.
     pub launcher_env_vars: HashSet<String>,
+
+    /// Environment-variable names that identify a process as launched
+    /// by a *foreground-source* launcher — Lutris and Heroic, which
+    /// have no lifecycle signal of their own and so are picked up
+    /// solely through the foreground-window source. Presence of any of
+    /// these *overrides* `launcher_env_vars`: Heroic-via-Proton and
+    /// Lutris-via-Proton both transitively inherit Steam's
+    /// `STEAM_COMPAT_APP_ID`, but Steam itself never saw the launch
+    /// and won't fire a content_log entry, so honouring the
+    /// Steam-attribution rejection in that case would silently drop
+    /// every Proton-running Heroic / Lutris game.
+    pub foreground_source_launcher_env_vars: HashSet<String>,
 }
 
 impl Default for GateConfig {
@@ -67,12 +78,14 @@ impl Default for GateConfig {
             blocklist: default_blocklist(),
             gpu_memory_threshold_bytes: 50 * 1024 * 1024,
             launcher_env_vars: default_launcher_env_vars(),
+            foreground_source_launcher_env_vars: default_foreground_source_launcher_env_vars(),
         }
     }
 }
 
-/// Environment variables that mean "a launcher started this process,
-/// so don't count it again from the foreground source".
+/// Environment variables that mean "Steam started this process, so
+/// don't count it again from the foreground source — Steam's content
+/// log will report it."
 ///
 /// Kept to vars that are only set on the *game's* own process
 /// (not inherited by unrelated children of the user shell): Steam's
@@ -83,17 +96,31 @@ impl Default for GateConfig {
 /// up in every Steam-originating child shell too and would cause
 /// false rejections.
 ///
-/// `LUTRIS_GAME_UUID` and `HEROIC_APP_NAME` are also intentionally
-/// absent: neither Lutris nor Heroic exposes a lifecycle signal (no
-/// `Started` / `Stopped`) we can subscribe to, so unlike Steam there
-/// is no authoritative source picking those games up. Rejecting on
-/// either variable would simply drop every Lutris- or Heroic-launched
-/// game on the floor. The foreground-window source instead accepts
-/// them as `Native`, and the Lutris pga.db / Heroic store-cache
-/// enrichers fill in the proper product name and publisher.
+/// `LUTRIS_GAME_UUID` and `HEROIC_APP_NAME` belong to a separate
+/// category (see `default_foreground_source_launcher_env_vars`):
+/// they identify launchers with no authoritative source, and their
+/// presence overrides the rejection here when both are set on the
+/// same process — a Heroic-via-Proton or Lutris-via-Proton launch
+/// transitively inherits `STEAM_COMPAT_APP_ID` even though Steam
+/// itself never saw it.
 #[must_use]
 pub fn default_launcher_env_vars() -> HashSet<String> {
     ["SteamGameId", "SteamAppId", "STEAM_COMPAT_APP_ID"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
+}
+
+/// Environment variables identifying processes launched by a
+/// foreground-source launcher (Lutris, Heroic). Their presence on a
+/// process overrides any concurrent Steam-attribution variables in
+/// `default_launcher_env_vars` — a Heroic-launched game running
+/// through Proton inherits `STEAM_COMPAT_APP_ID` as a side effect of
+/// Proton's setup, but Steam itself never tracked it, so the
+/// foreground source must remain the path that picks it up.
+#[must_use]
+pub fn default_foreground_source_launcher_env_vars() -> HashSet<String> {
+    ["LUTRIS_GAME_UUID", "HEROIC_APP_NAME"]
         .iter()
         .map(|s| (*s).to_owned())
         .collect()
@@ -175,6 +202,30 @@ pub struct AcceptedProcess {
     pub executable_path: PathBuf,
     /// Which graphics stacks the process has mapped in.
     pub graphics_libraries: maps::GraphicsLibraries,
+    /// Foreground-source launcher attribution, if the gate detected
+    /// one in the process environ. Used by the kwin-source's
+    /// transition module to construct a stable [`GameKey`] keyed off
+    /// the launcher's own canonical id (e.g. Heroic's app_name)
+    /// rather than the wine-preloader path that `executable_path`
+    /// holds for Heroic-via-Proton games.
+    pub attribution: Option<LauncherAttribution>,
+}
+
+/// Identifies the launcher that produced an accepted process when the
+/// process belongs to a foreground-source launcher (one without its
+/// own lifecycle source). The carried id is the launcher's own
+/// invariant identifier — survives wine-version changes, install-path
+/// moves, and library refreshes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LauncherAttribution {
+    /// Process inherited Heroic Games Launcher's `HEROIC_APP_NAME`.
+    /// The contained id is the runner-specific canonical key — Epic
+    /// GUID, GOG product id, or Amazon ASIN depending on which
+    /// runner Heroic invoked for the game.
+    Heroic {
+        /// Value of `HEROIC_APP_NAME` from the process environ.
+        app_name: String,
+    },
 }
 
 /// Why the gate rejected a PID.
@@ -227,7 +278,12 @@ pub(crate) fn decide_from_inputs(
         return GateDecision::Reject(RejectionReason::Blocklisted);
     }
     if let Some(env) = environ {
-        if env.keys().any(|k| config.launcher_env_vars.contains(k)) {
+        let foreground_attributed = env
+            .keys()
+            .any(|k| config.foreground_source_launcher_env_vars.contains(k));
+        if !foreground_attributed
+            && env.keys().any(|k| config.launcher_env_vars.contains(k))
+        {
             return GateDecision::Reject(RejectionReason::AttributedToLauncher);
         }
     }
@@ -248,7 +304,25 @@ pub(crate) fn decide_from_inputs(
     GateDecision::Accept(AcceptedProcess {
         executable_path: exe_path.to_path_buf(),
         graphics_libraries: libs,
+        attribution: environ.and_then(extract_launcher_attribution),
     })
+}
+
+/// Extract a foreground-source launcher's canonical id from the
+/// process environ. Returns `None` if no recognised attribution
+/// variable is present.
+fn extract_launcher_attribution(
+    env: &HashMap<String, String>,
+) -> Option<LauncherAttribution> {
+    if let Some(name) = env.get("HEROIC_APP_NAME") {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Some(LauncherAttribution::Heroic {
+                app_name: name.to_owned(),
+            });
+        }
+    }
+    None
 }
 
 fn is_blocklisted(exe: &Path, blocklist: &HashSet<String>) -> bool {
@@ -298,10 +372,19 @@ impl Gate {
         }
         // Launcher-attribution check. Reading environ is cheap (single
         // file read) and short-circuits the more expensive maps/fdinfo
-        // reads when the process is already owned by a launcher.
+        // reads when the process is already owned by a launcher with
+        // its own lifecycle source. A foreground-source launcher
+        // (Heroic, Lutris) overrides the rejection — Heroic-via-Proton
+        // and Lutris-via-Proton inherit `STEAM_COMPAT_APP_ID` even
+        // though Steam itself never saw the launch.
         let env = environ::read(input.pid).await.ok();
         if let Some(env) = env.as_ref() {
-            if env.keys().any(|k| config.launcher_env_vars.contains(k)) {
+            let foreground_attributed = env
+                .keys()
+                .any(|k| config.foreground_source_launcher_env_vars.contains(k));
+            if !foreground_attributed
+                && env.keys().any(|k| config.launcher_env_vars.contains(k))
+            {
                 return GateDecision::Reject(RejectionReason::AttributedToLauncher);
             }
         }
@@ -339,6 +422,7 @@ mod tests {
                 .collect(),
             gpu_memory_threshold_bytes: 10 * 1024 * 1024,
             launcher_env_vars: default_launcher_env_vars(),
+            foreground_source_launcher_env_vars: default_foreground_source_launcher_env_vars(),
         }
     }
 
@@ -546,6 +630,62 @@ mod tests {
         assert!(
             matches!(d, GateDecision::Accept(_)),
             "Heroic-attributed games must pass the gate; got {d:?}",
+        );
+    }
+
+    #[test]
+    fn heroic_via_proton_overrides_steam_attribution() {
+        // Heroic supports Proton-GE as an alternative to Wine. When a
+        // user picks Proton, the game process inherits Proton's
+        // `STEAM_COMPAT_APP_ID` (typically "0" for non-Steam games)
+        // even though Steam itself never saw the launch. The
+        // foreground-source attribution from `HEROIC_APP_NAME` must
+        // win, otherwise every Heroic-via-Proton launch is silently
+        // dropped — a real bug observed against LEGO Builder's
+        // Journey on a live system.
+        let exe = PathBuf::from("/home/u/Games/Heroic/LBJ/Builder.exe");
+        let env = env_of(&[
+            ("HEROIC_APP_NAME", "com.epicgames.lego.bj"),
+            ("STEAM_COMPAT_APP_ID", "0"),
+        ]);
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &cfg(),
+        );
+        assert!(
+            matches!(d, GateDecision::Accept(_)),
+            "Heroic-via-Proton games must pass the gate; got {d:?}",
+        );
+    }
+
+    #[test]
+    fn lutris_via_proton_overrides_steam_attribution() {
+        // Same reasoning as the Heroic case: Lutris's wine/Proton
+        // wrapper inherits `STEAM_COMPAT_APP_ID` for Proton runners,
+        // but Steam never saw the launch, so the foreground source
+        // (and the Lutris pga.db enricher) must remain authoritative.
+        let exe = PathBuf::from("/home/u/Games/lutris-proton/game.exe");
+        let env = env_of(&[
+            ("LUTRIS_GAME_UUID", "abc-123"),
+            ("STEAM_COMPAT_APP_ID", "0"),
+        ]);
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &cfg(),
+        );
+        assert!(
+            matches!(d, GateDecision::Accept(_)),
+            "Lutris-via-Proton games must pass the gate; got {d:?}",
         );
     }
 

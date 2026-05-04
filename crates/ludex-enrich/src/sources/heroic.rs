@@ -20,11 +20,23 @@
 //! 2. Filter to entries with `is_installed == true` and a usable
 //!    `install.install_path`; uninstalled / DLC-only rows have a stub
 //!    `install` object and would otherwise pollute the prefix-match.
-//! 3. Find the game whose `install.install_path` is the longest
-//!    path-component prefix of the candidate's executable. Path-component
-//!    prefix — not byte-prefix — so `/foo/bar` does not match `/foo/barbaz`.
-//! 4. Surface `title` as `product_name` and `developer` (when present)
-//!    as `publisher`.
+//! 3. Pick the matching entry. The strategy depends on the application's
+//!    `launcher_type`:
+//!    - `Heroic`: the gate has already keyed the row by Heroic's own
+//!      app_name (Epic GUID / GOG product id / Amazon ASIN), so do a
+//!      direct lookup by `app_name == launcher_id`. This survives the
+//!      wine-variant-switching that Heroic exposes per game — the
+//!      executable path the daemon captured points at the wine
+//!      preloader and varies per variant.
+//!    - `Native`: legacy fallback for processes that somehow reached
+//!      the gate without `HEROIC_APP_NAME` (e.g., a user-curated
+//!      desktop shortcut bypassing Heroic). Find the entry whose
+//!      `install.install_path` is the longest path-component prefix
+//!      of the candidate's executable.
+//! 4. Surface `title` as `product_name`, `developer` (when present) as
+//!    `publisher`, and the joined `install_path + install.executable`
+//!    as `executable_path` so the database row reads as the real
+//!    Windows .exe rather than the wine preloader.
 //!
 //! The library caches are re-read on every enrich call rather than
 //! cached. Enrichment runs once per newly-discovered application — not
@@ -34,7 +46,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ludex_core::{Application, IdentityUpdate};
+use ludex_core::{Application, IdentityUpdate, LauncherType};
 use serde::Deserialize;
 use tracing::{debug, warn};
 
@@ -64,6 +76,7 @@ struct LibraryFile {
 /// the struct means a future Heroic version adding more is a no-op for us.
 #[derive(Debug, Deserialize, Clone)]
 struct GameEntry {
+    app_name: Option<String>,
     title: Option<String>,
     developer: Option<String>,
     #[serde(default)]
@@ -78,39 +91,72 @@ struct GameEntry {
 #[derive(Debug, Deserialize, Clone)]
 struct InstallInfo {
     install_path: Option<String>,
+    executable: Option<String>,
 }
 
 /// Internal flat representation: a known-installed Heroic game with the
-/// fields needed to match an executable path.
+/// fields needed to match either by app_name (Heroic-keyed
+/// applications) or by install_path prefix (Native fallback).
 #[derive(Debug, Clone)]
 struct HeroicGame {
+    app_name: String,
     title: String,
     developer: Option<String>,
     install_path: String,
+    /// Game's `.exe` basename relative to `install_path`. Surfaced as
+    /// `executable_path` so the database stores the real Windows
+    /// binary instead of the wine preloader.
+    executable: Option<String>,
 }
 
 /// Enrich an application from Heroic's runner-specific library caches.
 pub async fn enrich(app: &Application, ctx: &EnrichmentContext) -> Option<IdentityUpdate> {
     let heroic_dir = ctx.heroic_config_dir.as_ref()?;
-    let exe = app.executable_path.as_ref()?;
-    let exe_path = Path::new(exe);
 
     let games = read_libraries(heroic_dir).await;
     if games.is_empty() {
         return None;
     }
-    let matched = best_match(&games, exe_path)?;
+    let matched = match app.launcher_type {
+        LauncherType::Heroic => find_by_app_name(&games, &app.launcher_id)?,
+        LauncherType::Native => {
+            let exe = app.executable_path.as_ref()?;
+            find_by_install_path(&games, Path::new(exe))?
+        }
+        // Other launcher types have their own authoritative enrichers;
+        // don't second-guess them by smuggling in Heroic data.
+        _ => return None,
+    };
 
     debug!(
-        path = %exe_path.display(),
+        launcher_type = ?app.launcher_type,
+        launcher_id = %app.launcher_id,
         heroic_title = %matched.title,
         "heroic enricher matched",
     );
     Some(IdentityUpdate {
         product_name: Some(matched.title.clone()),
         publisher: matched.developer.clone(),
+        executable_path: real_executable_path(matched),
         ..Default::default()
     })
+}
+
+/// Concatenate `install_path` and `executable` into the absolute path
+/// of the game's actual `.exe`. Returns `None` if either piece is
+/// missing — falling back to the wine preloader the daemon captured
+/// is no improvement over what the row already holds.
+fn real_executable_path(game: &HeroicGame) -> Option<String> {
+    let exe = game.executable.as_deref()?.trim();
+    if exe.is_empty() {
+        return None;
+    }
+    Some(
+        PathBuf::from(&game.install_path)
+            .join(exe)
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// Read every available runner's library cache and concatenate the
@@ -159,26 +205,34 @@ async fn read_one_library(path: &Path) -> Result<Vec<HeroicGame>, LibraryReadErr
             if !g.is_installed {
                 return None;
             }
-            let install_path = g.install?.install_path?;
-            if install_path.trim().is_empty() {
-                return None;
-            }
-            let title = g.title?;
-            if title.trim().is_empty() {
-                return None;
-            }
+            let app_name = g.app_name.filter(|s| !s.trim().is_empty())?;
+            let install = g.install?;
+            let install_path = install.install_path.filter(|s| !s.trim().is_empty())?;
+            let title = g.title.filter(|s| !s.trim().is_empty())?;
             Some(HeroicGame {
+                app_name,
                 title,
                 developer: g.developer.filter(|d| !d.trim().is_empty()),
                 install_path,
+                executable: install.executable.filter(|s| !s.trim().is_empty()),
             })
         })
         .collect())
 }
 
-/// Return the entry whose `install_path` is the longest path-component
-/// prefix of `exe_path`. `None` if no entry's install_path matches.
-fn best_match<'a>(games: &'a [HeroicGame], exe_path: &Path) -> Option<&'a HeroicGame> {
+/// Direct lookup by Heroic's own canonical id. Used when the
+/// application row was opened by the foreground source as
+/// `LauncherType::Heroic` (the launcher_id is the `HEROIC_APP_NAME`
+/// the gate captured from the process environ).
+fn find_by_app_name<'a>(games: &'a [HeroicGame], app_name: &str) -> Option<&'a HeroicGame> {
+    games.iter().find(|g| g.app_name == app_name)
+}
+
+/// Fallback for `LauncherType::Native` candidates: longest
+/// path-component prefix match against `install_path`. Path-component
+/// prefix — not byte-prefix — so `/foo/bar` does not match
+/// `/foo/barbaz`.
+fn find_by_install_path<'a>(games: &'a [HeroicGame], exe_path: &Path) -> Option<&'a HeroicGame> {
     games
         .iter()
         .filter(|g| {
@@ -192,40 +246,87 @@ fn best_match<'a>(games: &'a [HeroicGame], exe_path: &Path) -> Option<&'a Heroic
 mod tests {
     use super::*;
 
-    fn entry(title: &str, install_path: &str, developer: Option<&str>) -> HeroicGame {
+    fn entry(
+        app_name: &str,
+        title: &str,
+        install_path: &str,
+        executable: Option<&str>,
+        developer: Option<&str>,
+    ) -> HeroicGame {
         HeroicGame {
+            app_name: app_name.to_owned(),
             title: title.to_owned(),
             developer: developer.map(str::to_owned),
             install_path: install_path.to_owned(),
+            executable: executable.map(str::to_owned),
         }
     }
 
     #[test]
-    fn best_match_picks_longest_prefix() {
+    fn find_by_app_name_returns_exact_match() {
         let g = vec![
-            entry("Outer", "/home/u/Games/Heroic/outer", None),
-            entry("Inner", "/home/u/Games/Heroic/outer/inner", None),
+            entry("aaa", "Foo", "/g/foo", Some("Foo.exe"), None),
+            entry("bbb", "Bar", "/g/bar", Some("Bar.exe"), None),
+        ];
+        let m = find_by_app_name(&g, "bbb").expect("should match");
+        assert_eq!(m.title, "Bar");
+    }
+
+    #[test]
+    fn find_by_app_name_returns_none_when_unknown() {
+        let g = vec![entry("aaa", "Foo", "/g/foo", None, None)];
+        assert!(find_by_app_name(&g, "zzz").is_none());
+    }
+
+    #[test]
+    fn find_by_install_path_picks_longest_prefix() {
+        let g = vec![
+            entry("a", "Outer", "/home/u/Games/Heroic/outer", None, None),
+            entry(
+                "b",
+                "Inner",
+                "/home/u/Games/Heroic/outer/inner",
+                None,
+                None,
+            ),
         ];
         let exe = PathBuf::from("/home/u/Games/Heroic/outer/inner/game.exe");
-        let m = best_match(&g, &exe).expect("should match");
+        let m = find_by_install_path(&g, &exe).expect("should match");
         assert_eq!(m.title, "Inner");
     }
 
     #[test]
-    fn best_match_returns_none_for_unrelated_path() {
-        let g = vec![entry("Foo", "/home/u/Games/Heroic/foo", None)];
-        let exe = PathBuf::from("/home/u/Steam/steamapps/common/Bar/bar.exe");
-        assert!(best_match(&g, &exe).is_none());
+    fn find_by_install_path_does_not_match_byte_prefix_only() {
+        let g = vec![entry(
+            "a",
+            "Sibling",
+            "/home/u/Games/Heroic/foo",
+            None,
+            None,
+        )];
+        let exe = PathBuf::from("/home/u/Games/Heroic/foobar/game.exe");
+        assert!(find_by_install_path(&g, &exe).is_none());
     }
 
     #[test]
-    fn best_match_does_not_match_byte_prefix_only() {
-        // The two directories share a byte prefix but are different
-        // paths. The longer one must not be considered a "match" of
-        // the shorter via byte arithmetic.
-        let g = vec![entry("Sibling", "/home/u/Games/Heroic/foo", None)];
-        let exe = PathBuf::from("/home/u/Games/Heroic/foobar/game.exe");
-        assert!(best_match(&g, &exe).is_none());
+    fn real_executable_path_joins_install_path_and_executable() {
+        let g = entry(
+            "a",
+            "Doors - Paradox",
+            "/home/u/Games/Heroic/Doors",
+            Some("Doors Paradox.exe"),
+            None,
+        );
+        assert_eq!(
+            real_executable_path(&g).as_deref(),
+            Some("/home/u/Games/Heroic/Doors/Doors Paradox.exe"),
+        );
+    }
+
+    #[test]
+    fn real_executable_path_none_when_executable_missing() {
+        let g = entry("a", "Foo", "/g/foo", None, None);
+        assert!(real_executable_path(&g).is_none());
     }
 
     #[tokio::test]
@@ -264,9 +365,11 @@ mod tests {
         tokio::fs::write(&path, json).await.unwrap();
         let games = read_one_library(&path).await.unwrap();
         assert_eq!(games.len(), 1);
+        assert_eq!(games[0].app_name, "abc");
         assert_eq!(games[0].title, "Doors - Paradox");
         assert_eq!(games[0].developer.as_deref(), Some("Big Loop Studios"));
         assert_eq!(games[0].install_path, "/home/u/Games/Heroic/Doors");
+        assert_eq!(games[0].executable.as_deref(), Some("Doors Paradox.exe"));
     }
 
     #[tokio::test]
@@ -293,9 +396,6 @@ mod tests {
 
     #[tokio::test]
     async fn read_libraries_combines_runners_and_skips_missing() {
-        // Legendary and GOG fixtures present, Nile absent. Combined
-        // output should include both present-runner games and not
-        // error on the missing third file.
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("store_cache");
         tokio::fs::create_dir_all(&cache).await.unwrap();

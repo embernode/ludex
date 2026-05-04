@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 use ludex_core::GameKey;
 
-use crate::gate::{AcceptedProcess, GateDecision};
+use crate::gate::{AcceptedProcess, GateDecision, LauncherAttribution};
 
 /// In-memory record of the foreground window the source has
 /// decided to track — tracked both while it's foreground and while
@@ -300,8 +300,18 @@ pub(super) fn on_tracked_exit(state: FgState, exited_pid: u32) -> Outcome {
     }
 }
 
+/// Build a [`GameKey`] for an accepted process. Foreground-source
+/// launcher attribution wins over the executable path: the wine /
+/// Proton preloader path varies per wine variant the user picks in
+/// Heroic, while a launcher's own canonical id (Heroic's
+/// `HEROIC_APP_NAME`) is invariant and what we want to key sessions
+/// against. Falls back to a `Native` key from the executable path
+/// when no attribution is available.
 fn native_key(accepted: &AcceptedProcess) -> GameKey {
-    GameKey::native(accepted.executable_path.to_string_lossy().into_owned())
+    match &accepted.attribution {
+        Some(LauncherAttribution::Heroic { app_name }) => GameKey::heroic(app_name.clone()),
+        None => GameKey::native(accepted.executable_path.to_string_lossy().into_owned()),
+    }
 }
 
 fn display_name_from(meta: &ForegroundMeta, fallback_key: &GameKey) -> String {
@@ -327,12 +337,17 @@ mod tests {
     use crate::proc::maps::GraphicsLibraries;
 
     fn accepted(path: &str) -> GateDecision {
+        accepted_with(path, None)
+    }
+
+    fn accepted_with(path: &str, attribution: Option<LauncherAttribution>) -> GateDecision {
         GateDecision::Accept(AcceptedProcess {
             executable_path: PathBuf::from(path),
             graphics_libraries: GraphicsLibraries {
                 vulkan: true,
                 ..Default::default()
             },
+            attribution,
         })
     }
 
@@ -387,6 +402,33 @@ mod tests {
         ));
         assert_eq!(o.timer, TimerOp::NoChange);
         assert!(matches!(o.state, FgState::Tracked(ref a) if a.pid == 100));
+    }
+
+    #[test]
+    fn heroic_attribution_keys_session_by_app_name() {
+        // Heroic-launched games inherit a wine/Proton preloader path
+        // as `executable_path` — varies per wine variant the user
+        // picked in Heroic, so it can't be a stable session key.
+        // When the gate surfaces a `Heroic` attribution, the key
+        // must come from `HEROIC_APP_NAME` instead, so re-launches
+        // (and wine-version switches) collapse onto the same row.
+        let o = next_action(
+            FgState::NotTracked,
+            &meta(200, "steam_app_0", "Builder's Journey"),
+            accepted_with(
+                "/home/u/.config/heroic/tools/proton/Proton-GE/files/bin/wine64-preloader",
+                Some(LauncherAttribution::Heroic {
+                    app_name: "deadbeef-epic-guid".to_owned(),
+                }),
+            ),
+            PAUSE,
+        );
+        assert_eq!(o.events.len(), 1);
+        let TransitionEvent::Start { key, .. } = &o.events[0] else {
+            panic!("expected Start event, got {:?}", o.events[0]);
+        };
+        assert_eq!(*key, GameKey::heroic("deadbeef-epic-guid"));
+        assert!(matches!(o.state, FgState::Tracked(ref a) if a.key == GameKey::heroic("deadbeef-epic-guid")));
     }
 
     #[test]

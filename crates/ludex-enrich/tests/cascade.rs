@@ -127,6 +127,60 @@ async fn flatpak_desktop_file_provides_name() {
 }
 
 #[tokio::test]
+async fn heroic_app_name_lookup_fills_title_publisher_and_real_exe() {
+    // The daemon opens a session for a Heroic-launched game with
+    // launcher_type=Heroic and launcher_id=HEROIC_APP_NAME, plus a
+    // placeholder product_name (typically the X11 resource_class —
+    // here `steam_app_0` because Heroic-via-Proton sets that). The
+    // executable_path captured at session-start is the wine
+    // preloader, not the real Windows binary. The cascade should
+    // overwrite all three fields from the Heroic library cache.
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = tmp.path().join("store_cache");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(
+        cache.join("legendary_library.json"),
+        r#"{"library":[{
+            "app_name": "deadbeef",
+            "title": "Doors - Paradox",
+            "developer": "Big Loop Studios",
+            "is_installed": true,
+            "install": {
+                "executable": "Doors Paradox.exe",
+                "install_path": "/home/u/Games/Heroic/Doors"
+            }
+        }]}"#,
+    )
+    .unwrap();
+
+    let ctx = EnrichmentContext {
+        heroic_config_dir: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    let db = Database::open_memory().await.unwrap();
+    let app = db
+        .applications()
+        .create(NewApplication {
+            executable_path: Some(
+                "/home/u/.config/heroic/tools/proton/Proton-GE/files/bin/wine64-preloader".into(),
+            ),
+            ..new_app(LauncherType::Heroic, "deadbeef", "steam_app_0")
+        })
+        .await
+        .unwrap();
+
+    run_cascade(&db, &ctx, app.id).await.unwrap();
+
+    let after = db.applications().find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.product_name, "Doors - Paradox");
+    assert_eq!(after.publisher.as_deref(), Some("Big Loop Studios"));
+    assert_eq!(
+        after.executable_path.as_deref(),
+        Some("/home/u/Games/Heroic/Doors/Doors Paradox.exe"),
+    );
+}
+
+#[tokio::test]
 async fn unknown_app_id_is_safe_no_op() {
     let db = Database::open_memory().await.unwrap();
     let ctx = EnrichmentContext::default();
