@@ -100,14 +100,14 @@
     /**
      * Whether this session row is safe to delete from the GUI.
      * Open sessions belong to the daemon and would lose in-flight
-     * runtime if dropped. Merged spans hide N underlying rows
-     * behind one display row; removing the visible one would
-     * leave the others orphaned without telling the user. Both
-     * cases are better handled by stopping the game first / by a
-     * future "show fragments" toggle than by a one-shot delete.
+     * runtime if dropped — those still bail out. Merged spans are
+     * fine to delete: the daemon's `delete_and_recompute` removes
+     * every fragment of the visible span in one transaction, and
+     * the confirm dialog tells the user how many underlying rows
+     * are about to go.
      */
     function canDelete(s: SessionSummary): boolean {
-        return Boolean(s.exit_reason) && s.fragment_count === 1;
+        return Boolean(s.exit_reason);
     }
 
     /** Underlying `<dialog>` element, owned by the `ConfirmDialog`
@@ -318,6 +318,13 @@
                         )}
                     </dd>
                 </dl>
+                {#if pendingDelete.fragment_count > 1}
+                    <p class="confirm-warning">
+                        This row is a merged span;
+                        <strong>all {pendingDelete.fragment_count} underlying sessions</strong>
+                        will be removed.
+                    </p>
+                {/if}
                 <p class="confirm-warning">
                     This cannot be undone. Aggregate stats for
                     <strong>{app?.product_name}</strong> are recomputed

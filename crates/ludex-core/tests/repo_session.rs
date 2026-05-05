@@ -267,6 +267,124 @@ async fn delete_and_recompute_missing_id_is_no_op() {
     assert!(!deleted);
 }
 
+/// Deleting a row inside a display-merged span removes every
+/// fragment in that span — the GUI shows merged sessions as a single
+/// row and the user clicks delete on what they see. Same merge
+/// threshold the daemon uses for display (60 s).
+#[tokio::test]
+async fn delete_and_recompute_drops_whole_merged_span() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // Three closed fragments 10 s apart — a merged span. Plus a
+    // standalone session 5 minutes later that must survive.
+    let frags: [(OffsetDateTime, i64); 3] = [
+        (datetime!(2026-03-01 10:00:00 UTC), 60),
+        (datetime!(2026-03-01 10:01:10 UTC), 60),
+        (datetime!(2026-03-01 10:02:20 UTC), 60),
+    ];
+    let mut frag_ids = Vec::new();
+    for (start, full) in frags {
+        let s = sessions.begin(app.id, start).await.unwrap();
+        sessions
+            .close_and_rollup(
+                s.id,
+                app.id,
+                RuntimeSnapshot {
+                    full_runtime_seconds: full,
+                    interactive_runtime_seconds: full,
+                    at: start + Duration::seconds(full),
+                },
+                ExitReason::ForegroundChanged,
+            )
+            .await
+            .unwrap();
+        frag_ids.push(s.id);
+    }
+    let standalone_start = datetime!(2026-03-01 10:10:00 UTC);
+    let standalone = sessions.begin(app.id, standalone_start).await.unwrap();
+    sessions
+        .close_and_rollup(
+            standalone.id,
+            app.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 120,
+                interactive_runtime_seconds: 120,
+                at: standalone_start + Duration::seconds(120),
+            },
+            ExitReason::Terminated,
+        )
+        .await
+        .unwrap();
+
+    // Delete via the *middle* fragment — the call must still drop
+    // all three fragments of the span.
+    let deleted = sessions.delete_and_recompute(frag_ids[1]).await.unwrap();
+    assert!(deleted);
+
+    // All three fragments gone; standalone survives.
+    for fid in &frag_ids {
+        assert!(
+            sessions.find_by_id(*fid).await.unwrap().is_none(),
+            "fragment {fid} should have been deleted as part of the merged span",
+        );
+    }
+    assert!(sessions.find_by_id(standalone.id).await.unwrap().is_some());
+
+    // Stats reflect only the surviving standalone row.
+    let after = apps.find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.stat_run_count, 1);
+    assert_eq!(after.stat_total_full, 120);
+    assert_eq!(after.stat_longest_full, 120);
+}
+
+/// A merged span whose newest fragment is the currently-running
+/// (open) session must refuse deletion: silently dropping an open
+/// row would lose runtime the session manager is actively writing
+/// to. Same spirit as the open-session-refusal check at the top of
+/// `delete_and_recompute`, just at the span level.
+#[tokio::test]
+async fn delete_and_recompute_refuses_merged_span_with_open_fragment() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // Closed older fragment, then an open newer one within the
+    // merge gap — the fold absorbs the older into the open head.
+    let older_start = datetime!(2026-03-01 10:00:00 UTC);
+    let older = sessions.begin(app.id, older_start).await.unwrap();
+    sessions
+        .close_and_rollup(
+            older.id,
+            app.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 60,
+                interactive_runtime_seconds: 60,
+                at: older_start + Duration::seconds(60),
+            },
+            ExitReason::ForegroundChanged,
+        )
+        .await
+        .unwrap();
+    let open = sessions
+        .begin(app.id, datetime!(2026-03-01 10:01:10 UTC))
+        .await
+        .unwrap();
+
+    let result = sessions.delete_and_recompute(older.id).await;
+    assert!(
+        matches!(result, Err(ludex_core::Error::Invariant(_))),
+        "deleting a closed fragment whose merged span includes an open one must error",
+    );
+    // Both rows still present — the refusal must protect both the
+    // requested closed fragment and the live open fragment.
+    assert!(sessions.find_by_id(older.id).await.unwrap().is_some());
+    assert!(sessions.find_by_id(open.id).await.unwrap().is_some());
+}
+
 /// Refusing to delete an open session protects in-flight runtime
 /// from being silently dropped. The session manager is the
 /// authoritative writer for an open row; the GUI must stop the

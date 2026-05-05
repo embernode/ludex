@@ -255,25 +255,37 @@ impl<'a> SessionRepo<'a> {
         Ok(())
     }
 
-    /// Delete a closed session row and rebuild its owning
-    /// application's denormalized aggregate stats from the rows
-    /// that remain. The whole operation runs in one transaction so
-    /// the application's counters can never observe a half-deleted
-    /// session.
+    /// Delete the merged span that contains `session_id` and rebuild
+    /// the owning application's denormalized aggregate stats from
+    /// the rows that remain. The whole operation runs in one
+    /// transaction so the application's counters can never observe
+    /// a half-deleted span.
     ///
-    /// Returns `true` when a row was actually deleted, `false`
+    /// "Merged span" means the same fold the GUI applies before
+    /// rendering: consecutive same-application sessions whose
+    /// end-to-start gap is `<= DEFAULT_MERGE_GAP_SECONDS` collapse
+    /// into a single visible row. The user clicks delete on what
+    /// they see, so the row set we drop has to match that fold —
+    /// otherwise a "1 of 3 merged" delete would silently leave two
+    /// orphan fragments behind. For an unmerged single-row span
+    /// this collapses to deleting just that row, identical to the
+    /// pre-merge behaviour.
+    ///
+    /// Returns `true` when at least one row was deleted, `false`
     /// when the id didn't match any row (already gone — no-op).
-    /// Refuses to delete an open session ([`Error::Invariant`]):
-    /// the session manager is the authoritative writer for an
-    /// in-flight session, and silently dropping its row mid-play
-    /// would lose runtime that's actively being tracked. The user
-    /// can stop the game and try again.
+    /// Returns [`Error::Invariant`] when the requested session is
+    /// open, or when the merged span containing it includes an
+    /// open session as another fragment: the session manager is
+    /// the authoritative writer for an in-flight session, and
+    /// silently dropping its row mid-play would lose runtime that's
+    /// actively being tracked. The user can stop the game and try
+    /// again.
     ///
     /// Stats are rebuilt by re-querying the surviving sessions
     /// rather than computed-and-subtracted; that keeps
-    /// `stat_longest_full` correct even when the deleted row was
-    /// the previous longest, and avoids any drift between the
-    /// counters and the row sums after enough deletes.
+    /// `stat_longest_full` correct even when a deleted row was the
+    /// previous longest, and avoids any drift between the counters
+    /// and the row sums after enough deletes.
     pub async fn delete_and_recompute(&self, session_id: i64) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
 
@@ -293,10 +305,60 @@ impl<'a> SessionRepo<'a> {
             ));
         }
 
-        sqlx::query("DELETE FROM sessions WHERE id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
+        // Pull every session for this app, run the same merge fold
+        // the GUI uses, find the span containing `session_id`, and
+        // collect every fragment id in that span.
+        let app_sessions: Vec<Session> = sqlx::query_as::<_, Session>(&format!(
+            "SELECT {SELECT_COLS} FROM sessions \
+             WHERE application_id = ? ORDER BY started_at DESC"
+        ))
+        .bind(application_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        // Snapshot which ids are currently open before the fold
+        // consumes the vector — once merged, the per-fragment
+        // `ended_at` is folded into the accumulator and we lose
+        // direct visibility.
+        let open_ids: std::collections::HashSet<i64> = app_sessions
+            .iter()
+            .filter(|s| s.ended_at.is_none())
+            .map(|s| s.id)
+            .collect();
+
+        let merged = crate::session_merge::merge_adjacent_session(
+            app_sessions,
+            std::time::Duration::from_secs(crate::session_merge::DEFAULT_MERGE_GAP_SECONDS),
+        );
+        let Some((_, frags)) = merged
+            .into_iter()
+            .find(|(_, frags)| frags.contains(&session_id))
+        else {
+            // The lookup above proved `session_id` exists, the fold
+            // ran on the same transaction, so the id must surface
+            // in some span. Reaching this branch is a bug.
+            tx.rollback().await?;
+            return Err(Error::Invariant(
+                "session id missing from merge fold output; bug",
+            ));
+        };
+
+        if frags.iter().any(|fid| open_ids.contains(fid)) {
+            tx.rollback().await?;
+            return Err(Error::Invariant(
+                "cannot delete a merged span that contains an open session; stop the game first",
+            ));
+        }
+
+        // Bind ids one at a time inside the transaction. Typical
+        // span has 1-5 fragments; building a dynamic `IN` clause
+        // buys nothing here.
+        for fid in &frags {
+            sqlx::query("DELETE FROM sessions WHERE id = ?")
+                .bind(fid)
+                .execute(&mut *tx)
+                .await?;
+        }
 
         sqlx::query(
             "UPDATE applications SET \

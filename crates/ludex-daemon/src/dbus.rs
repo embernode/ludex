@@ -178,7 +178,7 @@ impl Tracker {
         );
         Ok(merged
             .into_iter()
-            .map(|(row, fragment_count)| SessionSummary {
+            .map(|(row, frags)| SessionSummary {
                 id: row.id,
                 application_id: row.application_id,
                 product_name: row.product_name,
@@ -187,7 +187,7 @@ impl Tracker {
                 full_runtime_seconds: row.full_runtime_seconds,
                 interactive_runtime_seconds: row.interactive_runtime_seconds,
                 exit_reason: row.exit_reason.map(|r| r.to_string()).unwrap_or_default(),
-                fragment_count,
+                fragment_count: i64::try_from(frags.len()).unwrap_or(i64::MAX),
             })
             .collect())
     }
@@ -272,8 +272,13 @@ impl Tracker {
         );
         Ok(merged
             .into_iter()
-            .map(|(s, fragment_count)| {
-                session_summary_for(application_id, product_name.clone(), &s, fragment_count)
+            .map(|(s, frags)| {
+                session_summary_for(
+                    application_id,
+                    product_name.clone(),
+                    &s,
+                    i64::try_from(frags.len()).unwrap_or(i64::MAX),
+                )
             })
             .collect())
     }

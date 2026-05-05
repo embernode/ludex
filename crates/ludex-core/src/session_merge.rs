@@ -19,7 +19,12 @@
 //!
 //! Callers feed in newest-first slices (the natural order for both
 //! `list_recent_with_app` and `list_for_application`); the fold
-//! returns newest-first merged spans paired with a fragment count.
+//! returns newest-first merged spans paired with the database ids of
+//! the fragments that fused into each span (in input order — newest
+//! id first). The fragment-count field on the wire (`fragment_count`
+//! on `SessionSummary`) is just `frags.len()`. The id list is what
+//! lets `delete_and_recompute` drop a whole merged span as one
+//! transaction without re-running the fold against the database.
 
 use std::time::Duration;
 
@@ -36,20 +41,27 @@ pub const DEFAULT_MERGE_GAP_SECONDS: u64 = 60;
 /// end-to-start gap is `<= gap` into single merged spans. Input must
 /// be sorted newest-first; the returned vector preserves that order.
 ///
-/// Returned tuples carry the merged span and its fragment count
-/// (`1` when the span is a single row that didn't fuse with any
-/// neighbour).
+/// Returned tuples carry the merged span and the ids of the
+/// underlying database rows that fused into it (newest id first,
+/// matching input order). A non-merging row produces a single-element
+/// id vector. The id vector is what lets the repo's
+/// `delete_and_recompute` drop every fragment of a merged span in
+/// one transaction without re-running the fold.
 ///
 /// `gap == Duration::ZERO` is treated as "merge only when consecutive
 /// fragments are touching" — practically a no-op, kept as a clean
 /// disabled state for callers that want to bypass merging without a
 /// separate code path.
 #[must_use]
-pub fn merge_adjacent_recent(rows: Vec<RecentSession>, gap: Duration) -> Vec<(RecentSession, i64)> {
+pub fn merge_adjacent_recent(
+    rows: Vec<RecentSession>,
+    gap: Duration,
+) -> Vec<(RecentSession, Vec<i64>)> {
     fold(
         rows,
         gap,
         |row| row.application_id,
+        |row| row.id,
         |row| row.started_at,
         |row| row.ended_at,
         merge_recent,
@@ -61,11 +73,12 @@ pub fn merge_adjacent_recent(rows: Vec<RecentSession>, gap: Duration) -> Vec<(Re
 /// where the application id is the route parameter, not part of the
 /// row.
 #[must_use]
-pub fn merge_adjacent_session(rows: Vec<Session>, gap: Duration) -> Vec<(Session, i64)> {
+pub fn merge_adjacent_session(rows: Vec<Session>, gap: Duration) -> Vec<(Session, Vec<i64>)> {
     fold(
         rows,
         gap,
         |row| row.application_id,
+        |row| row.id,
         |row| row.started_at,
         |row| row.ended_at,
         merge_session,
@@ -76,16 +89,18 @@ pub fn merge_adjacent_session(rows: Vec<Session>, gap: Duration) -> Vec<(Session
 /// closure-heavy signature is a means, not a public API. The two
 /// public helpers above pin the closures so callers see a clean
 /// interface.
-fn fold<T, FApp, FStart, FEnd, FMerge>(
+fn fold<T, FApp, FId, FStart, FEnd, FMerge>(
     rows: Vec<T>,
     gap: Duration,
     application_id_of: FApp,
+    id_of: FId,
     started_at_of: FStart,
     ended_at_of: FEnd,
     merge_into: FMerge,
-) -> Vec<(T, i64)>
+) -> Vec<(T, Vec<i64>)>
 where
     FApp: Fn(&T) -> i64,
+    FId: Fn(&T) -> i64,
     FStart: Fn(&T) -> time::OffsetDateTime,
     FEnd: Fn(&T) -> Option<time::OffsetDateTime>,
     FMerge: Fn(&mut T, &T),
@@ -93,10 +108,11 @@ where
     // Convert gap to time::Duration once; `time` and `std::time` use
     // different types, and we compare with `time` arithmetic below.
     let gap = time::Duration::seconds_f64(gap.as_secs_f64());
-    let mut out: Vec<(T, i64)> = Vec::with_capacity(rows.len());
+    let mut out: Vec<(T, Vec<i64>)> = Vec::with_capacity(rows.len());
     for row in rows {
-        let Some((acc, count)) = out.last_mut() else {
-            out.push((row, 1));
+        let row_id = id_of(&row);
+        let Some((acc, frags)) = out.last_mut() else {
+            out.push((row, vec![row_id]));
             continue;
         };
         // Same application + the *older* row's `ended_at` is within
@@ -115,9 +131,9 @@ where
             };
         if mergeable {
             merge_into(acc, &row);
-            *count += 1;
+            frags.push(row_id);
         } else {
-            out.push((row, 1));
+            out.push((row, vec![row_id]));
         }
     }
     out
@@ -217,7 +233,7 @@ mod tests {
         ];
         let merged = merge_adjacent_recent(rows, Duration::from_mins(1));
         assert_eq!(merged.len(), 2);
-        assert!(merged.iter().all(|(_, count)| *count == 1));
+        assert!(merged.iter().all(|(_, frags)| frags.len() == 1));
     }
 
     #[test]
@@ -238,8 +254,8 @@ mod tests {
         );
         let merged = merge_adjacent_recent(vec![newer, older], Duration::from_mins(1));
         assert_eq!(merged.len(), 1);
-        let (span, count) = &merged[0];
-        assert_eq!(*count, 2);
+        let (span, frags) = &merged[0];
+        assert_eq!(frags, &vec![2, 1], "fragment ids in input order (newest first)");
         assert_eq!(span.id, 2, "id stays as the newest fragment's");
         assert_eq!(span.started_at, datetime!(2026-01-01 12:00 UTC));
         assert_eq!(span.ended_at, Some(datetime!(2026-01-01 12:30 UTC)));
@@ -289,8 +305,8 @@ mod tests {
         );
         let merged = merge_adjacent_recent(vec![a, b, c], Duration::from_mins(1));
         assert_eq!(merged.len(), 1);
-        let (span, count) = &merged[0];
-        assert_eq!(*count, 3);
+        let (span, frags) = &merged[0];
+        assert_eq!(frags, &vec![3, 2, 1]);
         assert_eq!(span.started_at, datetime!(2026-01-01 12:00 UTC));
         assert_eq!(span.ended_at, Some(datetime!(2026-01-01 12:40 UTC)));
     }
@@ -309,8 +325,8 @@ mod tests {
         );
         let merged = merge_adjacent_recent(vec![open, older], Duration::from_mins(1));
         assert_eq!(merged.len(), 1);
-        let (span, count) = &merged[0];
-        assert_eq!(*count, 2);
+        let (span, frags) = &merged[0];
+        assert_eq!(frags.len(), 2);
         assert_eq!(span.started_at, datetime!(2026-01-01 12:00 UTC));
         assert!(span.ended_at.is_none(), "merged span stays open");
     }
@@ -342,7 +358,7 @@ mod tests {
         ];
         let merged = merge_adjacent_recent(rows, Duration::from_mins(1));
         assert_eq!(merged.len(), 3);
-        assert!(merged.iter().all(|(_, c)| *c == 1));
+        assert!(merged.iter().all(|(_, frags)| frags.len() == 1));
     }
 
     #[test]
