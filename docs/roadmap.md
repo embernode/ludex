@@ -90,10 +90,13 @@ Delivered in tranches because the three launchers are in different cold reality:
 - [`SteamSource`]: filesystem watcher on `~/.local/share/Steam/logs/content_log.txt` parsing `state changed : ..., App Running, ...` transitions; appmanifest `name` correlation; cold-start scan of `appmanifest_*.acf` `StateFlags` bit 64 so already-running games are picked up at daemon start.
 - [`SessionManager`]: opens sessions on `Started`, closes on `Stopped`, heartbeats every 60 s, closes dangling open sessions both at graceful shutdown (with `Terminated`) and at cold start (with `Recovered`, via `recover_orphans`).
 
-**M2.2 — Heroic + Lutris (deferred until their detection shape is settled)**
+**M2.2 — Heroic + Lutris (shipped via foreground + env-var attribution + enrich)**
 
-- Modern Heroic (2.x) removed the single `running_game.json` file; the remaining options are log-tailing or process-tree inspection. Deferred until we have a stable story.
-- Lutris exposes `net.lutris.Lutris` on the session bus but does not emit game start/stop signals there. Detection requires either `lutris-wrapper` process-tree scanning (belongs in M4) or a Lutris upstream change.
+Neither launcher exposes a usable lifecycle signal — Heroic 2.x removed `running_game.json` with nothing equivalent, and `net.lutris.Lutris` doesn't emit start/stop signals. Both ship via the same hybrid pattern:
+
+- The Wayland-foreground source accepts the game process. `HEROIC_APP_NAME` and `LUTRIS_GAME_UUID` are kept out of the gate's launcher-attribution rejection set; both also override the Steam-attribution rejection so Heroic-via-Proton and Lutris-via-Proton launches don't trip on inherited `STEAM_COMPAT_APP_ID`.
+- For **Heroic**: `HEROIC_APP_NAME` from the process environ becomes the canonical `launcher_id` (wine-variant-invariant — Heroic lets users pick a wine/Proton variant per game). The Heroic enricher reads `~/.config/heroic/store_cache/{legendary,gog,nile}_library.json` and fills in title, developer, and the real Windows .exe path. Direct `app_name` lookup, no path matching.
+- For **Lutris**: foreground processes are still keyed by canonical exe path, and the `pga.db` enricher fills in the product name; Battle.net's catalogue is curated by executable basename.
 
 **M2.3 — CLI query surface**
 

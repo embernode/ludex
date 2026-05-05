@@ -60,12 +60,12 @@ The daemon is split into three actor-style layers that communicate over `tokio::
 | Launcher | Mechanism | Event source | Status |
 |---|---|---|---|
 | Steam | inotify | `~/.local/share/Steam/logs/content_log.txt` — parses `AppState changed : <appid> : Running\|Stopped` lines; cross-references `appmanifest_<appid>.acf` for the canonical name. Rotated logs handled. | Shipped |
-| Lutris | *TBD* | `net.lutris.Lutris` is owned on the session bus but does not emit game-start/stop signals there today. Options on the table: `lutris-wrapper` process-tree scanning, a Lutris upstream patch, or log-tailing. | Deferred (roadmap M2.2) |
-| Heroic | *TBD* | Heroic 2.x removed the `~/.config/heroic/running_game.json` file this entry was designed around. Remaining options are log-tailing or process-tree inspection. | Deferred (roadmap M2.2) |
+| Lutris | *Foreground + enrich* | No native start/stop signal — `net.lutris.Lutris` exists on the session bus but doesn't emit game lifecycle events. The Wayland-foreground source picks up Lutris-launched processes (`LUTRIS_GAME_UUID` is intentionally absent from the gate's launcher-attribution rejection set), and the `pga.db` enricher fills in product names. Battle.net's catalogue is curated by executable basename. | Shipped |
+| Heroic | *Foreground + env-var attribution + enrich* | No native start/stop signal — Heroic 2.x removed `~/.config/heroic/running_game.json` and exposes nothing equivalent. The Wayland-foreground source accepts the game process; `HEROIC_APP_NAME` from the process environ is used as the launcher_id (canonical and wine-variant-invariant — Heroic lets users pick a wine/Proton variant per game). The enricher reads the runner-specific library caches under `~/.config/heroic/store_cache/` (`legendary_library.json`, `gog_library.json`, `nile_library.json`) and fills in title, developer, and the real Windows .exe path. | Shipped |
 
 Steam has no public D-Bus API for game start/stop events; filesystem watching is the stable approach. Rotating backups to a process-tree scan (`reaper`, `steam-launch-wrapper` descendants) is a documented fallback if the log format changes.
 
-Until the Lutris and Heroic sources land, games launched through those launchers flow through the Wayland-foreground fallback below instead of being attributed at the launcher level.
+For Heroic specifically, processes running under Proton inherit `STEAM_COMPAT_APP_ID`; the gate has a second env-var category (`HEROIC_APP_NAME`, `LUTRIS_GAME_UUID`) whose presence overrides the Steam-attribution rejection so Heroic-via-Proton and Lutris-via-Proton launches don't get silently dropped.
 
 **Cold-start ordering.** On daemon start the sources subscribe first, then perform an enumeration of already-running games. Events fired during the enumeration are queued in the subscription, not lost.
 

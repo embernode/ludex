@@ -7,7 +7,7 @@
 
 <p align="center">A launcher-agnostic playtime tracker for Linux.</p>
 
-**Status: 0.2.0.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris-managed wine prefixes. The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. No released binaries yet.
+**Status: 0.2.0.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris- and Heroic-managed wine/Proton prefixes (Heroic-launched games are keyed by `HEROIC_APP_NAME` so the row stays stable across wine/Proton variant switches). The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. No released binaries yet.
 
 ## What it does
 
@@ -15,7 +15,7 @@ ludex records time spent playing games on Linux without requiring per-game confi
 
 - **Steam** via inotify on the Steam content log *(shipped)*
 - **Lutris-managed games** via the foreground-window source — Lutris itself exposes no start/stop signals, but its `pga.db` is read on enrichment to give games their proper names; Battle.net's catalogue (WoW, Diablo, Overwatch, etc.) is curated by executable basename *(shipped)*
-- **Heroic Games Launcher** via process-tree / log inspection *(deferred — Heroic 2.x removed the single `running_game.json` file this was designed around)*
+- **Heroic Games Launcher** (Epic, GOG, Amazon Prime libraries) via the foreground-window source — Heroic doesn't expose a lifecycle signal either, but Heroic-launched processes inherit `HEROIC_APP_NAME`, which the daemon uses to key the session against Heroic's own canonical id and look up the title from the runner-specific store caches under `~/.config/heroic/store_cache/`. Survives the user switching wine/Proton variants for the same game *(shipped)*
 - **Anything else** via a Wayland foreground-window fallback gated on loaded graphics libraries and DRM fdinfo GPU-usage metrics *(shipped on KDE Plasma 6 Wayland)*
 
 Each recognised game has its sessions persisted to SQLite with two runtime figures: **full runtime** (wall-clock session duration) and **interactive runtime** (full runtime minus billable idle intervals via `logind.IdleHint`, with a configurable cutscene-grace window so non-skippable cutscenes and dialogue trees aren't read as "user stepped away").
