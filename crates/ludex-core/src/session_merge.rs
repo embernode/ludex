@@ -255,7 +255,11 @@ mod tests {
         let merged = merge_adjacent_recent(vec![newer, older], Duration::from_mins(1));
         assert_eq!(merged.len(), 1);
         let (span, frags) = &merged[0];
-        assert_eq!(frags, &vec![2, 1], "fragment ids in input order (newest first)");
+        assert_eq!(
+            frags,
+            &vec![2, 1],
+            "fragment ids in input order (newest first)"
+        );
         assert_eq!(span.id, 2, "id stays as the newest fragment's");
         assert_eq!(span.started_at, datetime!(2026-01-01 12:00 UTC));
         assert_eq!(span.ended_at, Some(datetime!(2026-01-01 12:30 UTC)));

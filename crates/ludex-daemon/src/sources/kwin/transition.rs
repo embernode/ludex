@@ -428,7 +428,9 @@ mod tests {
             panic!("expected Start event, got {:?}", o.events[0]);
         };
         assert_eq!(*key, GameKey::heroic("deadbeef-epic-guid"));
-        assert!(matches!(o.state, FgState::Tracked(ref a) if a.key == GameKey::heroic("deadbeef-epic-guid")));
+        assert!(
+            matches!(o.state, FgState::Tracked(ref a) if a.key == GameKey::heroic("deadbeef-epic-guid"))
+        );
     }
 
     #[test]

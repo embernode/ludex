@@ -281,9 +281,7 @@ pub(crate) fn decide_from_inputs(
         let foreground_attributed = env
             .keys()
             .any(|k| config.foreground_source_launcher_env_vars.contains(k));
-        if !foreground_attributed
-            && env.keys().any(|k| config.launcher_env_vars.contains(k))
-        {
+        if !foreground_attributed && env.keys().any(|k| config.launcher_env_vars.contains(k)) {
             return GateDecision::Reject(RejectionReason::AttributedToLauncher);
         }
     }
@@ -311,9 +309,7 @@ pub(crate) fn decide_from_inputs(
 /// Extract a foreground-source launcher's canonical id from the
 /// process environ. Returns `None` if no recognised attribution
 /// variable is present.
-fn extract_launcher_attribution(
-    env: &HashMap<String, String>,
-) -> Option<LauncherAttribution> {
+fn extract_launcher_attribution(env: &HashMap<String, String>) -> Option<LauncherAttribution> {
     if let Some(name) = env.get("HEROIC_APP_NAME") {
         let name = name.trim();
         if !name.is_empty() {
@@ -382,9 +378,7 @@ impl Gate {
             let foreground_attributed = env
                 .keys()
                 .any(|k| config.foreground_source_launcher_env_vars.contains(k));
-            if !foreground_attributed
-                && env.keys().any(|k| config.launcher_env_vars.contains(k))
-            {
+            if !foreground_attributed && env.keys().any(|k| config.launcher_env_vars.contains(k)) {
                 return GateDecision::Reject(RejectionReason::AttributedToLauncher);
             }
         }

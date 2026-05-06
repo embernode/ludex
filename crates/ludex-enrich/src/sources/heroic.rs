@@ -282,13 +282,7 @@ mod tests {
     fn find_by_install_path_picks_longest_prefix() {
         let g = vec![
             entry("a", "Outer", "/home/u/Games/Heroic/outer", None, None),
-            entry(
-                "b",
-                "Inner",
-                "/home/u/Games/Heroic/outer/inner",
-                None,
-                None,
-            ),
+            entry("b", "Inner", "/home/u/Games/Heroic/outer/inner", None, None),
         ];
         let exe = PathBuf::from("/home/u/Games/Heroic/outer/inner/game.exe");
         let m = find_by_install_path(&g, &exe).expect("should match");
