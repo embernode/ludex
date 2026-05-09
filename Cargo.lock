@@ -2541,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "ludex-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2556,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "ludex-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "ludex-daemon"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "ludex-dbus-types"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "zbus",
@@ -2600,7 +2600,7 @@ dependencies = [
 
 [[package]]
 name = "ludex-enrich"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "freedesktop-desktop-entry",
@@ -2617,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "ludex-gui"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "futures-util",
