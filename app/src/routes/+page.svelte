@@ -281,14 +281,23 @@
         list-style: none;
         padding: 0;
         margin: 0;
+        display: grid;
+        grid-template-columns: auto auto auto 1fr;
+        row-gap: 0.5rem;
+        column-gap: 1.25rem;
     }
 
     .apps li {
-        margin-bottom: 0.5rem;
+        display: grid;
+        grid-template-columns: subgrid;
+        grid-column: 1 / -1;
     }
 
     .row-link {
-        display: block;
+        display: grid;
+        grid-template-columns: subgrid;
+        grid-column: 1 / -1;
+        row-gap: 0.5rem;
         border: 1px solid var(--border);
         border-radius: 8px;
         padding: 1rem 1.25rem;
@@ -306,10 +315,10 @@
     }
 
     .name {
+        grid-column: 1 / -1;
         display: flex;
         align-items: baseline;
         gap: 0.75rem;
-        margin-bottom: 0.5rem;
     }
 
     .product {
@@ -324,9 +333,9 @@
     }
 
     .stats {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 1.25rem;
+        display: grid;
+        grid-template-columns: subgrid;
+        grid-column: 1 / -1;
         font-size: 0.85rem;
     }
 
