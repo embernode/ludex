@@ -39,6 +39,10 @@ pub fn init_tracing() {
 }
 
 /// Run the daemon until a termination signal is received.
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear startup wiring; splitting it would obscure the boot order"
+)]
 pub async fn run() -> Result<()> {
     let db_path = default_database_path().context("neither XDG_DATA_HOME nor HOME is set")?;
     if let Some(parent) = db_path.parent() {
@@ -59,13 +63,11 @@ pub async fn run() -> Result<()> {
     let shared_config: SharedConfig = Arc::new(RwLock::new(resolve_tracker_config(&db).await));
 
     let enrichment_ctx = Arc::new(EnrichmentContext::detect_from_env());
-    // Only log the sources whose enrichers are wired up today. Heroic
-    // and Lutris paths are detected in the context for future use but
-    // have no consumer yet; logging them advertised support we don't
-    // actually provide.
     info!(
         desktop_dirs = enrichment_ctx.desktop_dirs.len(),
         steam = enrichment_ctx.steam_dir.is_some(),
+        lutris = enrichment_ctx.lutris_pga_db.is_some(),
+        heroic = enrichment_ctx.heroic_config_dir.is_some(),
         "enrichment context ready"
     );
 

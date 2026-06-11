@@ -20,11 +20,13 @@ pub struct EnrichmentContext {
     pub steam_dir: Option<PathBuf>,
 
     /// Path to the Lutris SQLite database, if Lutris is installed.
-    /// Currently unused; reserved for a later tranche.
+    /// Consumed by the Lutris enrichment source for product-name
+    /// lookups by install-directory prefix.
     pub lutris_pga_db: Option<PathBuf>,
 
     /// Heroic configuration directory, if Heroic is installed.
-    /// Currently unused; reserved for a later tranche.
+    /// Consumed by the Heroic enrichment source for
+    /// `store_cache/*_library.json` title lookups.
     pub heroic_config_dir: Option<PathBuf>,
 }
 
