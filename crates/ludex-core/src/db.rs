@@ -34,26 +34,44 @@ impl Database {
     /// that already has a [`Path`].
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         let options = SqliteConnectOptions::new().filename(path.as_ref());
-        Self::open_with(options).await
+        Self::open_with(options, Self::default_pool_options()).await
     }
 
-    /// Open a purely in-memory database. Exists for tests and the
-    /// `ludex doctor` / `--dry-run` pathways; real users always go through
-    /// [`Database::open`].
+    /// Open a purely in-memory database. Only tests use this; real
+    /// callers always go through [`Database::open`].
     pub async fn open_memory() -> Result<Self> {
-        Self::open_url("sqlite::memory:").await
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")?;
+        // sqlx maps `sqlite::memory:` onto a named shared-cache
+        // in-memory database that lives exactly as long as at least
+        // one pool connection stays open. Pin the pool to a single
+        // never-recycled connection so idle reaping can never drop
+        // the only copy of the data, and so shared-cache table locks
+        // can't surface under concurrent acquires.
+        let pool_options = SqlitePoolOptions::new()
+            .max_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None);
+        Self::open_with(options, pool_options).await
     }
 
     /// Open by raw SQLx connection URL. Only for callers that genuinely
-    /// have a URL (for example `sqlite::memory:` in tests); filesystem
-    /// paths should go through [`Database::open`] instead, which
-    /// avoids URL-encoding hazards.
+    /// have a URL; filesystem paths should go through [`Database::open`]
+    /// instead, which avoids URL-encoding hazards, and in-memory callers
+    /// through [`Database::open_memory`], which pins the pool so the
+    /// data can't be dropped by connection recycling.
     pub async fn open_url(url: &str) -> Result<Self> {
         let options = SqliteConnectOptions::from_str(url)?;
-        Self::open_with(options).await
+        Self::open_with(options, Self::default_pool_options()).await
     }
 
-    async fn open_with(options: SqliteConnectOptions) -> Result<Self> {
+    fn default_pool_options() -> SqlitePoolOptions {
+        SqlitePoolOptions::new().max_connections(4)
+    }
+
+    async fn open_with(
+        options: SqliteConnectOptions,
+        pool_options: SqlitePoolOptions,
+    ) -> Result<Self> {
         let options = options
             .create_if_missing(true)
             .foreign_keys(true)
@@ -61,10 +79,7 @@ impl Database {
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(5));
 
-        let pool = SqlitePoolOptions::new()
-            .max_connections(4)
-            .connect_with(options)
-            .await?;
+        let pool = pool_options.connect_with(options).await?;
 
         MIGRATOR.run(&pool).await?;
 
