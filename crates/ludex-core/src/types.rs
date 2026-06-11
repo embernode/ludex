@@ -142,8 +142,11 @@ pub enum ExitReason {
     /// The session was left open by a previous daemon run and closed at
     /// its last-known heartbeat on restart.
     Recovered,
-    /// The system suspended for longer than the split threshold; the
-    /// session was split at the boundary.
+    /// Reserved: a suspend longer than the split threshold splits the
+    /// session at the boundary. No code path produces this yet — the
+    /// daemon's `SleepTracker` subtracts suspended seconds from the
+    /// running session instead. The variant stays in the enum (and in
+    /// the schema CHECK constraint) for when splitting is implemented.
     SleepSplit,
 }
 

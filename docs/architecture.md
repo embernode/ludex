@@ -128,12 +128,13 @@ SQLite, WAL mode, `PRAGMA foreign_keys=ON`, busy-timeout configured. Migrations 
 Table sketch (full DDL in `crates/ludex-core/migrations/`):
 
 - **`applications`** — one row per tracked game. Columns: `id`, `launcher_type`, `launcher_id`, `product_name`, `publisher`, `version`, `executable_path`, `launcher_exe_path`, `wineprefix_path`, `installed_flatpak_ref`, `graphics_platform`, `process_architecture`, `group_id`, icon BLOBs, aggregate statistics columns.
-- **`sessions`** — one row per play session. `application_id`, `started_at`, `ended_at` (nullable until close), `heartbeat_at`, `full_runtime_seconds`, `interactive_runtime_seconds`, `exit_reason` (`terminated | foreground_changed | recovered`).
-- **`statistics_daily`** — per-day aggregates across all apps.
-- **`blocked_applications`** / **`forced_applications`** — user-maintained exe/launcher-id lists for the fallback path.
-- **`emulators`** + **`emulator_platforms`** + **`emulator_platform_filename_patterns`** — emulator ROM-tracking configuration.
-- **`groups`** — genre buckets.
+- **`sessions`** — one row per play session. `application_id`, `started_at`, `ended_at` (nullable until close), `heartbeat_at`, `full_runtime_seconds`, `interactive_runtime_seconds`, `exit_reason` (`terminated | foreground_changed | recovered`; `sleep_split` is reserved in the CHECK constraint but not yet produced).
+- **`blocked_applications`** / **`forced_applications`** — user-maintained exe/launcher-id lists for the fallback path. The forced list is schema-ready but has no gate-layer consumer yet (see the GUI backlog in `roadmap.md`).
+- **`emulators`** + **`emulator_platforms`** + **`emulator_platform_filename_patterns`** — emulator ROM-tracking configuration. Schema-ready; the ROM-tracking consumer hasn't shipped.
+- **`groups`** — genre buckets. Seeded, but nothing assigns a group yet (see the genre-donut entry in `roadmap.md`).
 - **`schema_info`** — key/value for migration version etc.
+
+There is no per-day rollup table: daily aggregates are computed live from `sessions` (a `statistics_daily` table from schema v1 never gained a writer and was dropped in migration 0004). Aggregation buckets by UTC day, and a session's whole runtime lands on its start day — local-day bucketing would need the client's UTC offset passed through the D-Bus call.
 
 ## Session lifecycle
 
@@ -142,7 +143,7 @@ Table sketch (full DDL in `crates/ludex-core/migrations/`):
 - **Idle subtraction**: the idle source subscribes to `org.freedesktop.login1.Session.PropertiesChanged` for `IdleHint`. When idle-in, runtime accumulation continues on `full_runtime_seconds` but pauses for `interactive_runtime_seconds`.
 - **Process-exit**: `pidfd_open(pid, 0)` + `poll()` on `POLLIN`. Kernel-level, zero-polling wait per-process.
 - **End**: on any of process-exit, launcher stop-event, or explicit foreground change, the session row is closed with `ended_at` and `exit_reason`.
-- **Sleep/wake**: on `org.freedesktop.login1.Manager.PrepareForSleep(true)`, active sessions are paused at the current timestamp. On wake (`PrepareForSleep(false)`), either resumed (if the suspend was shorter than the configurable split threshold, default 10 minutes) or split (current session closed, new session opened).
+- **Sleep/wake**: suspend is detected by wall-vs-monotonic clock drift (≥ 5 s of drift per tick reads as a suspend — more reliable than `PrepareForSleep`, whose pre-suspend half can fire after the daemon is already frozen; see `sleep.rs`). Suspended seconds are subtracted from both runtime figures rather than splitting the session; the `sleep_split` exit reason is reserved for a future boundary-split implementation.
 - **Cold-start recovery**: on daemon start, any session row with `ended_at IS NULL` whose `heartbeat_at` is older than the grace-period is closed at its last heartbeat with `exit_reason = 'recovered'`. No "8,000-hour Skyrim run" after a crash.
 
 ## IPC

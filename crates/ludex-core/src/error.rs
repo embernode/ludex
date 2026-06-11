@@ -29,9 +29,12 @@ pub enum Error {
         value: String,
     },
 
-    /// A database row violated an invariant the domain layer expects to
-    /// hold. This only surfaces when the CHECK constraints and the Rust
-    /// types disagree, which should be impossible in practice.
+    /// A domain invariant would be violated. Covers two kinds of
+    /// refusal: defensive checks against states the CHECK constraints
+    /// should make impossible (schema-code drift), and ordinary
+    /// user-facing rejections of requests the domain rules forbid —
+    /// deleting an open session, malformed merge ids, empty settings
+    /// values. The message is the user-facing explanation.
     #[error("invariant violated: {0}")]
     Invariant(&'static str),
 
