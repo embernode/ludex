@@ -568,3 +568,42 @@ async fn check_constraint_rejects_interactive_exceeding_full() {
         .expect_err("CHECK constraint should reject");
     assert!(err.to_string().contains("CHECK"), "got: {err}");
 }
+
+/// A second `close_and_rollup` on an already-closed session must be a
+/// no-op. The session `UPDATE` is guarded by `ended_at IS NULL`, so it
+/// matches nothing — and the application rollup must then be skipped
+/// too, or a double close double-counts `stat_run_count` and the
+/// runtime totals.
+#[tokio::test]
+async fn close_and_rollup_is_noop_when_session_already_closed() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    let start = OffsetDateTime::now_utc() - Duration::minutes(10);
+    let session = sessions.begin(app.id, start).await.unwrap();
+    let snapshot = RuntimeSnapshot {
+        full_runtime_seconds: 300,
+        interactive_runtime_seconds: 240,
+        at: start + Duration::seconds(300),
+    };
+
+    sessions
+        .close_and_rollup(session.id, app.id, snapshot, ExitReason::Terminated)
+        .await
+        .unwrap();
+    sessions
+        .close_and_rollup(session.id, app.id, snapshot, ExitReason::Terminated)
+        .await
+        .unwrap();
+
+    let app_after = apps.find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(
+        app_after.stat_run_count, 1,
+        "double close must not double-count"
+    );
+    assert_eq!(app_after.stat_total_full, 300);
+    assert_eq!(app_after.stat_total_interactive, 240);
+    assert_eq!(app_after.last_played_at, Some(snapshot.at));
+}

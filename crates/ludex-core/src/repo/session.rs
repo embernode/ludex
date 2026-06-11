@@ -218,7 +218,7 @@ impl<'a> SessionRepo<'a> {
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
+        let closed = sqlx::query(
             "UPDATE sessions \
              SET ended_at = ?, heartbeat_at = ?, \
                  full_runtime_seconds = ?, interactive_runtime_seconds = ?, \
@@ -233,6 +233,14 @@ impl<'a> SessionRepo<'a> {
         .bind(session_id)
         .execute(&mut *tx)
         .await?;
+
+        // The `ended_at IS NULL` guard matched nothing: the session is
+        // already closed (or never existed). Its runtime is already in
+        // the aggregates, so running the rollup again would double-count
+        // — bail out and let the transaction roll back empty.
+        if closed.rows_affected() == 0 {
+            return Ok(());
+        }
 
         sqlx::query(
             "UPDATE applications \
