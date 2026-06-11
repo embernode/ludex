@@ -146,12 +146,12 @@ fn curated_battlenet_game(basename: &str) -> Option<&'static str> {
         "wow.exe" | "wowclassic.exe" => "World of Warcraft",
         "diablo iv.exe" => "Diablo IV",
         "diablo iii.exe" | "diablo iii64.exe" => "Diablo III",
-        "diablo ii resurrected.exe" => "Diablo II: Resurrected",
+        "diablo ii resurrected.exe" | "d2r.exe" => "Diablo II: Resurrected",
         "overwatch.exe" => "Overwatch 2",
         "hearthstone.exe" => "Hearthstone",
         "starcraft.exe" => "StarCraft: Remastered",
-        "starcraft ii.exe" | "sc2.exe" => "StarCraft II",
-        "heroes of the storm.exe" | "heroesoftheswarm.exe" => "Heroes of the Storm",
+        "starcraft ii.exe" | "sc2.exe" | "sc2_x64.exe" => "StarCraft II",
+        "heroes of the storm.exe" | "heroesofthestorm_x64.exe" => "Heroes of the Storm",
         "warcraft iii.exe" | "wc3.exe" => "Warcraft III: Reforged",
         _ => return None,
     })
@@ -220,6 +220,27 @@ mod tests {
         let (name, publisher) = resolve_identity("Battle.net", &exe);
         assert_eq!(name, "Diablo IV");
         assert_eq!(publisher.as_deref(), Some("Blizzard Entertainment"));
+    }
+
+    /// The curated table must match the binary names Blizzard actually
+    /// ships, `_x64`-suffixed variants included — an entry that only
+    /// matches a name no installer produces is dead weight (a
+    /// `heroesoftheswarm.exe` typo once made the HotS alternate key
+    /// unmatchable).
+    #[test]
+    fn battlenet_curation_matches_live_binary_names() {
+        for (basename, expected) in [
+            ("HeroesOfTheStorm_x64.exe", "Heroes of the Storm"),
+            ("SC2_x64.exe", "StarCraft II"),
+            ("D2R.exe", "Diablo II: Resurrected"),
+            ("Overwatch.exe", "Overwatch 2"),
+        ] {
+            assert_eq!(
+                curated_battlenet_game(basename),
+                Some(expected),
+                "basename {basename:?} should resolve"
+            );
+        }
     }
 
     #[test]
