@@ -7,7 +7,7 @@
 
 <p align="center">A launcher-agnostic playtime tracker for Linux.</p>
 
-**Status: 0.3.1.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris- and Heroic-managed wine/Proton prefixes (Heroic-launched games are keyed by `HEROIC_APP_NAME` so the row stays stable across wine/Proton variant switches). The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. No released binaries yet.
+**Status: 0.3.2.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris- and Heroic-managed wine/Proton prefixes (Heroic-launched games are keyed by `HEROIC_APP_NAME` so the row stays stable across wine/Proton variant switches). The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. No released binaries yet.
 
 ## What it does
 
