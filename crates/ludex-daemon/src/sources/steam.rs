@@ -175,6 +175,11 @@ impl SteamSource {
         // lost.
         let log_path = self.content_log_path();
         let (notify_tx, mut notify_rx) = mpsc::unbounded_channel::<()>();
+        // Keep one sender alive for the life of this task: when the
+        // watcher is absent (no log yet) or its installation failed,
+        // `notify_rx.recv()` must pend forever rather than resolve
+        // `None` in a hot loop.
+        let _notify_keepalive = notify_tx.clone();
         // `Option` so we can keep the watcher alive for the life of this
         // task without needing to name its concrete type at the use site.
         let _watcher: Option<RecommendedWatcher> = if log_path.is_file() {
@@ -198,21 +203,19 @@ impl SteamSource {
                 }
             }
         } else {
-            warn!(path = %log_path.display(), "content_log.txt not present; Steam source idle");
+            info!(path = %log_path.display(), "content_log.txt not present yet; polling for it");
             None
         };
 
         self.cold_start_scan(&tx, &mut running).await?;
 
         // Start reading from wherever the log currently ends — historical
-        // lines are not interesting at cold-start.
+        // lines are not interesting at cold-start. A missing file (Steam
+        // installed but not launched this boot) starts the cursor at
+        // zero: once Steam creates the log, everything in it is new.
         let mut cursor = match tokio::fs::metadata(&log_path).await {
             Ok(m) => m.len(),
-            Err(e) => {
-                warn!(path = %log_path.display(), error = %e, "cannot stat content log; Steam source idle");
-                let _ = shutdown.changed().await;
-                return Ok(());
-            }
+            Err(_) => 0,
         };
 
         loop {
@@ -223,14 +226,45 @@ impl SteamSource {
                     }
                 }
                 _ = notify_rx.recv() => {
-                    cursor = self.drain_lines(&log_path, cursor, &tx, &mut running).await?;
+                    cursor = self.drain_or_keep(&log_path, cursor, &tx, &mut running).await;
                 }
                 () = tokio::time::sleep(POLL_INTERVAL) => {
-                    cursor = self.drain_lines(&log_path, cursor, &tx, &mut running).await?;
+                    cursor = self.drain_or_keep(&log_path, cursor, &tx, &mut running).await;
                 }
             }
         }
         Ok(())
+    }
+
+    /// [`Self::drain_lines`] with errors downgraded to a log line and
+    /// the cursor left in place. A transient I/O failure — the log not
+    /// created yet, a rotation's rename/recreate window — must not kill
+    /// the source for the rest of the daemon's life; the next watcher
+    /// event or poll tick simply retries.
+    async fn drain_or_keep(
+        &self,
+        path: &Path,
+        cursor: u64,
+        tx: &mpsc::Sender<GameEvent>,
+        running: &mut HashSet<String>,
+    ) -> u64 {
+        match self.drain_lines(path, cursor, tx, running).await {
+            Ok(next) => next,
+            Err(e) => {
+                // A missing file is the steady state until Steam's first
+                // launch of the boot; only unexpected failures warrant a
+                // warning.
+                let not_found = e
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+                if not_found {
+                    debug!(path = %path.display(), "content log not present; will retry");
+                } else {
+                    warn!(error = %e, "draining content log failed; keeping cursor and retrying");
+                }
+                cursor
+            }
+        }
     }
 
     /// Read every complete line appended since `cursor`, emit events for
@@ -525,6 +559,49 @@ mod tests {
         assert!(running.contains("9"));
         assert!(new_cursor > 0);
         let _ = rx.try_recv().expect("Started for 9 after rotation");
+    }
+
+    /// A missing `content_log.txt` at daemon start (Steam installed
+    /// but not launched this boot) must not park the source forever:
+    /// when Steam later creates the file, the poll loop has to pick
+    /// it up and events have to flow. Paused time lets the 5-second
+    /// poll cadence elapse instantly.
+    #[tokio::test(start_paused = true)]
+    async fn run_picks_up_content_log_created_after_start() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source = SteamSource::new(tmp.path().to_path_buf());
+        let (tx, mut rx) = mpsc::channel::<GameEvent>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(source.run(tx, shutdown_rx));
+
+        // Let the source observe the missing file and enter its loop.
+        tokio::task::yield_now().await;
+
+        // Steam launches: the log appears with a running game.
+        tokio::fs::create_dir_all(tmp.path().join("logs"))
+            .await
+            .unwrap();
+        let mut f = tokio::fs::File::create(tmp.path().join("logs/content_log.txt"))
+            .await
+            .unwrap();
+        f.write_all(b"[t] AppID 440 state changed : App Running,\n")
+            .await
+            .unwrap();
+        f.flush().await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_secs(60), rx.recv())
+            .await
+            .expect("source should pick up the late-created log")
+            .expect("event channel open");
+        assert!(matches!(
+            event,
+            GameEvent::Started { ref key, .. } if key == &GameKey::steam("440")
+        ));
+
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap().unwrap();
     }
 
     proptest! {
