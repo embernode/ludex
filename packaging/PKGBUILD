@@ -10,7 +10,7 @@
 # instead of `$startdir/..`.
 
 pkgname=ludex
-pkgver=0.3.2
+pkgver=0.3.3
 pkgrel=1
 pkgdesc="Linux gameplay time tracker — daemon, CLI, and Tauri GUI"
 arch=('x86_64')
