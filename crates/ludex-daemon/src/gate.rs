@@ -35,6 +35,19 @@ use crate::proc::{environ, exe, fdinfo, maps, tree};
 /// without the usual fullscreen / graphics-library gating — gamescope
 /// only hosts games, and the gating heuristics were designed for
 /// direct KWin-managed windows, not nested ones.
+///
+/// In practice this ancestry check seldom fires on the KWin foreground
+/// path. When a game runs under nested gamescope, gamescope owns the
+/// Wayland surface KWin reports, so the foreground PID *is* gamescope —
+/// an ancestry match needs a descendant PID, which KWin never hands us.
+/// Such games are still tracked: they present fullscreen, so the
+/// fullscreen accept path covers them, and launcher-attributed titles
+/// (Heroic/Lutris) inherit their id env var into gamescope and name
+/// correctly via the enricher. The lone gap is a *native* game run
+/// under gamescope, recorded under the `gamescope` binary — a rare edge
+/// case, intentionally not special-cased (descending gamescope's
+/// subtree to find the real game is fragile, and yields only the wine
+/// preloader for the common Proton case). See `docs/architecture.md`.
 const GAMESCOPE_COMMS: &[&str] = &["gamescope", "gamescope-wl"];
 
 /// Knobs the daemon supplies to the gate.
