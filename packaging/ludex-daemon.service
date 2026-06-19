@@ -23,10 +23,14 @@ ExecStart=%h/.cargo/bin/ludex-daemon
 Restart=on-failure
 RestartSec=5s
 
-# Soft hardening for an unprivileged user daemon. These don't
-# break the XDG paths the daemon reads / writes.
+# Soft hardening for an unprivileged user daemon. Kept to options
+# that don't break the daemon's core job of reading other processes'
+# /proc. NoNewPrivileges is safe; PrivateTmp is deliberately NOT set —
+# on a --user service systemd implements it via a user namespace, and
+# from inside that namespace ptrace_may_access() denies reading
+# /proc/<pid>/exe for host processes, so every foreground window would
+# be rejected as ExeUnreadable and no game would ever be tracked.
 NoNewPrivileges=true
-PrivateTmp=true
 
 [Install]
 WantedBy=default.target
