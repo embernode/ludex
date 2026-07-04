@@ -54,6 +54,9 @@ jobs:
           # An annotated tag's message is the release notes — the
           # git-only authoring path. Lightweight tags (empty
           # contents) fall back to GitHub's generated notes.
+          # The build step chowned the tree to the builder user, so
+          # git (running as root here) needs the ownership exemption.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
           notes="$(git tag -l --format='%(contents)' "$tag")"
           if [ -n "$notes" ]; then
