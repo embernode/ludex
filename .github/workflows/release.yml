@@ -1,0 +1,58 @@
+name: Release
+
+# Builds the Arch package in an archlinux container — the same
+# `cd packaging && makepkg` flow documented in packaging/README.md —
+# and publishes it on the GitHub release for the tag.
+#
+# Two triggers:
+#  - tag push (v*): the normal path; builds the tagged tree.
+#  - workflow_dispatch: manual catch-up for a tag whose push predates
+#    this workflow. Builds the dispatched ref (main) and releases it
+#    under the version pinned in packaging/PKGBUILD; the tag must
+#    already exist (`--verify-tag`).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Arch package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        # makedepends + depends from packaging/PKGBUILD, plus git for
+        # checkout and github-cli for the release step. base-devel
+        # ships fakeroot/pkgconf/etc. for makepkg itself.
+        run: pacman -Syu --noconfirm git rust pnpm pkg-config webkit2gtk-4.1 sqlite dbus github-cli
+
+      - uses: actions/checkout@v5
+
+      - name: Build package
+        # makepkg refuses to run as root; hand the tree to an
+        # unprivileged builder.
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+          cd packaging
+          su builder -c 'makepkg -f --noconfirm'
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$(grep -oP '^pkgver=\K.*' packaging/PKGBUILD)"
+          fi
+          # `ludex-[0-9]*` keeps a stray ludex-debug package out of
+          # the upload if the container's makepkg.conf enables debug.
+          gh release create "$tag" packaging/ludex-[0-9]*.pkg.tar.zst \
+            --title "$tag" --verify-tag --generate-notes \
+          || gh release upload "$tag" packaging/ludex-[0-9]*.pkg.tar.zst --clobber

@@ -33,6 +33,11 @@ makedepends=(
 source=()
 sha256sums=()
 
+# The release profile already strips symbols; a split debug package
+# would be empty weight (and CI's default makepkg.conf would build
+# one otherwise).
+options=('!debug')
+
 prepare() {
     # Frontend dependencies. `--frozen-lockfile` fails the build
     # rather than silently regenerating `pnpm-lock.yaml`, which is

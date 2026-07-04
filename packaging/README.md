@@ -158,9 +158,12 @@ things:
 
 ## Publishing a release
 
-Releases are cut by hand. Prebuilt Arch packages ship via
+Prebuilt Arch packages ship via
 [GitHub Releases](https://github.com/embernode/ludex/releases);
-there's no AUR package.
+there's no AUR package. Pushing a `vX.Y.Z` tag triggers
+`.github/workflows/release.yml`, which runs this directory's
+`makepkg` in an `archlinux` container and publishes the release
+with the `.pkg.tar.zst` attached.
 
 1. Bump the version in all four pinned locations — they must
    agree:
@@ -170,7 +173,8 @@ there's no AUR package.
    - `app/src-tauri/tauri.conf.json` (`version`)
    - `packaging/PKGBUILD` (`pkgver`)
 
-2. Commit the bump, then tag and push:
+2. Commit the bump, then tag and push — the tag push does the
+   rest:
 
    ```sh
    git commit -am "release: X.Y.Z"
@@ -178,18 +182,12 @@ there's no AUR package.
    git push origin main --tags
    ```
 
-3. Build the package from a clean tree:
+3. Once the workflow finishes, replace the auto-generated notes
+   with real ones: `gh release edit vX.Y.Z --notes-file …`.
 
-   ```sh
-   cd packaging
-   makepkg -f        # produces ludex-X.Y.Z-1-x86_64.pkg.tar.zst
-   ```
-
-4. Create the GitHub release with the artifact attached:
-
-   ```sh
-   gh release create vX.Y.Z \
-     packaging/ludex-X.Y.Z-1-x86_64.pkg.tar.zst \
-     --title vX.Y.Z \
-     --notes "..."
-   ```
+The manual fallback (CI down, or a tag pushed before the workflow
+existed) is the same flow by hand — `cd packaging && makepkg -f`,
+then `gh release create` with the artifact attached — or the
+workflow's `workflow_dispatch` trigger, which builds the
+dispatched ref and releases it under the PKGBUILD's `pkgver`
+(the tag must already exist).
