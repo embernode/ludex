@@ -51,8 +51,18 @@ jobs:
           else
             tag="v$(grep -oP '^pkgver=\K.*' packaging/PKGBUILD)"
           fi
+          # An annotated tag's message is the release notes — the
+          # git-only authoring path. Lightweight tags (empty
+          # contents) fall back to GitHub's generated notes.
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+          notes="$(git tag -l --format='%(contents)' "$tag")"
+          if [ -n "$notes" ]; then
+            notes_args=(--notes "$notes")
+          else
+            notes_args=(--generate-notes)
+          fi
           # `ludex-[0-9]*` keeps a stray ludex-debug package out of
           # the upload if the container's makepkg.conf enables debug.
           gh release create "$tag" packaging/ludex-[0-9]*.pkg.tar.zst \
-            --title "$tag" --verify-tag --generate-notes \
+            --title "$tag" --verify-tag "${notes_args[@]}" \
           || gh release upload "$tag" packaging/ludex-[0-9]*.pkg.tar.zst --clobber

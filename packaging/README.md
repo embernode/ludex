@@ -174,16 +174,15 @@ with the `.pkg.tar.zst` attached.
    - `packaging/PKGBUILD` (`pkgver`)
 
 2. Commit the bump, then tag and push — the tag push does the
-   rest:
+   rest. Use an annotated tag: its message becomes the release
+   notes verbatim (a lightweight tag falls back to GitHub's
+   auto-generated notes):
 
    ```sh
    git commit -am "release: X.Y.Z"
-   git tag vX.Y.Z
+   git tag -a vX.Y.Z        # write the release notes in the editor
    git push origin main --tags
    ```
-
-3. Once the workflow finishes, replace the auto-generated notes
-   with real ones: `gh release edit vX.Y.Z --notes-file …`.
 
 The manual fallback (CI down, or a tag pushed before the workflow
 existed) is the same flow by hand — `cd packaging && makepkg -f`,
