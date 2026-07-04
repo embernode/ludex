@@ -212,6 +212,14 @@ they become user-visible or when neighbouring work lands.
 - Localisation via `gettext`.
 - `ludex migrate` — optional importer for users with per-game time data in other formats.
 - Genre donut (originally M6.5). Requires a way to populate `applications.group_id` — either a `ludex groups assign` CLI/GUI editor, a heuristic (Steam tags, SteamGridDB lookup), or both. Nice-to-have once the mechanism exists.
+- AppImage (extra-low priority). Tauri's bundler can emit one
+  (`tauri build --bundles appimage`), but it wraps only the GUI —
+  the daemon, CLI, and systemd unit would need a hand-rolled
+  AppDir — and a bundled WebKitGTK is exactly the
+  runtime-version-skew territory `architecture.md` warns about.
+  Portability would also demand building on an old-glibc base
+  rather than the Arch container the release workflow uses.
+  Revisit only if a non-Arch user actually asks.
 - Dependency sweep. `cargo install` surfaces periodic holdbacks
   worth a dedicated verify-and-bump session: `notify 7 → 8`
   (major, transitive through the Steam log watcher),
