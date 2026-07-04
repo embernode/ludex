@@ -5,7 +5,7 @@
 - **No telemetry.** Not even a version probe.
 - **Minimal required permissions.** Unprivileged user account. Session D-Bus only. No `input` or `video` group membership. No root, `sudo`, or special capabilities. All writes under `$XDG_DATA_HOME` and `$XDG_CONFIG_HOME`.
 - **Event-driven by preference.** Inotify for launcher logs and state files, D-Bus signals for Lutris and logind, KWin scripting for window focus, `pidfd` for process-exit. Periodic polling is reserved for GPU fdinfo sampling of a single foreground PID.
-- **AUR-native packaging is the priority target.** Flatpak is not roadmapped; Steam Deck gaming-mode is not a tier-1 surface.
+- **GitHub Releases is the distribution channel** for prebuilt Arch packages, built locally with the in-repo `packaging/PKGBUILD`. AUR is not planned for now. Flatpak is not roadmapped; Steam Deck gaming-mode is not a tier-1 surface.
 - **GitHub-publishable quality from the first commit.** No commented-out code. No TODO files committed. No personal data in the repo. No `unwrap()` in production paths. Structured logging over `eprintln!`. Public APIs are documented.
 
 ## Tech stack
@@ -51,7 +51,7 @@ app/                       # Tauri + SvelteKit frontend
   src-tauri/
 packaging/
   ludex-daemon.service     # systemd --user unit (shipped)
-  PKGBUILD                 # AUR — planned
+  PKGBUILD                 # Arch package, built in-repo (shipped)
 docs/                      # this file, architecture.md, cli.md
 ```
 

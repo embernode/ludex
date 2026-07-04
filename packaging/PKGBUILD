@@ -5,9 +5,8 @@
 # `cd packaging && makepkg -si` builds the daemon, CLI, and GUI
 # from the working tree and lands them under `/usr/`.
 #
-# A separate `-git` PKGBUILD targeting AUR with a real git source
-# is tracked on the roadmap; that variant pulls from GitHub
-# instead of `$startdir/..`.
+# There's no AUR package. The `.pkg.tar.zst` this produces is
+# published on GitHub Releases instead; see packaging/README.md.
 
 pkgname=ludex
 pkgver=0.3.3

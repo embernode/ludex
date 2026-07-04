@@ -7,7 +7,7 @@
 
 <p align="center">A launcher-agnostic playtime tracker for Linux.</p>
 
-**Status: 0.3.3.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris- and Heroic-managed wine/Proton prefixes (Heroic-launched games are keyed by `HEROIC_APP_NAME` so the row stays stable across wine/Proton variant switches). The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. No released binaries yet.
+**Status: 0.3.3.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris- and Heroic-managed wine/Proton prefixes (Heroic-launched games are keyed by `HEROIC_APP_NAME` so the row stays stable across wine/Proton variant switches). The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. No prebuilt binaries are published yet — they'll land on [GitHub Releases](https://github.com/embernode/ludex/releases) as tags are cut; build from source for now.
 
 ## What it does
 
@@ -65,7 +65,7 @@ crates/
 app/
   src/                # SvelteKit frontend (TypeScript + Svelte 5)
   src-tauri/          # Tauri 2 host binary
-packaging/            # systemd --user unit; PKGBUILD planned
+packaging/            # systemd --user unit, PKGBUILD, .desktop entry, icons
 docs/                 # architecture, roadmap, CLI reference
 .github/workflows/    # fmt, clippy, test, frontend, cargo-deny
 ```
@@ -108,7 +108,14 @@ systemctl --user stop ludex-daemon
 
 ## Installing for daily use
 
-Three pieces — daemon, CLI, GUI — built from source and dropped into your local Cargo bin / a path of your choice. No published packages yet.
+Three pieces — daemon, CLI, GUI. On Arch, the `packaging/PKGBUILD` builds and installs all three plus the `.desktop` entry, icons, and a system-path systemd unit in one shot:
+
+```sh
+cd packaging
+makepkg -si        # builds from the working tree, installs via pacman
+```
+
+Prebuilt `.pkg.tar.zst` artifacts will be published on [GitHub Releases](https://github.com/embernode/ludex/releases) as tags are cut; there's no AUR package. On other distributions, build from source — daemon, CLI, and GUI each drop into your local Cargo bin or a path of your choice.
 
 **Daemon** — runs as a systemd user service. Full notes in [`packaging/README.md`](packaging/README.md):
 
@@ -137,7 +144,7 @@ pnpm tauri build
 install -Dm755 ../target/release/ludex-gui ~/.local/bin/ludex-gui
 ```
 
-A `.desktop` entry, an AppImage, and an AUR PKGBUILD are on the post-M6 roadmap; for now the binary is bare.
+The `packaging/PKGBUILD` above already installs a `.desktop` entry and icons alongside the GUI binary; this bare-binary route skips them. An AppImage is unscheduled; there's no AUR package.
 
 ## Configuration + data location
 

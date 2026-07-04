@@ -30,10 +30,10 @@ journalctl --user -u ludex-daemon -f        # follow the log
 The stock unit points at `%h/.cargo/bin/ludex-daemon` — the
 location `cargo install --path crates/ludex-cli` documented in
 the README uses for the daemon's sibling binary. If you install
-system-wide (e.g. via an AUR PKGBUILD that lands at
-`/usr/bin/ludex-daemon`), drop a unit with the `ExecStart` path
-adjusted into `/usr/lib/systemd/user/` and systemd will auto-
-discover it for every user.
+system-wide (as the `PKGBUILD` in this directory does — it lands
+the daemon at `/usr/bin/ludex-daemon`), a unit with the
+`ExecStart` path adjusted goes into `/usr/lib/systemd/user/` and
+systemd auto-discovers it for every user.
 
 To stop for a merge / restore / import that needs exclusive
 database access:
@@ -98,8 +98,9 @@ makepkg -si        # builds the package and installs via pacman
 
 `makepkg` will warn about the empty `source=()` — that's expected;
 this is an in-repo PKGBUILD that builds from `$startdir/..` rather
-than a fetched tarball. (A separate `-git` PKGBUILD targeting AUR
-with a real git source is on the roadmap.)
+than a fetched tarball. There's no AUR package — the prebuilt
+`.pkg.tar.zst` is published on GitHub Releases instead (see
+[Publishing a release](#publishing-a-release)).
 
 After install, the GUI's taskbar icon resolves correctly because
 `StartupWMClass=net.ludex.gui` in the desktop entry matches the
@@ -155,9 +156,40 @@ things:
    `desktopFile: ludex-gui` is correct. If it's something
    else, adjust `StartupWMClass` to match and rebuild.
 
-## (planned) AUR PKGBUILD
+## Publishing a release
 
-A `-git` variant pulling from the public GitHub source rather
-than the working tree is on the roadmap for an AUR submission.
-Until then the in-repo PKGBUILD above covers single-machine
-installs from a checked-out clone.
+Releases are cut by hand. Prebuilt Arch packages ship via
+[GitHub Releases](https://github.com/embernode/ludex/releases);
+there's no AUR package.
+
+1. Bump the version in all four pinned locations — they must
+   agree:
+
+   - `Cargo.toml` (workspace `[workspace.package] version`)
+   - `app/package.json` (`version`)
+   - `app/src-tauri/tauri.conf.json` (`version`)
+   - `packaging/PKGBUILD` (`pkgver`)
+
+2. Commit the bump, then tag and push:
+
+   ```sh
+   git commit -am "release: X.Y.Z"
+   git tag vX.Y.Z
+   git push origin main --tags
+   ```
+
+3. Build the package from a clean tree:
+
+   ```sh
+   cd packaging
+   makepkg -f        # produces ludex-X.Y.Z-1-x86_64.pkg.tar.zst
+   ```
+
+4. Create the GitHub release with the artifact attached:
+
+   ```sh
+   gh release create vX.Y.Z \
+     packaging/ludex-X.Y.Z-1-x86_64.pkg.tar.zst \
+     --title vX.Y.Z \
+     --notes "..."
+   ```
