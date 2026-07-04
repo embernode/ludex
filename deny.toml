@@ -1,5 +1,10 @@
 [graph]
 all-features = true
+# ludex is Linux-only. Without a target filter cargo-deny audits
+# every platform branch of the lockfile — e.g. tauri → plist →
+# quick-xml, a macOS-only path that never compiles here but still
+# trips advisories (RUSTSEC-2026-0194/0195 as of 2026-07).
+targets = ["x86_64-unknown-linux-gnu"]
 
 [advisories]
 version = 2
@@ -47,11 +52,9 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
-    "OpenSSL",
     # Used by `ksni` (the pure-Rust StatusNotifierItem tray crate
     # we use to avoid the abandoned `libappindicator-rs` C wrapper).
     # OSI-approved and FSF-Free — equivalent to public-domain.
