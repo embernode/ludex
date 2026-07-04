@@ -44,8 +44,8 @@ thiserror = "2"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Linux syscall wrappers (pidfd, process, fs)
-rustix = { version = "1", default-features = false, features = ["std", "process", "fs"] }
+# Linux syscall wrappers (pidfd, process, fs, clock_gettime)
+rustix = { version = "1", default-features = false, features = ["std", "process", "fs", "time"] }
 
 # Storage
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "time", "macros", "migrate"] }

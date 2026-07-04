@@ -19,36 +19,54 @@
 //! missing the entire interval for that cycle.
 //!
 //! A clock-drift detector is simpler and more reliable. On each
-//! tick we compare the wall-clock delta against the monotonic
-//! delta. Under normal operation the two advance in lockstep and
-//! the delta is zero. During suspend, the wall clock advances (it
-//! reflects real time) while `std::time::Instant` does not (it
-//! uses `CLOCK_MONOTONIC`, which is paused across suspend on Linux
-//! by default). The difference is the suspend duration — regardless
-//! of how the scheduler treated us before the freeze.
+//! tick we compare the `CLOCK_BOOTTIME` delta against the
+//! `CLOCK_MONOTONIC` delta. Under normal operation the two advance
+//! in lockstep. During suspend, `CLOCK_BOOTTIME` keeps counting
+//! while `CLOCK_MONOTONIC` (what `std::time::Instant` reads on
+//! Linux) is paused. The difference is exactly the suspend duration
+//! — regardless of how the scheduler treated us before the freeze.
 //!
-//! A threshold of 5 seconds prevents tiny scheduling latencies from
-//! being misrecorded as suspends.
+//! # Why `CLOCK_BOOTTIME`, not the wall clock?
+//!
+//! An earlier revision compared the wall clock against
+//! `CLOCK_MONOTONIC`. That works for suspend, but the wall clock
+//! also moves when NTP steps it: a forward correction during a
+//! session read exactly like a suspend and was silently deducted
+//! from recorded playtime. `CLOCK_BOOTTIME` counts suspended time
+//! yet is immune to clock adjustments, so the boottime-vs-monotonic
+//! drift isolates suspend and nothing else.
+//!
+//! A threshold of 5 seconds prevents tiny read-ordering skew between
+//! the two clock fetches from being misrecorded as suspends.
 
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use time::OffsetDateTime;
+use rustix::time::{clock_gettime, ClockId};
 use tokio::sync::watch;
 use tracing::{debug, info, instrument};
 
-/// A tick below this many seconds of wall/mono drift is discarded as
-/// ordinary scheduling latency rather than a suspend event.
+/// A tick below this many seconds of boottime/monotonic drift is
+/// discarded as clock-read skew rather than a suspend event.
 const MIN_SUSPEND_THRESHOLD_SECONDS: i64 = 5;
 
 /// Default polling cadence of the watcher task. The upper bound on
 /// latency between the real wake-up and the suspend being recorded.
 pub const DEFAULT_TICK_SECONDS: u64 = 10;
 
+/// Current `CLOCK_BOOTTIME` reading as a [`Duration`] since boot.
+fn boottime_now() -> Duration {
+    let ts = clock_gettime(ClockId::Boottime);
+    Duration::new(
+        u64::try_from(ts.tv_sec).unwrap_or(0),
+        u32::try_from(ts.tv_nsec).unwrap_or(0),
+    )
+}
+
 #[derive(Debug)]
 struct State {
     total_suspended_seconds: i64,
-    last_wall: OffsetDateTime,
+    last_boot: Duration,
     last_mono: Instant,
 }
 
@@ -70,11 +88,18 @@ impl SleepTracker {
     /// Construct a fresh tracker anchored at the current instant.
     #[must_use]
     pub fn new() -> Self {
+        Self::anchored(boottime_now(), Instant::now())
+    }
+
+    /// Construct a tracker anchored at explicit clock readings.
+    /// Production goes through [`Self::new`]; tests use this to make
+    /// [`Self::observe`] fully deterministic.
+    fn anchored(boot: Duration, mono: Instant) -> Self {
         Self {
             state: Mutex::new(State {
                 total_suspended_seconds: 0,
-                last_wall: OffsetDateTime::now_utc(),
-                last_mono: Instant::now(),
+                last_boot: boot,
+                last_mono: mono,
             }),
         }
     }
@@ -89,27 +114,33 @@ impl SleepTracker {
             .total_suspended_seconds
     }
 
-    /// Poll the wall vs. monotonic deltas. Any wall-clock jump beyond
-    /// [`MIN_SUSPEND_THRESHOLD_SECONDS`] above the monotonic-clock
-    /// advance is recorded as a suspend. Returns the number of
-    /// suspended seconds this tick detected (zero on normal ticks).
+    /// Poll the boottime vs. monotonic deltas. Any boottime advance
+    /// beyond [`MIN_SUSPEND_THRESHOLD_SECONDS`] above the
+    /// monotonic-clock advance is recorded as a suspend. Returns the
+    /// number of suspended seconds this tick detected (zero on
+    /// normal ticks).
     pub fn tick(&self) -> i64 {
+        self.observe(boottime_now(), Instant::now())
+    }
+
+    /// [`Self::tick`] with the clock readings injected. Split out so
+    /// tests can drive the detector with fabricated suspends.
+    fn observe(&self, now_boot: Duration, now_mono: Instant) -> i64 {
         let mut s = self.state.lock().expect("sleep tracker mutex poisoned");
-        let now_wall = OffsetDateTime::now_utc();
-        let now_mono = Instant::now();
 
-        let wall_delta = (now_wall - s.last_wall).whole_seconds().max(0);
-        let mono_delta =
-            i64::try_from(now_mono.duration_since(s.last_mono).as_secs()).unwrap_or(i64::MAX);
+        let boot_delta =
+            i64::try_from(now_boot.saturating_sub(s.last_boot).as_secs()).unwrap_or(i64::MAX);
+        let mono_delta = i64::try_from(now_mono.saturating_duration_since(s.last_mono).as_secs())
+            .unwrap_or(i64::MAX);
 
-        let drift = wall_delta.saturating_sub(mono_delta).max(0);
+        let drift = boot_delta.saturating_sub(mono_delta).max(0);
         let accepted = if drift >= MIN_SUSPEND_THRESHOLD_SECONDS {
             drift
         } else {
             0
         };
         s.total_suspended_seconds = s.total_suspended_seconds.saturating_add(accepted);
-        s.last_wall = now_wall;
+        s.last_boot = now_boot;
         s.last_mono = now_mono;
         accepted
     }
@@ -117,9 +148,9 @@ impl SleepTracker {
     /// Add `seconds` to the accumulator.
     ///
     /// Intended for test code that needs to inject a known suspend
-    /// without manipulating the wall clock, and for future
-    /// alternative suspend sources (for example, a system-bus
-    /// subscription that deduplicates with the clock-drift detector).
+    /// without manipulating the clocks, and for future alternative
+    /// suspend sources (for example, a system-bus subscription that
+    /// deduplicates with the clock-drift detector).
     pub fn record_suspended_interval(&self, seconds: i64) {
         let mut s = self.state.lock().expect("sleep tracker mutex poisoned");
         s.total_suspended_seconds = s.total_suspended_seconds.saturating_add(seconds);
@@ -157,6 +188,16 @@ pub async fn run_watcher(
 mod tests {
     use super::*;
 
+    const SEC: Duration = Duration::from_secs(1);
+
+    /// Tracker anchored at a known boottime and a real (but fixed)
+    /// monotonic instant, so each test advances both clocks by hand.
+    fn anchored_tracker() -> (SleepTracker, Duration, Instant) {
+        let boot = Duration::from_secs(1_000);
+        let mono = Instant::now();
+        (SleepTracker::anchored(boot, mono), boot, mono)
+    }
+
     #[test]
     fn default_is_zero() {
         let t = SleepTracker::new();
@@ -180,12 +221,51 @@ mod tests {
         assert_eq!(t.accumulated_suspended_seconds(), 0);
     }
 
+    /// Both clocks advancing in lockstep is ordinary awake time, no
+    /// matter how much of it passes. This also encodes the NTP
+    /// property: a stepped wall clock is invisible here because the
+    /// detector never reads the wall clock at all.
     #[test]
-    fn tick_does_not_go_negative() {
-        let t = SleepTracker::new();
-        for _ in 0..10 {
-            t.tick();
-        }
-        assert!(t.accumulated_suspended_seconds() >= 0);
+    fn equal_boot_and_mono_advance_is_not_suspend() {
+        let (t, boot, mono) = anchored_tracker();
+        assert_eq!(t.observe(boot + 3_600 * SEC, mono + 3_600 * SEC), 0);
+        assert_eq!(t.accumulated_suspended_seconds(), 0);
+    }
+
+    /// Boottime running ahead of monotonic is the suspend signature:
+    /// 10s of runtime plus a 90s suspend shows up as a 100s boottime
+    /// advance against a 10s monotonic advance.
+    #[test]
+    fn boottime_ahead_of_monotonic_records_suspend() {
+        let (t, boot, mono) = anchored_tracker();
+        assert_eq!(t.observe(boot + 100 * SEC, mono + 10 * SEC), 90);
+        assert_eq!(t.accumulated_suspended_seconds(), 90);
+    }
+
+    #[test]
+    fn sub_threshold_drift_is_ignored() {
+        let (t, boot, mono) = anchored_tracker();
+        assert_eq!(t.observe(boot + 14 * SEC, mono + 10 * SEC), 0);
+        assert_eq!(t.accumulated_suspended_seconds(), 0);
+    }
+
+    #[test]
+    fn suspends_accumulate_across_observations() {
+        let (t, boot, mono) = anchored_tracker();
+        assert_eq!(t.observe(boot + 70 * SEC, mono + 10 * SEC), 60);
+        // A normal awake stretch in between must not disturb the total.
+        assert_eq!(t.observe(boot + 100 * SEC, mono + 40 * SEC), 0);
+        assert_eq!(t.observe(boot + 400 * SEC, mono + 100 * SEC), 240);
+        assert_eq!(t.accumulated_suspended_seconds(), 300);
+    }
+
+    /// Monotonic can't outrun boottime on real hardware; if read
+    /// skew ever makes it look that way, clamp to zero rather than
+    /// crediting negative suspend.
+    #[test]
+    fn monotonic_ahead_of_boottime_clamps_to_zero() {
+        let (t, boot, mono) = anchored_tracker();
+        assert_eq!(t.observe(boot + 5 * SEC, mono + 10 * SEC), 0);
+        assert_eq!(t.accumulated_suspended_seconds(), 0);
     }
 }
