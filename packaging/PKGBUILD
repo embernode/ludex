@@ -18,9 +18,10 @@ license=('MIT' 'Apache')
 
 depends=(
     'webkit2gtk-4.1'   # Tauri 2 webview; pulls in gtk3, glib2, etc.
-    'sqlite'           # sqlx-sqlite links system libsqlite3 by default
     'dbus'             # zbus session-bus + KWin scripting
 )
+# No sqlite dependency: sqlx bundles its own libsqlite3 (verified
+# with ldd — the daemon links no system libsqlite3.so).
 makedepends=(
     'rust'
     'pnpm'             # pulls in nodejs as a transitive dep
@@ -35,8 +36,12 @@ sha256sums=()
 
 # The release profile already strips symbols; a split debug package
 # would be empty weight (and CI's default makepkg.conf would build
-# one otherwise).
-options=('!debug')
+# one otherwise). `!lto` because makepkg's LTO injects -flto into the
+# CFLAGS that libsqlite3-sys's bundled sqlite3.c is compiled with,
+# producing GCC bitcode objects rustc's link of the sqlx proc-macro
+# can't resolve (undefined symbol: sqlite3_commit_hook). Rust code
+# keeps its own thin LTO from the workspace release profile.
+options=('!debug' '!lto')
 
 prepare() {
     # Frontend dependencies. `--frozen-lockfile` fails the build
