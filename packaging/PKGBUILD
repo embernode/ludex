@@ -9,7 +9,7 @@
 # published on GitHub Releases instead; see packaging/README.md.
 
 pkgname=ludex
-pkgver=0.3.3
+pkgver=0.3.4
 pkgrel=1
 pkgdesc="Linux gameplay time tracker — daemon, CLI, and Tauri GUI"
 arch=('x86_64')
