@@ -8,6 +8,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: short
+  # Non-UTC so the local-day bucketing tests exercise a real offset
+  # instead of degenerating to the UTC identity on UTC runners.
+  TZ: Europe/Helsinki
 
 jobs:
   fmt:

@@ -134,7 +134,7 @@ Table sketch (full DDL in `crates/ludex-core/migrations/`):
 - **`groups`** — genre buckets. Seeded, but nothing assigns a group yet (see the genre-donut entry in `roadmap.md`).
 - **`schema_info`** — key/value for migration version etc.
 
-There is no per-day rollup table: daily aggregates are computed live from `sessions` (a `statistics_daily` table from schema v1 never gained a writer and was dropped in migration 0004). Aggregation buckets by UTC day, and a session's whole runtime lands on its start day — local-day bucketing would need the client's UTC offset passed through the D-Bus call.
+There is no per-day rollup table: daily aggregates are computed live from `sessions` (a `statistics_daily` table from schema v1 never gained a writer and was dropped in migration 0004). Aggregation buckets by the daemon's *local* calendar day via SQLite's `localtime` modifier — timestamps stay UTC in the database, only the grouping converts, with DST resolved per timestamp. The daemon and its clients share a session bus and therefore a timezone, so no offset needs to travel over D-Bus. A session's whole runtime lands on its start day.
 
 ## Session lifecycle
 

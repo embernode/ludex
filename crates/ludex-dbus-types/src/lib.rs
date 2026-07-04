@@ -70,8 +70,10 @@ pub struct ApplicationSummary {
 /// gaps with zeros where the chart needs a continuous range.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct DailyPlaytime {
-    /// Calendar date in `YYYY-MM-DD` form, UTC. Matches SQLite's
-    /// `DATE()` function applied to the session's `started_at`.
+    /// Local calendar date in `YYYY-MM-DD` form — the daemon's system
+    /// timezone, which on a session-bus service is also the user's.
+    /// Matches SQLite's `DATE(…, 'localtime')` applied to the
+    /// session's `started_at`.
     pub date: String,
     /// Sum of full-runtime seconds across every session that started
     /// on this date.

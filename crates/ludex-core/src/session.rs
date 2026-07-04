@@ -63,9 +63,9 @@ pub struct RuntimeSnapshot {
 /// within the heartbeat interval.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
 pub struct DailyPlaytime {
-    /// Calendar date in `YYYY-MM-DD` form. Produced by SQLite's
-    /// `DATE()` function applied to the session's `started_at`, which
-    /// treats the stored RFC 3339 UTC timestamp as-is.
+    /// Local calendar date in `YYYY-MM-DD` form. Produced by SQLite's
+    /// `DATE(…, 'localtime')` applied to the session's stored RFC 3339
+    /// UTC `started_at`, using the daemon's system timezone.
     pub date: String,
     /// Sum of `full_runtime_seconds` across every session that
     /// started on this date.

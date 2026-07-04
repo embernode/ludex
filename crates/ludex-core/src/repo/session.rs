@@ -142,8 +142,13 @@ impl<'a> SessionRepo<'a> {
             .map_err(Into::into)
     }
 
-    /// Aggregate total runtime per calendar day for sessions that
-    /// started at or after `cutoff`. Returns one row per day that has
+    /// Aggregate total runtime per *local* calendar day for sessions
+    /// that started at or after `cutoff`. Bucketing uses SQLite's
+    /// `localtime` modifier, which converts each stored UTC timestamp
+    /// with the daemon's system timezone (DST handled per timestamp),
+    /// so an evening session lands on the day the user actually
+    /// played it rather than the next UTC day.
+    /// Returns one row per day that has
     /// at least one session; days with no sessions are omitted
     /// (callers that need a continuous range fill zeros). Includes
     /// open sessions — their runtime is the most recent heartbeat
@@ -159,7 +164,7 @@ impl<'a> SessionRepo<'a> {
         // CAST around SUM/COUNT pins the result type to SQLite
         // INTEGER so sqlx's i64 decoder doesn't complain about the
         // default NUMERIC affinity of aggregate columns.
-        let sql = "SELECT DATE(s.started_at) AS date, \
+        let sql = "SELECT DATE(s.started_at, 'localtime') AS date, \
             CAST(COALESCE(SUM(s.full_runtime_seconds), 0) AS INTEGER) AS full_runtime_seconds, \
             CAST(COALESCE(SUM(s.interactive_runtime_seconds), 0) AS INTEGER) AS interactive_runtime_seconds, \
             CAST(COUNT(*) AS INTEGER) AS session_count \
@@ -171,8 +176,8 @@ impl<'a> SessionRepo<'a> {
                   ON b.launcher_type = a.launcher_type \
                  AND b.launcher_id   = a.launcher_id \
               ) \
-            GROUP BY DATE(s.started_at) \
-            ORDER BY DATE(s.started_at) ASC";
+            GROUP BY DATE(s.started_at, 'localtime') \
+            ORDER BY DATE(s.started_at, 'localtime') ASC";
         sqlx::query_as::<_, DailyPlaytime>(sql)
             .bind(cutoff)
             .fetch_all(self.pool)

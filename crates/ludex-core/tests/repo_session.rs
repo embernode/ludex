@@ -407,33 +407,51 @@ async fn delete_and_recompute_refuses_open_session() {
     assert!(sessions.find_by_id(open.id).await.unwrap().is_some());
 }
 
-/// Daily aggregation buckets by `DATE(started_at)` in UTC, sums
-/// per-session runtimes, counts rows, and returns the days in
-/// chronological order. The result skips days that have no sessions,
-/// per the contract documented on [`SessionRepo::daily_playtime_since`].
+/// Resolve the local calendar day SQLite assigns to `ts` — the same
+/// `DATE(…, 'localtime')` conversion `daily_playtime_since` uses — so
+/// expected buckets stay correct in whatever timezone the test host
+/// runs. CI pins `TZ=Europe/Helsinki` so a non-UTC offset is actually
+/// exercised there rather than degenerating to the UTC identity.
+async fn local_date(db: &Database, ts: OffsetDateTime) -> String {
+    sqlx::query_scalar("SELECT DATE(?, 'localtime')")
+        .bind(ts)
+        .fetch_one(db.pool())
+        .await
+        .unwrap()
+}
+
+/// Daily aggregation buckets by the *local* calendar day
+/// (`DATE(started_at, 'localtime')`), sums per-session runtimes,
+/// counts rows, and returns the days in chronological order. The
+/// result skips days that have no sessions, per the contract
+/// documented on [`SessionRepo::daily_playtime_since`].
 ///
 /// [`SessionRepo::daily_playtime_since`]: ludex_core::repo::SessionRepo::daily_playtime_since
 #[tokio::test]
-async fn daily_playtime_since_buckets_by_calendar_day() {
+async fn daily_playtime_since_buckets_by_local_calendar_day() {
     let db = Database::open_memory().await.unwrap();
     let apps = db.applications();
     let sessions = db.sessions();
     let app = apps.create(sample_new_app()).await.unwrap();
 
-    // Two sessions on day A, one on day B, one on day C. A fourth
-    // session predates the cutoff and must not appear.
+    // Two sessions on day A, one on day B, one on day C (all mid-day
+    // UTC). A fourth session predates the cutoff and must not appear.
     let day_a = datetime!(2026-03-10 08:00:00 UTC);
     let day_b = datetime!(2026-03-11 09:00:00 UTC);
     let day_c = datetime!(2026-03-12 10:00:00 UTC);
     let pre_cutoff = datetime!(2026-03-01 10:00:00 UTC);
 
-    for (start, full, interactive) in [
+    let counted = [
         (day_a, 300_i64, 250_i64),
         (day_a + Duration::hours(6), 600, 500),
         (day_b, 120, 120),
         (day_c, 7_200, 6_000),
-        (pre_cutoff, 10_000, 10_000),
-    ] {
+    ];
+    for (start, full, interactive) in counted
+        .iter()
+        .copied()
+        .chain([(pre_cutoff, 10_000, 10_000)])
+    {
         let s = sessions.begin(app.id, start).await.unwrap();
         sessions
             .close_and_rollup(
@@ -450,20 +468,84 @@ async fn daily_playtime_since_buckets_by_calendar_day() {
             .unwrap();
     }
 
+    // Expected buckets, keyed by the local day each start falls on.
+    // BTreeMap iteration order is ascending, matching the query's
+    // ORDER BY.
+    let mut expected: std::collections::BTreeMap<String, (i64, i64, i64)> =
+        std::collections::BTreeMap::new();
+    for (start, full, interactive) in counted {
+        let e = expected.entry(local_date(&db, start).await).or_default();
+        e.0 += 1;
+        e.1 += full;
+        e.2 += interactive;
+    }
+
     let cutoff = datetime!(2026-03-10 00:00:00 UTC);
     let rows = sessions.daily_playtime_since(cutoff).await.unwrap();
 
-    assert_eq!(rows.len(), 3, "three distinct days at or after cutoff");
-    assert_eq!(rows[0].date, "2026-03-10");
-    assert_eq!(rows[0].session_count, 2);
-    assert_eq!(rows[0].full_runtime_seconds, 900);
-    assert_eq!(rows[0].interactive_runtime_seconds, 750);
-    assert_eq!(rows[1].date, "2026-03-11");
-    assert_eq!(rows[1].session_count, 1);
-    assert_eq!(rows[1].full_runtime_seconds, 120);
-    assert_eq!(rows[2].date, "2026-03-12");
-    assert_eq!(rows[2].session_count, 1);
-    assert_eq!(rows[2].full_runtime_seconds, 7_200);
+    assert_eq!(rows.len(), expected.len(), "one row per distinct local day");
+    for (row, (date, (count, full, interactive))) in rows.iter().zip(expected.iter()) {
+        assert_eq!(&row.date, date);
+        assert_eq!(row.session_count, *count);
+        assert_eq!(row.full_runtime_seconds, *full);
+        assert_eq!(row.interactive_runtime_seconds, *interactive);
+    }
+}
+
+/// Sessions either side of a UTC midnight that share a local calendar
+/// day must land in one bucket. Guards the dashboard regression where
+/// an evening session was attributed to the next day for every user
+/// east of UTC (the daemon bucketed by UTC day). Vacuous under
+/// `TZ=UTC`; CI pins `TZ=Europe/Helsinki` to keep it meaningful.
+#[tokio::test]
+async fn daily_playtime_since_groups_by_local_not_utc_day() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // 23:30 UTC and 01:30 UTC — different UTC days, one local day
+    // anywhere with a positive offset of 30 minutes or more.
+    let before_utc_midnight = datetime!(2026-03-10 23:30:00 UTC);
+    let after_utc_midnight = datetime!(2026-03-11 01:30:00 UTC);
+
+    for start in [before_utc_midnight, after_utc_midnight] {
+        let s = sessions.begin(app.id, start).await.unwrap();
+        sessions
+            .close_and_rollup(
+                s.id,
+                app.id,
+                RuntimeSnapshot {
+                    full_runtime_seconds: 300,
+                    interactive_runtime_seconds: 300,
+                    at: start + Duration::seconds(300),
+                },
+                ExitReason::Terminated,
+            )
+            .await
+            .unwrap();
+    }
+
+    let expected_days: std::collections::BTreeSet<String> = [
+        local_date(&db, before_utc_midnight).await,
+        local_date(&db, after_utc_midnight).await,
+    ]
+    .into_iter()
+    .collect();
+
+    let rows = sessions
+        .daily_playtime_since(datetime!(2026-03-09 00:00:00 UTC))
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), expected_days.len());
+    for (row, day) in rows.iter().zip(expected_days.iter()) {
+        assert_eq!(&row.date, day);
+    }
+    let total_sessions: i64 = rows.iter().map(|r| r.session_count).sum();
+    let total_full: i64 = rows.iter().map(|r| r.full_runtime_seconds).sum();
+    assert_eq!(total_sessions, 2);
+    assert_eq!(total_full, 600);
 }
 
 /// Blocking an application removes its sessions from the

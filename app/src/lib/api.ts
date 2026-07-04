@@ -67,7 +67,7 @@ export interface SessionSummary {
 
 /** One day's aggregate runtime from `net.ludex.Tracker1.ListDailyPlaytime`. */
 export interface DailyPlaytime {
-    /** `YYYY-MM-DD` UTC calendar date. */
+    /** `YYYY-MM-DD` local calendar date (the daemon's timezone). */
     date: string;
     full_runtime_seconds: number;
     interactive_runtime_seconds: number;

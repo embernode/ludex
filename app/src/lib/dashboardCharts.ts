@@ -54,9 +54,9 @@ function formatDuration(seconds: number): string {
 }
 
 /**
- * Shift a `YYYY-MM-DD` date string by N days. Operates in UTC so
- * the daemon's UTC-bucketed dates line up with our axis labels
- * without timezone surprises.
+ * Shift a `YYYY-MM-DD` date string by N days. Pure calendar
+ * arithmetic on the label — pinning the intermediate Date to UTC
+ * midnight just keeps the maths free of DST and timezone effects.
  */
 function shiftDate(iso: string, deltaDays: number): string {
     const d = new Date(`${iso}T00:00:00Z`);
@@ -64,9 +64,15 @@ function shiftDate(iso: string, deltaDays: number): string {
     return d.toISOString().slice(0, 10);
 }
 
-/** Today (UTC) as `YYYY-MM-DD`. */
+/**
+ * Today's *local* calendar date as `YYYY-MM-DD`, matching the
+ * daemon's local-day bucketing so the axis windows and the returned
+ * rows agree on what "today" means.
+ */
 function today(): string {
-    return new Date().toISOString().slice(0, 10);
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /** Index DailyPlaytime rows by their date for O(1) lookups. */
@@ -269,11 +275,10 @@ export function buildWeekBarOption(
     const p = palette(theme);
     const byDate = indexByDate(rows);
 
-    // Find Monday of the current UTC week. Consistent with the
-    // daemon's UTC bucketing; a user in a far-east timezone who
-    // plays after local midnight will see that session on the
-    // "previous" UTC day — acceptable for a first pass, revisit
-    // when the daemon grows a timezone-aware endpoint.
+    // Find Monday of the current local week. `today()` is the local
+    // date and the daemon buckets by local day, so a session played
+    // after local midnight counts toward the day the user actually
+    // played it.
     const todayStr = today();
     const d = new Date(`${todayStr}T00:00:00Z`);
     const weekday = d.getUTCDay(); // Sun=0..Sat=6
