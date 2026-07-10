@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ludex_core::vdf::{
-    parse_top_level_string as parse_vdf_top_level_string,
+    parse_all_values as parse_vdf_all_values, parse_top_level_string as parse_vdf_top_level_string,
     parse_top_level_u64 as parse_vdf_top_level_u64,
 };
 use ludex_core::GameKey;
@@ -84,77 +84,111 @@ impl SteamSource {
         self.steam_dir.join("steamapps")
     }
 
-    /// Best-effort name lookup from `appmanifest_<appid>.acf`.
-    async fn resolve_name(&self, appid: &str) -> String {
-        let manifest = self
-            .steamapps_dir()
-            .join(format!("appmanifest_{appid}.acf"));
-        match tokio::fs::read_to_string(&manifest).await {
-            Ok(s) => {
-                parse_vdf_top_level_string(&s, "name").unwrap_or_else(|| format!("AppID {appid}"))
+    /// Every `steamapps` directory Steam manages: the primary one plus
+    /// any secondary libraries (games installed on other drives) listed
+    /// in `steamapps/libraryfolders.vdf`.
+    ///
+    /// Falls back to just the primary directory when the index is
+    /// missing or unparseable — the single-library behaviour that
+    /// predated multi-library support. The primary is always first and
+    /// duplicates are elided, so a library whose `path` is the Steam
+    /// dir itself isn't scanned twice.
+    async fn library_steamapps_dirs(&self) -> Vec<PathBuf> {
+        let primary = self.steamapps_dir();
+        let mut dirs = vec![primary.clone()];
+        let index = primary.join("libraryfolders.vdf");
+        if let Ok(content) = tokio::fs::read_to_string(&index).await {
+            for path in parse_vdf_all_values(&content, "path") {
+                let steamapps = PathBuf::from(path).join("steamapps");
+                if !dirs.contains(&steamapps) {
+                    dirs.push(steamapps);
+                }
             }
-            Err(_) => format!("AppID {appid}"),
         }
+        dirs
     }
 
-    /// Scan all installed appmanifests and emit [`GameEvent::Started`] for
-    /// each whose `StateFlags` has the App Running bit set. Silently
-    /// skips unreadable files.
+    /// Best-effort name lookup from `appmanifest_<appid>.acf`, searched
+    /// across every Steam library (the manifest lives in whichever
+    /// library the game is installed on, not necessarily the primary).
+    async fn resolve_name(&self, appid: &str) -> String {
+        for dir in self.library_steamapps_dirs().await {
+            let manifest = dir.join(format!("appmanifest_{appid}.acf"));
+            if let Ok(s) = tokio::fs::read_to_string(&manifest).await {
+                if let Some(name) = parse_vdf_top_level_string(&s, "name") {
+                    return name;
+                }
+            }
+        }
+        format!("AppID {appid}")
+    }
+
+    /// Scan all installed appmanifests across every Steam library and
+    /// emit [`GameEvent::Started`] for each whose `StateFlags` has the
+    /// App Running bit set. Silently skips unreadable files.
     async fn cold_start_scan(
         &self,
         tx: &mpsc::Sender<GameEvent>,
         running: &mut HashSet<String>,
     ) -> Result<()> {
-        let dir = self.steamapps_dir();
-        let mut entries = match tokio::fs::read_dir(&dir).await {
-            Ok(d) => d,
-            Err(e) => {
-                warn!(path = %dir.display(), error = %e, "steamapps dir unreadable; skipping cold-start scan");
-                return Ok(());
-            }
-        };
-        while let Some(entry) = entries.next_entry().await? {
-            let name = entry.file_name();
-            let Some(file_name) = name.to_str() else {
-                continue;
-            };
-            let Some(appid) = file_name
-                .strip_prefix("appmanifest_")
-                .and_then(|s| s.strip_suffix(".acf"))
-            else {
-                continue;
-            };
-            if appid.is_empty() || !appid.chars().all(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            let content = match tokio::fs::read_to_string(entry.path()).await {
-                Ok(c) => c,
+        for dir in self.library_steamapps_dirs().await {
+            let mut entries = match tokio::fs::read_dir(&dir).await {
+                Ok(d) => d,
                 Err(e) => {
-                    debug!(appid, error = %e, "skipping unreadable appmanifest");
+                    warn!(path = %dir.display(), error = %e, "steamapps dir unreadable; skipping library");
                     continue;
                 }
             };
-            let flags = parse_vdf_top_level_u64(&content, "StateFlags").unwrap_or(0);
-            if flags & APP_RUNNING_FLAG != 0 {
-                let display_name = parse_vdf_top_level_string(&content, "name")
-                    .unwrap_or_else(|| format!("AppID {appid}"));
-                // Game title logged at debug only — journalctl and
-                // stderr capture go to info+ by default, and the
-                // title isn't needed for operational correlation.
-                debug!(appid, %display_name, "cold-start: detected running game");
-                info!(appid, "cold-start: detected running game");
-                running.insert(appid.to_owned());
-                if tx
-                    .send(GameEvent::Started {
-                        key: GameKey::steam(appid),
-                        display_name,
-                        at: OffsetDateTime::now_utc(),
-                    })
-                    .await
-                    .is_err()
-                {
-                    // Receiver dropped; abort silently.
-                    return Ok(());
+            while let Some(entry) = entries.next_entry().await? {
+                let name = entry.file_name();
+                let Some(file_name) = name.to_str() else {
+                    continue;
+                };
+                let Some(appid) = file_name
+                    .strip_prefix("appmanifest_")
+                    .and_then(|s| s.strip_suffix(".acf"))
+                else {
+                    continue;
+                };
+                if appid.is_empty() || !appid.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                let content = match tokio::fs::read_to_string(entry.path()).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        debug!(appid, error = %e, "skipping unreadable appmanifest");
+                        continue;
+                    }
+                };
+                let flags = parse_vdf_top_level_u64(&content, "StateFlags").unwrap_or(0);
+                if flags & APP_RUNNING_FLAG != 0 {
+                    // Emit each appid at most once per scan. A game can
+                    // surface in more than one scanned dir if the primary
+                    // library is also listed in libraryfolders.vdf under a
+                    // differently-spelled path (trailing slash, symlink),
+                    // which the path-string dedup wouldn't catch.
+                    if !running.insert(appid.to_owned()) {
+                        continue;
+                    }
+                    let display_name = parse_vdf_top_level_string(&content, "name")
+                        .unwrap_or_else(|| format!("AppID {appid}"));
+                    // Game title logged at debug only — journalctl and
+                    // stderr capture go to info+ by default, and the
+                    // title isn't needed for operational correlation.
+                    debug!(appid, %display_name, "cold-start: detected running game");
+                    info!(appid, "cold-start: detected running game");
+                    if tx
+                        .send(GameEvent::Started {
+                            key: GameKey::steam(appid),
+                            display_name,
+                            at: OffsetDateTime::now_utc(),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        // Receiver dropped; abort the whole scan.
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -447,6 +481,70 @@ mod tests {
         assert!(flags & APP_RUNNING_FLAG != 0);
     }
 
+    /// A game installed on a secondary Steam library (another drive) and
+    /// already running at daemon start must be picked up by the
+    /// cold-start scan. Its manifest lives only under the secondary
+    /// library's `steamapps`, discovered via `libraryfolders.vdf`
+    /// (GATE-4). Before the multi-library fix the scan only read the
+    /// primary dir and the game was invisible.
+    #[tokio::test]
+    async fn cold_start_scan_finds_games_in_secondary_library() {
+        let primary = tempfile::tempdir().unwrap();
+        let secondary = tempfile::tempdir().unwrap();
+
+        // Primary library exists but holds no running game.
+        let primary_steamapps = primary.path().join("steamapps");
+        tokio::fs::create_dir_all(&primary_steamapps).await.unwrap();
+
+        // libraryfolders.vdf lists the Steam dir itself plus the
+        // secondary drive.
+        let libraryfolders = format!(
+            "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n\t\"1\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n}}",
+            primary.path().display(),
+            secondary.path().display(),
+        );
+        tokio::fs::write(primary_steamapps.join("libraryfolders.vdf"), libraryfolders)
+            .await
+            .unwrap();
+
+        // The running game's manifest lives only in the secondary library.
+        let secondary_steamapps = secondary.path().join("steamapps");
+        tokio::fs::create_dir_all(&secondary_steamapps)
+            .await
+            .unwrap();
+        let manifest = "\
+\"AppState\"
+{
+\t\"appid\"\t\t\"999\"
+\t\"name\"\t\t\"Test Game\"
+\t\"StateFlags\"\t\t\"68\"
+}";
+        tokio::fs::write(secondary_steamapps.join("appmanifest_999.acf"), manifest)
+            .await
+            .unwrap();
+
+        let source = SteamSource::new(primary.path().to_path_buf());
+        let (tx, mut rx) = mpsc::channel::<GameEvent>(8);
+        let mut running = HashSet::new();
+        source.cold_start_scan(&tx, &mut running).await.unwrap();
+        drop(tx);
+
+        let ev = rx
+            .recv()
+            .await
+            .expect("a Started event for the secondary-library game");
+        match ev {
+            GameEvent::Started {
+                key, display_name, ..
+            } => {
+                assert_eq!(key, GameKey::steam("999"));
+                assert_eq!(display_name, "Test Game");
+            }
+            other @ GameEvent::Stopped { .. } => panic!("expected Started, got {other:?}"),
+        }
+        assert!(running.contains("999"));
+    }
+
     /// A partial line at the end of the file (the bytes between the
     /// last `\n` and EOF) must not be consumed — `drain_lines` leaves
     /// the cursor positioned before it so the next pass picks up the
@@ -576,8 +674,14 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let handle = tokio::spawn(source.run(tx, shutdown_rx));
 
-        // Let the source observe the missing file and enter its loop.
-        tokio::task::yield_now().await;
+        // Let the source finish cold-start and initialise its read
+        // cursor while the log is still absent (cursor starts at 0).
+        // A bare `yield_now` is too tight: if the file gains its line
+        // before the source reads `metadata(log).len()`, the cursor
+        // starts past that line and the source correctly treats it as
+        // pre-existing history — deterministically skipping it. Sleep
+        // long enough for the (fast, file-less) cold-start to complete.
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Steam launches: the log appears with a running game.
         tokio::fs::create_dir_all(tmp.path().join("logs"))
