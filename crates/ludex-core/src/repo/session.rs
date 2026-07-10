@@ -192,13 +192,17 @@ impl<'a> SessionRepo<'a> {
     /// The caller is expected to close each row with
     /// [`Self::close_and_rollup`] so the application-level aggregate
     /// stats are also updated.
-    pub async fn list_orphans(&self, cutoff: OffsetDateTime) -> Result<Vec<Session>> {
-        let sql = format!(
-            "SELECT {SELECT_COLS} FROM sessions \
-             WHERE ended_at IS NULL AND heartbeat_at < ?"
-        );
+    /// Every open (`ended_at IS NULL`) session, regardless of heartbeat
+    /// age. At daemon cold start these are all orphans left by a dead
+    /// prior process: the single-instance bus-name lock (acquired
+    /// before recovery runs) guarantees no other daemon is writing, so
+    /// a fresh process holds no live session and any open row must be
+    /// recovered. Filtering by heartbeat age here would strand a
+    /// session whose owner crashed seconds ago — exactly the common
+    /// case, since systemd restarts the daemon within `RestartSec`.
+    pub async fn list_all_orphans(&self) -> Result<Vec<Session>> {
+        let sql = format!("SELECT {SELECT_COLS} FROM sessions WHERE ended_at IS NULL");
         sqlx::query_as::<_, Session>(&sql)
-            .bind(cutoff)
             .fetch_all(self.pool)
             .await
             .map_err(Into::into)

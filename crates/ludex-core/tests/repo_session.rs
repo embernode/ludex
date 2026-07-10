@@ -80,14 +80,18 @@ async fn session_begin_heartbeat_end_and_playback_delta() {
     assert_eq!(closed.exit_reason, Some(ExitReason::Terminated));
 }
 
+/// At cold start every open session is an orphan from a dead prior
+/// process — the single-instance lock guarantees no live writer — so
+/// `list_all_orphans` returns them all regardless of heartbeat age. A
+/// session whose heartbeat is only seconds old (the crash-then-restart
+/// case) must be included, not filtered out.
 #[tokio::test]
-async fn list_orphans_returns_only_stale_open_sessions() {
+async fn list_all_orphans_returns_every_open_session() {
     let db = Database::open_memory().await.unwrap();
     let apps = db.applications();
     let sessions = db.sessions();
     // Two distinct applications: `one_open_session_per_app` enforces
-    // that a single app has at most one open session at a time. The
-    // orphan-recovery case this test guards is per-application, so we
+    // that a single app has at most one open session at a time, so we
     // set up one stale-app and one fresh-app rather than forcing two
     // sessions under the same app id.
     let stale_app = apps.create(sample_new_app()).await.unwrap();
@@ -115,7 +119,8 @@ async fn list_orphans_returns_only_stale_open_sessions() {
         .await
         .unwrap();
 
-    // Fresh session: heartbeat 30 seconds ago. Should NOT be recovered.
+    // Fresh session: heartbeat 30 seconds ago — must ALSO be listed,
+    // because at cold start it is just as orphaned as the stale one.
     let fresh = sessions
         .begin(fresh_app.id, now - Duration::seconds(60))
         .await
@@ -132,15 +137,15 @@ async fn list_orphans_returns_only_stale_open_sessions() {
         .await
         .unwrap();
 
-    let cutoff = now - Duration::minutes(2);
-    let orphans = sessions.list_orphans(cutoff).await.unwrap();
-    assert_eq!(orphans.len(), 1);
-    assert_eq!(orphans[0].id, stale.id);
-
-    // Fresh session must still be open.
-    let fresh_after = sessions.find_by_id(fresh.id).await.unwrap().unwrap();
-    assert_eq!(fresh_after.ended_at, None);
-    assert_eq!(fresh_after.exit_reason, None);
+    let orphans = sessions.list_all_orphans().await.unwrap();
+    let ids: std::collections::HashSet<i64> = orphans.iter().map(|s| s.id).collect();
+    assert_eq!(
+        orphans.len(),
+        2,
+        "both open sessions are orphans at cold start"
+    );
+    assert!(ids.contains(&stale.id));
+    assert!(ids.contains(&fresh.id));
 }
 
 /// Closing a session through `close_and_rollup` must update both the

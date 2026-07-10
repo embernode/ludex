@@ -7,8 +7,9 @@
 //! - Every open session receives a heartbeat every
 //!   [`HEARTBEAT_INTERVAL_SECS`] seconds. A crash after a heartbeat loses
 //!   at most that interval's worth of runtime.
-//! - Sessions open at daemon startup older than the grace period are
-//!   closed at their last-known heartbeat with
+//! - Any session still open at daemon startup is an orphan from a dead
+//!   prior run (the single-instance lock rules out a live writer) and is
+//!   closed at its last-known heartbeat with
 //!   [`ExitReason::Recovered`](ludex_core::ExitReason::Recovered).
 //! - On graceful shutdown (signal received) all open sessions are closed
 //!   at `now` with [`ExitReason::Terminated`](ludex_core::ExitReason::Terminated).
@@ -21,7 +22,7 @@ use ludex_core::{
     ProcessArchitecture, RuntimeSnapshot,
 };
 use ludex_enrich::EnrichmentContext;
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -42,10 +43,6 @@ use crate::sleep::SleepTracker;
 /// Heartbeat cadence in seconds. Also the upper bound on runtime lost to
 /// a daemon crash.
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 60;
-
-/// Sessions whose last heartbeat is older than this at daemon startup are
-/// considered orphaned and closed with `ExitReason::Recovered`.
-pub const ORPHAN_GRACE_MINUTES: i64 = 2;
 
 /// In-memory state for a session currently open in the database.
 #[derive(Debug, Clone, Copy)]
@@ -134,9 +131,18 @@ impl SessionManager {
         }
     }
 
-    /// Close any sessions left open by a prior daemon run whose heartbeat
-    /// is older than [`ORPHAN_GRACE_MINUTES`]. Returns the number of rows
-    /// closed. Call once before [`Self::run`].
+    /// Close every session left open by a prior daemon run. Returns the
+    /// number of rows closed. Call once before [`Self::run`].
+    ///
+    /// Heartbeat age is deliberately not consulted: reaching this point
+    /// means [`crate::dbus::serve`] already acquired the single-instance
+    /// bus name, so no other daemon is writing and every open row is an
+    /// orphan from a dead process. Filtering by age would strand a
+    /// session whose owner crashed seconds ago — the common case, since
+    /// systemd restarts the daemon within its `RestartSec` (5s), well
+    /// inside any grace window. That orphan would then block the app's
+    /// partial-unique open-session index and silently drop all further
+    /// playtime until the next manual restart.
     ///
     /// Each orphan is closed with its last-known heartbeat runtime and
     /// rolled into the owning application's aggregate stats in a single
@@ -144,8 +150,7 @@ impl SessionManager {
     /// as the normal close path, so a crash during recovery cannot drop
     /// runtime from the application counters.
     pub async fn recover_orphans(&self) -> Result<u64, Error> {
-        let cutoff = OffsetDateTime::now_utc() - Duration::minutes(ORPHAN_GRACE_MINUTES);
-        let orphans = self.db.sessions().list_orphans(cutoff).await?;
+        let orphans = self.db.sessions().list_all_orphans().await?;
         let count = orphans.len() as u64;
         for orphan in orphans {
             self.db

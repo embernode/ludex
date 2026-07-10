@@ -407,6 +407,80 @@ async fn recover_orphans_closes_stale_sessions() {
     assert_eq!(app_after.last_played_at, Some(refreshed.heartbeat_at));
 }
 
+/// Regression guard for TIME-1: after a crash, systemd restarts the
+/// daemon within `RestartSec` (5s), so the orphaned session's last
+/// heartbeat is only seconds stale — far fresher than the old 2-minute
+/// grace, which skipped it. Cold-start recovery must close *every* open
+/// session regardless of heartbeat age: reaching this point means the
+/// single-instance bus-name lock is held, so any open row is genuinely
+/// from a dead prior process. Leaving it open let the partial-unique
+/// index reject every future session for that app until the next manual
+/// restart — silently dropping playtime.
+#[tokio::test]
+async fn recover_orphans_closes_recently_heartbeated_session() {
+    let db = Database::open_memory().await.unwrap();
+
+    let app = {
+        use ludex_core::{GraphicsPlatform, Icons, NewApplication, ProcessArchitecture};
+        db.applications()
+            .create(NewApplication {
+                launcher_type: ludex_core::LauncherType::Steam,
+                launcher_id: "570".into(),
+                product_name: "Dota 2".into(),
+                publisher: None,
+                version: None,
+                executable_path: None,
+                launcher_exe_path: None,
+                wineprefix_path: None,
+                installed_flatpak_ref: None,
+                graphics_platform: GraphicsPlatform::Unknown,
+                process_architecture: ProcessArchitecture::Unknown,
+                group_id: None,
+                icons: Icons::default(),
+                first_seen_at: OffsetDateTime::now_utc(),
+            })
+            .await
+            .unwrap()
+    };
+    let now = OffsetDateTime::now_utc();
+    let orphan = db
+        .sessions()
+        .begin(app.id, now - time::Duration::minutes(5))
+        .await
+        .unwrap();
+    // Heartbeat only 10s ago — well inside the old 2-minute grace.
+    db.sessions()
+        .heartbeat(
+            orphan.id,
+            ludex_core::RuntimeSnapshot {
+                full_runtime_seconds: 300,
+                interactive_runtime_seconds: 300,
+                at: now - time::Duration::seconds(10),
+            },
+        )
+        .await
+        .unwrap();
+
+    let manager = SessionManager::new(
+        db.clone(),
+        default_enrichment_ctx(),
+        default_idle_tracker(),
+        default_sleep_tracker(),
+        default_config(),
+        None,
+        empty_blocklist(),
+    );
+    let closed = manager.recover_orphans().await.unwrap();
+    assert_eq!(
+        closed, 1,
+        "a fresh-heartbeat orphan at cold start must still be recovered",
+    );
+
+    let refreshed = db.sessions().find_by_id(orphan.id).await.unwrap().unwrap();
+    assert_eq!(refreshed.exit_reason, Some(ExitReason::Recovered));
+    assert!(refreshed.ended_at.is_some());
+}
+
 /// Idle time that accumulates during a session must be subtracted
 /// from the session's interactive runtime when it closes.
 ///

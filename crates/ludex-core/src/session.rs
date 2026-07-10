@@ -14,8 +14,8 @@ use crate::types::ExitReason;
 /// [`SessionRepo::close_and_rollup`](crate::repo::SessionRepo::close_and_rollup)
 /// on process exit, foreground change, or sleep-split. Orphaned open
 /// sessions (left behind by a crash) are listed via
-/// [`SessionRepo::list_orphans`](crate::repo::SessionRepo::list_orphans) and
-/// closed the same way at daemon startup.
+/// [`SessionRepo::list_all_orphans`](crate::repo::SessionRepo::list_all_orphans)
+/// and closed the same way at daemon startup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
 pub struct Session {
     /// Primary key.

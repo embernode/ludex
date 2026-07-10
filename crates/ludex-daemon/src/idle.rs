@@ -233,9 +233,7 @@ trait LogindUser {
 /// for method calls but is silent for signals). Returns an error when
 /// neither strategy finds a session; the caller degrades to "idle
 /// tracking disabled" with a warning.
-async fn resolve_session_path(
-    conn: &zbus::Connection,
-) -> Result<zbus::zvariant::OwnedObjectPath> {
+async fn resolve_session_path(conn: &zbus::Connection) -> Result<zbus::zvariant::OwnedObjectPath> {
     let manager = LogindManagerProxy::new(conn)
         .await
         .context("construct logind manager proxy")?;
