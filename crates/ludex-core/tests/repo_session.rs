@@ -257,6 +257,83 @@ async fn delete_and_recompute_rebuilds_aggregate_stats() {
     assert!(sessions.find_by_id(ids[0]).await.unwrap().is_none());
 }
 
+/// Regression guard for PERSIST-1: `delete_and_recompute` must rebuild
+/// the aggregate stats from *closed* sessions only. If it folds in an
+/// unrelated open session's in-flight runtime, `close_and_rollup` adds
+/// that same runtime again when the session ends — permanently
+/// inflating the D-Bus-surfaced total playtime.
+#[tokio::test]
+async fn delete_and_recompute_excludes_open_session_runtime_from_rebuild() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // A closed session we will delete.
+    let closed_start = datetime!(2026-03-01 10:00:00 UTC);
+    let closed = sessions.begin(app.id, closed_start).await.unwrap();
+    sessions
+        .close_and_rollup(
+            closed.id,
+            app.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 600,
+                interactive_runtime_seconds: 600,
+                at: closed_start + Duration::seconds(600),
+            },
+            ExitReason::Terminated,
+        )
+        .await
+        .unwrap();
+
+    // A separate session for the same app, still open and days later
+    // so the merge fold never groups it with the closed one. Its live
+    // heartbeat runtime is 300s.
+    let open_start = datetime!(2026-03-05 10:00:00 UTC);
+    let open = sessions.begin(app.id, open_start).await.unwrap();
+    sessions
+        .heartbeat(
+            open.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 300,
+                interactive_runtime_seconds: 300,
+                at: open_start + Duration::seconds(300),
+            },
+        )
+        .await
+        .unwrap();
+
+    // Deleting the closed session rebuilds the app aggregates. The
+    // open session's in-flight runtime must NOT be folded in.
+    sessions.delete_and_recompute(closed.id).await.unwrap();
+
+    // The open session ends and rolls up its 300s exactly once.
+    sessions
+        .close_and_rollup(
+            open.id,
+            app.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 300,
+                interactive_runtime_seconds: 300,
+                at: open_start + Duration::seconds(300),
+            },
+            ExitReason::Terminated,
+        )
+        .await
+        .unwrap();
+
+    let after = apps.find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(
+        after.stat_run_count, 1,
+        "the open session must be counted exactly once",
+    );
+    assert_eq!(
+        after.stat_total_full, 300,
+        "only the ended session's 300s — the open row must not be pre-counted then double-added",
+    );
+    assert_eq!(after.stat_total_interactive, 300);
+}
+
 /// Deleting a non-existent session is a quiet no-op rather than an
 /// error — keeps the GUI's "click delete twice in quick succession"
 /// path simple.

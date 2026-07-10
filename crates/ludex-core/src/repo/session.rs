@@ -373,15 +373,24 @@ impl<'a> SessionRepo<'a> {
                 .await?;
         }
 
+        // Rebuild only from *closed* sessions: an open session's
+        // runtime is still being written and is added to these
+        // aggregates by `close_and_rollup` when it ends. Counting it
+        // here too would double-count it (PERSIST-1). This mirrors the
+        // `ended_at IS NOT NULL` filter `last_played_at` already used.
         sqlx::query(
             "UPDATE applications SET \
-                stat_run_count         = (SELECT COUNT(*) FROM sessions WHERE application_id = ?1), \
+                stat_run_count         = (SELECT COUNT(*) FROM sessions \
+                                            WHERE application_id = ?1 AND ended_at IS NOT NULL), \
                 stat_total_full        = COALESCE((SELECT SUM(full_runtime_seconds) \
-                                                     FROM sessions WHERE application_id = ?1), 0), \
+                                                     FROM sessions \
+                                                     WHERE application_id = ?1 AND ended_at IS NOT NULL), 0), \
                 stat_total_interactive = COALESCE((SELECT SUM(interactive_runtime_seconds) \
-                                                     FROM sessions WHERE application_id = ?1), 0), \
+                                                     FROM sessions \
+                                                     WHERE application_id = ?1 AND ended_at IS NOT NULL), 0), \
                 stat_longest_full      = COALESCE((SELECT MAX(full_runtime_seconds) \
-                                                     FROM sessions WHERE application_id = ?1), 0), \
+                                                     FROM sessions \
+                                                     WHERE application_id = ?1 AND ended_at IS NOT NULL), 0), \
                 last_played_at         = (SELECT MAX(ended_at) FROM sessions \
                                             WHERE application_id = ?1 AND ended_at IS NOT NULL) \
              WHERE id = ?1",
