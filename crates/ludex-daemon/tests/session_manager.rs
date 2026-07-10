@@ -85,6 +85,7 @@ async fn started_then_stopped_creates_one_closed_session() {
     tx.send(GameEvent::Started {
         key: GameKey::steam("440"),
         display_name: "Team Fortress 2".into(),
+        executable_path: None,
         at,
     })
     .await
@@ -162,6 +163,7 @@ async fn blocked_key_drops_started_event() {
     tx.send(GameEvent::Started {
         key: blocked_key.clone(),
         display_name: "Team Fortress 2".into(),
+        executable_path: None,
         at: OffsetDateTime::now_utc(),
     })
     .await
@@ -208,6 +210,7 @@ async fn unblocking_a_key_lets_subsequent_sessions_through() {
     tx.send(GameEvent::Started {
         key: key.clone(),
         display_name: "Team Fortress 2".into(),
+        executable_path: None,
         at: OffsetDateTime::now_utc(),
     })
     .await
@@ -222,6 +225,7 @@ async fn unblocking_a_key_lets_subsequent_sessions_through() {
     tx.send(GameEvent::Started {
         key: key.clone(),
         display_name: "Team Fortress 2".into(),
+        executable_path: None,
         at: OffsetDateTime::now_utc(),
     })
     .await
@@ -258,6 +262,7 @@ async fn duplicate_started_is_ignored() {
         tx.send(GameEvent::Started {
             key: GameKey::steam("440"),
             display_name: "Team Fortress 2".into(),
+            executable_path: None,
             at,
         })
         .await
@@ -305,6 +310,7 @@ async fn shutdown_closes_open_sessions() {
     tx.send(GameEvent::Started {
         key: GameKey::steam("440"),
         display_name: "Team Fortress 2".into(),
+        executable_path: None,
         at,
     })
     .await
@@ -508,6 +514,7 @@ async fn idle_time_reduces_interactive_runtime() {
     tx.send(GameEvent::Started {
         key: GameKey::steam("440"),
         display_name: "Team Fortress 2".into(),
+        executable_path: None,
         at,
     })
     .await
@@ -578,6 +585,7 @@ async fn idle_under_grace_is_fully_forgiven() {
     tx.send(GameEvent::Started {
         key: GameKey::steam("440"),
         display_name: "Cutscene Game".into(),
+        executable_path: None,
         at,
     })
     .await
@@ -638,6 +646,7 @@ async fn idle_above_grace_bills_only_the_tail() {
     tx.send(GameEvent::Started {
         key: GameKey::steam("440"),
         display_name: "AFK Game".into(),
+        executable_path: None,
         at,
     })
     .await
@@ -698,6 +707,7 @@ async fn suspended_time_reduces_full_runtime() {
     tx.send(GameEvent::Started {
         key: GameKey::steam("440"),
         display_name: "Team Fortress 2".into(),
+        executable_path: None,
         at,
     })
     .await
@@ -768,6 +778,7 @@ async fn pre_session_idle_does_not_count_against_session() {
     tx.send(GameEvent::Started {
         key: GameKey::steam("440"),
         display_name: "Team Fortress 2".into(),
+        executable_path: None,
         at,
     })
     .await
@@ -841,6 +852,7 @@ async fn enrichment_fires_on_new_application() {
     tx.send(GameEvent::Started {
         key: GameKey::steam("440"),
         display_name: "AppID 440".into(),
+        executable_path: None,
         at: OffsetDateTime::now_utc(),
     })
     .await
@@ -866,6 +878,53 @@ async fn enrichment_fires_on_new_application() {
         .unwrap()
         .unwrap();
     assert_eq!(final_app.product_name, "Team Fortress 2");
+
+    shutdown_tx.send(true).unwrap();
+    drop(tx);
+    handle.await.unwrap().unwrap();
+}
+
+/// When a `Started` event carries an `executable_path` (as the
+/// foreground-window source supplies for every game it accepts), the
+/// session manager must seed it onto the newly-created `Application`
+/// row (GATE-3). Before the fix, the field was dropped between the
+/// event and the DB insert, leaving every daemon-created application's
+/// `executable_path` permanently `NULL` and the path-gated metadata
+/// enrichers dead code.
+#[tokio::test]
+async fn started_with_executable_path_seeds_application_executable_path() {
+    let db = Database::open_memory().await.unwrap();
+    let manager = SessionManager::new(
+        db.clone(),
+        default_enrichment_ctx(),
+        default_idle_tracker(),
+        default_sleep_tracker(),
+        default_config(),
+        None,
+        empty_blocklist(),
+    );
+    let (tx, rx) = mpsc::channel::<GameEvent>(16);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let handle = tokio::spawn(manager.run(rx, shutdown_rx));
+
+    let key = GameKey::native("/games/foo/foo.exe");
+    tx.send(GameEvent::Started {
+        key: key.clone(),
+        display_name: "Foo".into(),
+        executable_path: Some(std::path::PathBuf::from("/games/foo/foo.exe")),
+        at: OffsetDateTime::now_utc(),
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    let app = db
+        .applications()
+        .find_by_key(&key)
+        .await
+        .unwrap()
+        .expect("application inserted");
+    assert_eq!(app.executable_path, Some("/games/foo/foo.exe".to_owned()));
 
     shutdown_tx.send(true).unwrap();
     drop(tx);

@@ -181,6 +181,7 @@ impl SteamSource {
                         .send(GameEvent::Started {
                             key: GameKey::steam(appid),
                             display_name,
+                            executable_path: None,
                             at: OffsetDateTime::now_utc(),
                         })
                         .await
@@ -371,6 +372,7 @@ impl SteamSource {
                         .send(GameEvent::Started {
                             key: GameKey::steam(appid),
                             display_name,
+                            executable_path: None,
                             at: OffsetDateTime::now_utc(),
                         })
                         .await

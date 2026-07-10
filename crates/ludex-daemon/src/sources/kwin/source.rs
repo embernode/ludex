@@ -414,7 +414,9 @@ async fn apply_outcome(
     for ev in transition_events {
         match ev {
             TransitionEvent::Start {
-                key, display_name, ..
+                key,
+                display_name,
+                executable_path,
             } => {
                 // The post-transition state is the one carrying the
                 // just-started pid; grab it while we still have a
@@ -424,6 +426,7 @@ async fn apply_outcome(
                     .send(GameEvent::Started {
                         key,
                         display_name,
+                        executable_path: Some(executable_path),
                         at: now,
                     })
                     .await;

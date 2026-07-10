@@ -251,6 +251,15 @@ pub enum LauncherAttribution {
         /// Value of `HEROIC_APP_NAME` from the process environ.
         app_name: String,
     },
+    /// Process carries Lutris's `LUTRIS_GAME_UUID`. Lutris has no
+    /// lifecycle source of its own, so the foreground-window source
+    /// tracks it; keying by this UUID rather than the wine-preloader
+    /// exe path (shared by every Lutris game on a runner) keeps each
+    /// game on its own application row.
+    Lutris {
+        /// Value of `LUTRIS_GAME_UUID` from the process environ.
+        uuid: String,
+    },
 }
 
 /// Why the gate rejected a PID.
@@ -340,6 +349,14 @@ fn extract_launcher_attribution(env: &HashMap<String, String>) -> Option<Launche
         if !name.is_empty() {
             return Some(LauncherAttribution::Heroic {
                 app_name: name.to_owned(),
+            });
+        }
+    }
+    if let Some(uuid) = env.get("LUTRIS_GAME_UUID") {
+        let uuid = uuid.trim();
+        if !uuid.is_empty() {
+            return Some(LauncherAttribution::Lutris {
+                uuid: uuid.to_owned(),
             });
         }
     }
@@ -644,6 +661,39 @@ mod tests {
             matches!(d, GateDecision::Accept(_)),
             "Lutris-attributed games must pass the gate; got {d:?}",
         );
+    }
+
+    #[test]
+    fn lutris_uuid_env_produces_lutris_attribution() {
+        // Every Lutris/bare-Wine game shares the same wine-preloader
+        // exe path, so `executable_path` alone can't key sessions per
+        // game (GATE-2). The gate must surface `LUTRIS_GAME_UUID` as a
+        // `LauncherAttribution::Lutris` so the transition module can
+        // key by it instead.
+        let exe = PathBuf::from(
+            "/home/u/.local/share/lutris/runners/wine/lutris-fshack/bin/wine64-preloader",
+        );
+        let env = env_of(&[("LUTRIS_GAME_UUID", "abc-123")]);
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &cfg(),
+        );
+        match d {
+            GateDecision::Accept(accepted) => {
+                assert_eq!(
+                    accepted.attribution,
+                    Some(LauncherAttribution::Lutris {
+                        uuid: "abc-123".to_owned()
+                    })
+                );
+            }
+            GateDecision::Reject(_) => panic!("expected accept, got {d:?}"),
+        }
     }
 
     #[test]

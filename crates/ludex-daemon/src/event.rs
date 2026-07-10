@@ -1,5 +1,7 @@
 //! Events emitted by launcher sources and consumed by the session manager.
 
+use std::path::PathBuf;
+
 use ludex_core::GameKey;
 use time::OffsetDateTime;
 
@@ -20,6 +22,12 @@ pub enum GameEvent {
         /// Best-effort human-readable product name. Later refined by the
         /// metadata-enrichment cascade.
         display_name: String,
+        /// Absolute path to the game executable when the source knows
+        /// it (the foreground-window source does; the Steam
+        /// content-log source does not). Seeds
+        /// `Application.executable_path` so the path-gated enrichers
+        /// can run.
+        executable_path: Option<PathBuf>,
         /// When the start was observed.
         at: OffsetDateTime,
     },

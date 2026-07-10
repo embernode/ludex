@@ -302,14 +302,17 @@ pub(super) fn on_tracked_exit(state: FgState, exited_pid: u32) -> Outcome {
 
 /// Build a [`GameKey`] for an accepted process. Foreground-source
 /// launcher attribution wins over the executable path: the wine /
-/// Proton preloader path varies per wine variant the user picks in
-/// Heroic, while a launcher's own canonical id (Heroic's
-/// `HEROIC_APP_NAME`) is invariant and what we want to key sessions
-/// against. Falls back to a `Native` key from the executable path
-/// when no attribution is available.
+/// Proton preloader path is shared across games (every Lutris game on
+/// a runner, or every Heroic game on a given wine variant, resolves to
+/// the same preloader), while a launcher's own canonical id — Heroic's
+/// `HEROIC_APP_NAME` or Lutris's `LUTRIS_GAME_UUID` — is invariant and
+/// unique per game, which is what we want to key sessions against.
+/// Falls back to a `Native` key from the executable path when no
+/// attribution is available.
 fn native_key(accepted: &AcceptedProcess) -> GameKey {
     match &accepted.attribution {
         Some(LauncherAttribution::Heroic { app_name }) => GameKey::heroic(app_name.clone()),
+        Some(LauncherAttribution::Lutris { uuid }) => GameKey::lutris(uuid.clone()),
         None => GameKey::native(accepted.executable_path.to_string_lossy().into_owned()),
     }
 }
@@ -431,6 +434,32 @@ mod tests {
         assert!(
             matches!(o.state, FgState::Tracked(ref a) if a.key == GameKey::heroic("deadbeef-epic-guid"))
         );
+    }
+
+    #[test]
+    fn lutris_attribution_keys_session_by_uuid() {
+        // Every Lutris/bare-Wine game on a runner shares the same
+        // wine64-preloader `executable_path` — keying by it would
+        // collapse every Lutris game onto one application row
+        // (GATE-2). When the gate surfaces a `Lutris` attribution,
+        // the key must come from `LUTRIS_GAME_UUID` instead.
+        let o = next_action(
+            FgState::NotTracked,
+            &meta(200, "wine64-preloader", "Some Game"),
+            accepted_with(
+                "/home/u/.local/share/lutris/runners/wine/lutris-fshack/bin/wine64-preloader",
+                Some(LauncherAttribution::Lutris {
+                    uuid: "abc-123".to_owned(),
+                }),
+            ),
+            PAUSE,
+        );
+        assert_eq!(o.events.len(), 1);
+        let TransitionEvent::Start { key, .. } = &o.events[0] else {
+            panic!("expected Start event, got {:?}", o.events[0]);
+        };
+        assert_eq!(*key, GameKey::lutris("abc-123"));
+        assert!(matches!(o.state, FgState::Tracked(ref a) if a.key == GameKey::lutris("abc-123")));
     }
 
     #[test]

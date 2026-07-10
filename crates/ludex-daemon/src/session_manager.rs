@@ -15,6 +15,7 @@
 //!   at `now` with [`ExitReason::Terminated`](ludex_core::ExitReason::Terminated).
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ludex_core::{
@@ -226,8 +227,12 @@ impl SessionManager {
             GameEvent::Started {
                 key,
                 display_name,
+                executable_path,
                 at,
-            } => self.handle_started(key, display_name, at).await,
+            } => {
+                self.handle_started(key, display_name, executable_path, at)
+                    .await
+            }
             GameEvent::Stopped { key, at } => self.handle_stopped(key, at).await,
         }
     }
@@ -236,6 +241,7 @@ impl SessionManager {
         &mut self,
         key: GameKey,
         display_name: String,
+        executable_path: Option<PathBuf>,
         at: OffsetDateTime,
     ) -> Result<(), Error> {
         if self.blocklist.read().await.contains(&key) {
@@ -247,7 +253,7 @@ impl SessionManager {
             return Ok(());
         }
         let app = self
-            .find_or_create_application(&key, display_name, at)
+            .find_or_create_application(&key, display_name, executable_path, at)
             .await?;
         let session = match self.db.sessions().begin(app.id, at).await {
             Ok(s) => s,
@@ -318,6 +324,7 @@ impl SessionManager {
         &self,
         key: &GameKey,
         display_name: String,
+        executable_path: Option<PathBuf>,
         now: OffsetDateTime,
     ) -> Result<Application, Error> {
         if let Some(app) = self.db.applications().find_by_key(key).await? {
@@ -332,7 +339,7 @@ impl SessionManager {
                 product_name: display_name,
                 publisher: None,
                 version: None,
-                executable_path: None,
+                executable_path: executable_path.map(|p| p.to_string_lossy().into_owned()),
                 launcher_exe_path: None,
                 wineprefix_path: None,
                 installed_flatpak_ref: None,
