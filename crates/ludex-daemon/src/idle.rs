@@ -169,15 +169,104 @@ fn seconds_since(t: Instant) -> i64 {
     i64::try_from(t.elapsed().as_secs()).unwrap_or(i64::MAX)
 }
 
-/// Proxy for the current login session's `IdleHint` property.
+/// Proxy for a login session's `IdleHint` property.
+///
+/// No `default_path` is set on purpose: the object path must be the
+/// *canonical* `/org/freedesktop/login1/session/_NN` for this session,
+/// resolved at runtime (see [`resolve_session_path`]). The obvious
+/// `/session/auto` alias resolves fine for method calls but never
+/// emits `PropertiesChanged`, so a proxy built on it silently never
+/// sees an `IdleHint` transition.
 #[zbus::proxy(
     interface = "org.freedesktop.login1.Session",
-    default_service = "org.freedesktop.login1",
-    default_path = "/org/freedesktop/login1/session/auto"
+    default_service = "org.freedesktop.login1"
 )]
 trait LogindSession {
     #[zbus(property, name = "IdleHint")]
     fn idle_hint(&self) -> zbus::Result<bool>;
+}
+
+/// Proxy for the logind manager, used to resolve the canonical session
+/// object path.
+#[zbus::proxy(
+    interface = "org.freedesktop.login1.Manager",
+    default_service = "org.freedesktop.login1",
+    default_path = "/org/freedesktop/login1"
+)]
+trait LogindManager {
+    fn get_session(&self, session_id: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    fn get_user(&self, uid: u32) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+}
+
+/// Proxy for a logind user object, used to read its primary graphical
+/// (`Display`) session.
+#[zbus::proxy(
+    interface = "org.freedesktop.login1.User",
+    default_service = "org.freedesktop.login1"
+)]
+trait LogindUser {
+    /// `(session_id, object_path)` of the user's primary graphical
+    /// session, or `("", "/")` when the user has none.
+    #[zbus(property)]
+    fn display(&self) -> zbus::Result<(String, zbus::zvariant::OwnedObjectPath)>;
+}
+
+/// Resolve the canonical logind session object path to watch for idle
+/// transitions.
+///
+/// Two strategies, in order:
+///
+/// 1. `GetSession($XDG_SESSION_ID)` — the session the daemon was
+///    launched into. This is the normal path: `systemd --user` exports
+///    `XDG_SESSION_ID` into the user manager's environment on both KDE
+///    and GNOME, so the daemon inherits it.
+/// 2. `GetUser(getuid())` → the user object's `Display` property — the
+///    user's primary graphical session. This is the fallback for when
+///    `XDG_SESSION_ID` is absent. It is deliberately *not*
+///    `GetSessionByPID(getpid())`: a `systemd --user` daemon runs under
+///    `user@UID.service`, not a `session-NN.scope`, so logind cannot map
+///    its PID to a session at all — the user's `Display` session is the
+///    only thing that resolves for a user-service process.
+///
+/// Both return the concrete `/session/_NN` path that actually emits
+/// `PropertiesChanged`, never the `/session/auto` alias (which resolves
+/// for method calls but is silent for signals). Returns an error when
+/// neither strategy finds a session; the caller degrades to "idle
+/// tracking disabled" with a warning.
+async fn resolve_session_path(
+    conn: &zbus::Connection,
+) -> Result<zbus::zvariant::OwnedObjectPath> {
+    let manager = LogindManagerProxy::new(conn)
+        .await
+        .context("construct logind manager proxy")?;
+
+    if let Ok(id) = std::env::var("XDG_SESSION_ID") {
+        if !id.is_empty() {
+            if let Ok(path) = manager.get_session(&id).await {
+                return Ok(path);
+            }
+        }
+    }
+
+    let uid = rustix::process::getuid().as_raw();
+    let user_path = manager
+        .get_user(uid)
+        .await
+        .context("resolve logind user object")?;
+    let user = LogindUserProxy::builder(conn)
+        .path(user_path)
+        .context("set logind user path")?
+        .build()
+        .await
+        .context("construct logind user proxy")?;
+    let (session_id, path) = user
+        .display()
+        .await
+        .context("read logind user Display session")?;
+    if session_id.is_empty() {
+        anyhow::bail!("logind user has no graphical Display session");
+    }
+    Ok(path)
 }
 
 /// Drive `tracker`'s state from `logind.IdleHint` until `shutdown`
@@ -201,7 +290,18 @@ pub async fn run_watcher(
             return Ok(());
         }
     };
-    let proxy = LogindSessionProxy::new(&conn)
+    let session_path = match resolve_session_path(&conn).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "could not resolve logind session; idle tracking disabled");
+            return Ok(());
+        }
+    };
+    debug!(path = %session_path.as_str(), "resolved logind session path");
+    let proxy = LogindSessionProxy::builder(&conn)
+        .path(session_path)
+        .context("set logind session path")?
+        .build()
         .await
         .context("construct logind session proxy")?;
 
@@ -340,6 +440,43 @@ mod tests {
         t.record_idle_interval(4 * 60);
         t.record_idle_interval(4 * 60);
         assert_eq!(t.billable_idle_seconds_since(0, 5 * 60), 0);
+    }
+
+    /// Regression guard for IDLE-1: the resolved logind session path
+    /// must be the canonical `/session/_NN`, never the `/session/auto`
+    /// alias, because only the canonical path emits
+    /// `PropertiesChanged` for `IdleHint`. Subscribing on the alias
+    /// left idle tracking silently dead for every session.
+    ///
+    /// Requires a live system bus with a logind session (present on a
+    /// desktop and in CI-with-logind). Skips cleanly otherwise so the
+    /// suite still passes in a bare container.
+    #[tokio::test]
+    async fn resolved_session_path_is_canonical_not_auto() {
+        let Ok(conn) = zbus::Connection::system().await else {
+            eprintln!("no system bus; skipping logind resolution test");
+            return;
+        };
+        let path = match resolve_session_path(&conn).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("no logind session ({e}); skipping resolution test");
+                return;
+            }
+        };
+        let path = path.as_str();
+        let suffix = path
+            .strip_prefix("/org/freedesktop/login1/session/")
+            .unwrap_or_else(|| panic!("unexpected session path shape: {path}"));
+        // The real regression is subscribing on the `auto`/`self`
+        // aliases, which resolve for method calls but never emit
+        // `PropertiesChanged`. Any concrete session id is fine — logind
+        // escapes leading digits (`2` → `_32`) but a named session can
+        // be alphanumeric, so don't over-constrain the shape.
+        assert!(
+            !suffix.is_empty() && suffix != "auto" && suffix != "self",
+            "resolver returned a non-emitting alias instead of a concrete session: {path}"
+        );
     }
 
     #[test]
