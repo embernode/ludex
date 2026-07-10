@@ -67,9 +67,12 @@ pub struct GateConfig {
     /// Environment-variable names that mark a process as launched by a
     /// launcher with its own authoritative lifecycle source (today:
     /// Steam, via `SteamSource.content_log`). A process whose
-    /// `/proc/<pid>/environ` contains any of these is handled by the
-    /// corresponding launcher source, not by the foreground fallback —
-    /// without this list the daemon double-counts every Proton game.
+    /// `/proc/<pid>/environ` carries any of these with a *nonzero* appid
+    /// value is handled by the corresponding launcher source, not by the
+    /// foreground fallback — without this list the daemon double-counts
+    /// every Proton game. Matched by value (not presence) so non-Steam
+    /// shortcuts, which set a zero appid, still reach the foreground
+    /// source — see [`attributed_to_steam`].
     pub launcher_env_vars: HashSet<String>,
 
     /// Environment-variable names that identify a process as launched
@@ -100,9 +103,18 @@ impl Default for GateConfig {
 /// don't count it again from the foreground source — Steam's content
 /// log will report it."
 ///
-/// Kept to vars that are only set on the *game's* own process
-/// (not inherited by unrelated children of the user shell): Steam's
-/// `SteamGameId` / `SteamAppId`, Proton's `STEAM_COMPAT_APP_ID`.
+/// Kept to the *appid* vars set on the game's own process: Steam's
+/// `SteamAppId` and Proton's `STEAM_COMPAT_APP_ID`. Both are matched by
+/// **value**, not mere presence — a real Steam app carries a nonzero
+/// appid, whereas a non-Steam game added to Steam as a shortcut carries
+/// the same variable names with a zero appid. Steam never depot-tracks
+/// shortcuts (no `appmanifest`, no content-log line), so rejecting them
+/// here would leave them tracked by nobody; the value check lets them
+/// fall through to the foreground source. See [`attributed_to_steam`].
+///
+/// `SteamGameId` is deliberately excluded: it holds a nonzero synthetic
+/// id for shortcuts too, so it cannot tell a real app from a shortcut,
+/// and a real Steam launch always also sets `SteamAppId`.
 ///
 /// Inherited-wrapper variables (`STEAM_RUNTIME`, `STEAM_BASE_FOLDER`,
 /// `PRESSURE_VESSEL_*`) are deliberately **not** included: they show
@@ -118,7 +130,7 @@ impl Default for GateConfig {
 /// itself never saw it.
 #[must_use]
 pub fn default_launcher_env_vars() -> HashSet<String> {
-    ["SteamGameId", "SteamAppId", "STEAM_COMPAT_APP_ID"]
+    ["SteamAppId", "STEAM_COMPAT_APP_ID"]
         .iter()
         .map(|s| (*s).to_owned())
         .collect()
@@ -294,7 +306,7 @@ pub(crate) fn decide_from_inputs(
         let foreground_attributed = env
             .keys()
             .any(|k| config.foreground_source_launcher_env_vars.contains(k));
-        if !foreground_attributed && env.keys().any(|k| config.launcher_env_vars.contains(k)) {
+        if !foreground_attributed && attributed_to_steam(env, config) {
             return GateDecision::Reject(RejectionReason::AttributedToLauncher);
         }
     }
@@ -332,6 +344,23 @@ fn extract_launcher_attribution(env: &HashMap<String, String>) -> Option<Launche
         }
     }
     None
+}
+
+/// Whether `env` attributes the process to a *real* Steam app — one the
+/// Steam content-log source will track — as opposed to a non-Steam game
+/// added to Steam as a shortcut.
+///
+/// A launcher env var (`SteamAppId`, `STEAM_COMPAT_APP_ID`) counts only
+/// when it carries a nonzero appid. Shortcuts carry the same names with
+/// a zero appid and are never depot-tracked by Steam, so a zero value
+/// means "not Steam-owned" and the process must fall through to the
+/// foreground source rather than be rejected as `AttributedToLauncher`.
+fn attributed_to_steam(env: &HashMap<String, String>, config: &GateConfig) -> bool {
+    config.launcher_env_vars.iter().any(|key| {
+        env.get(key)
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .is_some_and(|appid| appid != 0)
+    })
 }
 
 fn is_blocklisted(exe: &Path, blocklist: &HashSet<String>) -> bool {
@@ -391,7 +420,7 @@ impl Gate {
             let foreground_attributed = env
                 .keys()
                 .any(|k| config.foreground_source_launcher_env_vars.contains(k));
-            if !foreground_attributed && env.keys().any(|k| config.launcher_env_vars.contains(k)) {
+            if !foreground_attributed && attributed_to_steam(env, &config) {
                 return GateDecision::Reject(RejectionReason::AttributedToLauncher);
             }
         }
@@ -768,7 +797,7 @@ mod tests {
         // Steam source — the foreground fallback must reject to avoid
         // double-counting.
         let exe = PathBuf::from("/home/u/.steam/steamapps/common/foo/foo");
-        let env = env_of(&[("SteamGameId", "440")]);
+        let env = env_of(&[("SteamGameId", "440"), ("SteamAppId", "440")]);
         let d = decide_from_inputs(
             Some(&exe),
             Some(&env),
@@ -784,19 +813,47 @@ mod tests {
         );
     }
 
+    /// A non-Steam game added to Steam as a shortcut carries the Steam
+    /// env var *names* but a zero appid (`SteamAppId=0`,
+    /// `STEAM_COMPAT_APP_ID=0`) plus a nonzero synthetic `SteamGameId`.
+    /// Steam never depot-tracks it, so the gate must accept it and let
+    /// the foreground source record it — rejecting would leave it
+    /// tracked by nobody (GATE-1).
+    #[test]
+    fn steam_shortcut_with_zero_appid_is_accepted() {
+        let exe = PathBuf::from("/home/u/Games/foo/foo");
+        let env = env_of(&[
+            ("SteamGameId", "13275623096702517248"),
+            ("SteamAppId", "0"),
+            ("STEAM_COMPAT_APP_ID", "0"),
+        ]);
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&env),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &cfg(),
+        );
+        assert!(
+            matches!(d, GateDecision::Accept(_)),
+            "Steam shortcut with zero appid must pass the gate; got {d:?}",
+        );
+    }
+
     #[test]
     fn default_launcher_env_vars_covers_expected_names() {
         let vars = default_launcher_env_vars();
-        for expected in ["SteamGameId", "SteamAppId", "STEAM_COMPAT_APP_ID"] {
+        for expected in ["SteamAppId", "STEAM_COMPAT_APP_ID"] {
             assert!(vars.contains(expected), "missing {expected}");
         }
-        // `LUTRIS_GAME_UUID` and `HEROIC_APP_NAME` are intentionally
-        // excluded — see the doc comment on `default_launcher_env_vars`.
-        for excluded in ["LUTRIS_GAME_UUID", "HEROIC_APP_NAME"] {
-            assert!(
-                !vars.contains(excluded),
-                "{excluded} must not gate-reject; no lifecycle source for it",
-            );
+        // `SteamGameId` is excluded because it is nonzero even for
+        // shortcuts; `LUTRIS_GAME_UUID` / `HEROIC_APP_NAME` are excluded
+        // because they have no lifecycle source. See the doc comment on
+        // `default_launcher_env_vars`.
+        for excluded in ["SteamGameId", "LUTRIS_GAME_UUID", "HEROIC_APP_NAME"] {
+            assert!(!vars.contains(excluded), "{excluded} must not gate-reject",);
         }
     }
 
