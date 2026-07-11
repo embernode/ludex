@@ -27,11 +27,10 @@ systemctl --user status ludex-daemon
 journalctl --user -u ludex-daemon -f        # follow the log
 ```
 
-The stock unit points at `%h/.cargo/bin/ludex-daemon` — the
-location `cargo install --path crates/ludex-cli` documented in
-the README uses for the daemon's sibling binary. If you install
-system-wide (as the `PKGBUILD` in this directory does — it lands
-the daemon at `/usr/bin/ludex-daemon`), a unit with the
+The stock unit points at `%h/.cargo/bin/ludex-daemon` — where the
+`cargo install` above puts the daemon, next to the `ludex` CLI. If
+you install system-wide (as the `PKGBUILD` in this directory does —
+it lands the daemon at `/usr/bin/ludex-daemon`), a unit with the
 `ExecStart` path adjusted goes into `/usr/lib/systemd/user/` and
 systemd auto-discovers it for every user.
 
@@ -103,8 +102,11 @@ than a fetched tarball. There's no AUR package — the prebuilt
 [Publishing a release](#publishing-a-release)).
 
 After install, the GUI's taskbar icon resolves correctly because
-`StartupWMClass=net.ludex.gui` in the desktop entry matches the
-Wayland app-id Tauri 2 sets via GTK. The daemon's user unit lives
+`StartupWMClass=ludex-gui` in the desktop entry matches the Wayland
+app-id wry actually sets on the toplevel — the **binary basename**,
+not the `net.ludex.gui` bundle identifier (see the comment in
+`net.ludex.gui.desktop` and [If the icon still doesn't
+show](#if-the-icon-still-doesnt-show)). The daemon's user unit lives
 at `/usr/lib/systemd/user/ludex-daemon.service` so every account
 can enable it without copying anything:
 
