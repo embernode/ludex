@@ -79,9 +79,10 @@ package() {
     install -Dm755 "target/release/ludex-gui" \
         "$pkgdir/usr/bin/ludex-gui"
 
-    # GUI desktop entry. `StartupWMClass=net.ludex.gui` matches
-    # the Wayland app-id Tauri 2 sets via GTK; without this, the
-    # taskbar shows a placeholder instead of the icon.
+    # GUI desktop entry. Its `StartupWMClass=ludex-gui` matches the
+    # Wayland app-id wry sets on the toplevel — the binary basename, not
+    # the net.ludex.gui bundle id — without which the taskbar shows a
+    # placeholder instead of the icon. See net.ludex.gui.desktop.
     install -Dm644 "packaging/net.ludex.gui.desktop" \
         "$pkgdir/usr/share/applications/net.ludex.gui.desktop"
 

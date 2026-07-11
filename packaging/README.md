@@ -2,6 +2,74 @@
 
 Distribution artefacts for ludex.
 
+## Building and installing from source (local, unpackaged)
+
+For running an in-development build long-term — e.g. tracking `main` on
+your own machine — without going through `makepkg` / GitHub Releases.
+Everything installs under your home directory; nothing touches `/usr`, so
+it never collides with a packaged install (uninstall the package first if
+you have one, to avoid two copies on `PATH`).
+
+### Daemon + CLI
+
+```sh
+cargo install --path crates/ludex-daemon   # -> ~/.cargo/bin/ludex-daemon
+cargo install --path crates/ludex-cli      # -> ~/.cargo/bin/ludex
+```
+
+Then enable the background service as described in the
+[`ludex-daemon.service`](#ludex-daemonservice-systemd---user-unit)
+section below — the stock unit already points `ExecStart` at
+`~/.cargo/bin/ludex-daemon`, so no edit is needed for a source build.
+
+### GUI
+
+The GUI binary embeds the built SvelteKit frontend, so it has to be built
+through Tauri — a plain `cargo build` skips the frontend step. These are
+the same commands the `PKGBUILD` runs, just installed into your home
+instead of `/usr`:
+
+```sh
+cd app
+pnpm install
+pnpm exec tauri build --no-bundle          # -> ../target/release/ludex-gui
+```
+
+Install the binary, desktop entry, and icon into your user directories
+(`~/.local/bin` must be on your `PATH` — it is on a default systemd user
+session):
+
+```sh
+install -Dm755 ../target/release/ludex-gui ~/.local/bin/ludex-gui
+install -Dm644 ../packaging/net.ludex.gui.desktop \
+    ~/.local/share/applications/net.ludex.gui.desktop
+install -Dm644 src-tauri/icons/icon_light.png \
+    ~/.local/share/icons/hicolor/256x256/apps/net.ludex.gui.png
+update-desktop-database ~/.local/share/applications 2>/dev/null || true
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
+```
+
+Launch it from your app menu (it registers as "ludex") or run `ludex-gui`.
+If the taskbar icon doesn't resolve, see [If the icon still doesn't
+show](#if-the-icon-still-doesnt-show).
+
+### Updating a source install
+
+Re-run the relevant build. For the daemon, reinstall and cycle the
+service so the running process picks up the new binary:
+
+```sh
+cargo install --path crates/ludex-daemon && systemctl --user restart ludex-daemon
+```
+
+For the GUI, rebuild and overwrite the installed binary, then reopen the
+window:
+
+```sh
+cd app && pnpm exec tauri build --no-bundle \
+    && install -Dm755 ../target/release/ludex-gui ~/.local/bin/ludex-gui
+```
+
 ## `ludex-daemon.service` (systemd `--user` unit)
 
 First install the daemon binary — the stock unit expects it at
