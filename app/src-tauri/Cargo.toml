@@ -39,5 +39,12 @@ ksni = "0.3"
 
 ludex-dbus-types = { path = "../../crates/ludex-dbus-types" }
 
+[dev-dependencies]
+# The `test` feature exposes `tauri::test::mock_app` + `MockRuntime` so
+# the tray's event→state wiring can be unit-tested without a real
+# window, D-Bus host, or StatusNotifierItem service. Feature-unified
+# only under `cargo test`; normal builds don't pull it in.
+tauri = { version = "2", features = ["test"] }
+
 [lints]
 workspace = true

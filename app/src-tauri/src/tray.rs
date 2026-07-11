@@ -36,7 +36,9 @@ use tauri::image::Image;
 use tauri::{AppHandle, Listener, Manager, Runtime, Theme, WindowEvent};
 use tokio::sync::mpsc;
 
-use crate::bridge::{TrackerBridge, EVENT_SESSION_ENDED, EVENT_SESSION_STARTED};
+use crate::bridge::{
+    TrackerBridge, EVENT_DAEMON_DISCONNECTED, EVENT_SESSION_ENDED, EVENT_SESSION_STARTED,
+};
 
 const MAIN_WINDOW: &str = "main";
 const TOOLTIP_IDLE: &str = "ludex";
@@ -166,7 +168,7 @@ impl<R: Runtime> Tray for LudexTray<R> {
 /// Message pushed by the Tauri listeners onto the tray worker
 /// channel. Listeners are synchronous; the worker drives the async
 /// work (name resolution, ksni handle updates) in order.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum TrayStateUpdate {
     TooltipStarted(i64),
     TooltipEnded,
@@ -277,9 +279,28 @@ pub(crate) fn install<R: Runtime>(
         });
     }
 
-    // Payload shape: session-started carries a JSON-encoded i64
-    // (just the number); session-ended carries a JSON object but
-    // we only need the transition, not the id.
+    register_event_listeners(app, tx);
+
+    Ok(())
+}
+
+/// Register the Tauri event listeners that translate daemon lifecycle
+/// events into [`TrayStateUpdate`]s on the worker channel. Split out of
+/// [`install`] so the event→update wiring can be unit-tested without a
+/// window or a StatusNotifierItem service.
+///
+/// Payload shape: `session-started` carries a JSON-encoded `i64` (just
+/// the number); `session-ended` carries a JSON object but we only need
+/// the transition, not the id. `daemon-disconnected` carries no useful
+/// payload — a daemon killed mid-session never sends `session-ended`, so
+/// without this the tray would keep its green (active) icon with nothing
+/// behind it; treat the disconnect as a session end and fall back to
+/// idle. A genuinely-running session re-announces via `session-started`
+/// when the bridge reconnects (the daemon re-emits it at cold start).
+fn register_event_listeners<R: Runtime>(
+    app: &AppHandle<R>,
+    tx: mpsc::UnboundedSender<TrayStateUpdate>,
+) {
     let tx_started = tx.clone();
     app.listen_any(EVENT_SESSION_STARTED, move |event| {
         let Ok(id) = event.payload().parse::<i64>() else {
@@ -287,12 +308,14 @@ pub(crate) fn install<R: Runtime>(
         };
         let _ = tx_started.send(TrayStateUpdate::TooltipStarted(id));
     });
-    let tx_ended = tx;
+    let tx_ended = tx.clone();
     app.listen_any(EVENT_SESSION_ENDED, move |_event| {
         let _ = tx_ended.send(TrayStateUpdate::TooltipEnded);
     });
-
-    Ok(())
+    let tx_disconnected = tx;
+    app.listen_any(EVENT_DAEMON_DISCONNECTED, move |_event| {
+        let _ = tx_disconnected.send(TrayStateUpdate::TooltipEnded);
+    });
 }
 
 /// Drain [`TrayStateUpdate`]s from the listener channel. On every
@@ -474,5 +497,56 @@ fn toggle_main<R: Runtime>(app: &AppHandle<R>) {
         let _ = window.hide();
     } else {
         show_main(app);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri::test::mock_app;
+    use tauri::Emitter;
+
+    /// Register the listeners on a headless mock app, emit `event` with
+    /// `payload`, and return whatever `TrayStateUpdate` (if any) landed
+    /// on the channel. Tauri invokes Rust-side `listen_any` handlers
+    /// synchronously within `emit`, so a `try_recv` right after observes
+    /// the result without spinning.
+    fn update_for(
+        event: &str,
+        payload: impl serde::Serialize + Clone,
+    ) -> Option<TrayStateUpdate> {
+        let app = mock_app();
+        let (tx, mut rx) = mpsc::unbounded_channel::<TrayStateUpdate>();
+        register_event_listeners(app.handle(), tx);
+        app.handle().emit(event, payload).unwrap();
+        rx.try_recv().ok()
+    }
+
+    #[test]
+    fn session_started_maps_to_tooltip_started_with_id() {
+        assert_eq!(
+            update_for(EVENT_SESSION_STARTED, 42_i64),
+            Some(TrayStateUpdate::TooltipStarted(42)),
+        );
+    }
+
+    #[test]
+    fn session_ended_maps_to_tooltip_ended() {
+        assert_eq!(
+            update_for(EVENT_SESSION_ENDED, ()),
+            Some(TrayStateUpdate::TooltipEnded),
+        );
+    }
+
+    /// The bug this fixes: a daemon killed mid-session never emits
+    /// `session-ended`, so the tray kept its green (active) icon. The
+    /// bridge's `daemon-disconnected` event must drive the tray back to
+    /// idle. Without the disconnect listener this returns `None`.
+    #[test]
+    fn daemon_disconnected_resets_tray_to_idle() {
+        assert_eq!(
+            update_for(EVENT_DAEMON_DISCONNECTED, ()),
+            Some(TrayStateUpdate::TooltipEnded),
+        );
     }
 }

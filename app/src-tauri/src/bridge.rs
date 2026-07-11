@@ -46,6 +46,15 @@ pub(crate) const EVENT_SESSION_ENDED: &str = "ludex:session-ended";
 /// data they cached may be stale. Not emitted on the first-ever
 /// connect (the page's own `onMount` fetch handles that case).
 pub(crate) const EVENT_DAEMON_RECONNECTED: &str = "ludex:daemon-reconnected";
+/// Tauri event emitted when the bridge loses the daemon it was bound
+/// to — the well-known name changed owner (stop or restart), or the
+/// signal streams closed. Any session the daemon had reported is no
+/// longer in flight from the GUI's view, so the tray drops its active
+/// (green) state; a genuinely-running session re-announces via
+/// `SessionStarted` once the bridge reconnects (the daemon re-emits it
+/// at cold start). Without this, killing the daemon mid-session left
+/// the tray stuck green, since the reset only rode `SessionEnded`.
+pub(crate) const EVENT_DAEMON_DISCONNECTED: &str = "ludex:daemon-disconnected";
 /// Tauri event emitted after a successful `block_application` /
 /// `unblock_application`. Listeners refresh so filtered views
 /// (Games, Recent, Dashboard) reflect the new blocklist without
@@ -508,7 +517,17 @@ pub(crate) async fn run_signal_forwarder(app: AppHandle, bridge: Arc<TrackerBrid
     // any state that changed while the daemon was down.
     let mut is_reconnect = false;
     loop {
-        match run_signal_session(&app, &bridge, is_reconnect).await {
+        let outcome = run_signal_session(&app, &bridge, is_reconnect).await;
+        // Whatever the reason, we no longer have a live subscription to
+        // the daemon, so we can't vouch for any session it had reported.
+        // Drop the tray's active state; a still-running session
+        // re-announces via `SessionStarted` on reconnect (the daemon
+        // re-emits it at cold start). Harmless when nothing was active —
+        // the tray is already idle. `run_signal_session` only returns
+        // when the subscription drops, so this never fires while the
+        // daemon is healthy.
+        let _ = app.emit(EVENT_DAEMON_DISCONNECTED, ());
+        match outcome {
             SessionOutcome::OwnerChanged => {
                 tracing::info!("ludex-daemon owner changed on the bus; rebuilding subscriptions");
                 is_reconnect = true;
