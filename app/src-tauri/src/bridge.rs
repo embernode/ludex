@@ -276,10 +276,7 @@ pub(crate) async fn unblock_application(
 /// rows, so a delete can't reach older fragments the user never saw
 /// (PERSIST-2).
 #[tauri::command]
-pub(crate) async fn delete_session(
-    bridge: BridgeState<'_>,
-    ids: Vec<i64>,
-) -> Result<bool, String> {
+pub(crate) async fn delete_session(bridge: BridgeState<'_>, ids: Vec<i64>) -> Result<bool, String> {
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
     proxy.delete_session(ids).await.map_err(|e| friendly(&e))
 }

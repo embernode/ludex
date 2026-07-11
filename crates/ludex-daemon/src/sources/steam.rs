@@ -290,7 +290,9 @@ impl SteamSource {
                 if let Some(value) = env.get(key) {
                     // Real appids are nonzero digits; "0" is the
                     // non-Steam-shortcut sentinel (no appmanifest anyway).
-                    if value != "0" && !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
+                    if value != "0"
+                        && !value.is_empty()
+                        && value.bytes().all(|b| b.is_ascii_digit())
                     {
                         appids.insert(value.clone());
                     }

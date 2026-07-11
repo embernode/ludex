@@ -573,11 +573,26 @@ mod tests {
     #[test]
     fn has_launcher_attribution_detects_steam_and_foreground_vars() {
         let c = cfg();
-        assert!(has_launcher_attribution(&env_of(&[("SteamAppId", "1318690")]), &c));
-        assert!(has_launcher_attribution(&env_of(&[("STEAM_COMPAT_APP_ID", "1318690")]), &c));
-        assert!(has_launcher_attribution(&env_of(&[("HEROIC_APP_NAME", "x")]), &c));
-        assert!(has_launcher_attribution(&env_of(&[("LUTRIS_GAME_UUID", "u")]), &c));
-        assert!(!has_launcher_attribution(&env_of(&[("PATH", "/usr/bin")]), &c));
+        assert!(has_launcher_attribution(
+            &env_of(&[("SteamAppId", "1318690")]),
+            &c
+        ));
+        assert!(has_launcher_attribution(
+            &env_of(&[("STEAM_COMPAT_APP_ID", "1318690")]),
+            &c
+        ));
+        assert!(has_launcher_attribution(
+            &env_of(&[("HEROIC_APP_NAME", "x")]),
+            &c
+        ));
+        assert!(has_launcher_attribution(
+            &env_of(&[("LUTRIS_GAME_UUID", "u")]),
+            &c
+        ));
+        assert!(!has_launcher_attribution(
+            &env_of(&[("PATH", "/usr/bin")]),
+            &c
+        ));
         assert!(!has_launcher_attribution(&HashMap::new(), &c));
     }
 
@@ -589,10 +604,16 @@ mod tests {
         let own = HashMap::new();
         let ancestors = vec![
             env_of(&[("PWD", "/game")]), // shapezio parent: stripped
-            env_of(&[("SteamAppId", "1318690"), ("STEAM_COMPAT_APP_ID", "1318690")]), // bash wrapper
+            env_of(&[
+                ("SteamAppId", "1318690"),
+                ("STEAM_COMPAT_APP_ID", "1318690"),
+            ]), // bash wrapper
         ];
         let resolved = resolve_attribution_environ(own, ancestors, &cfg());
-        assert_eq!(resolved.get("SteamAppId").map(String::as_str), Some("1318690"));
+        assert_eq!(
+            resolved.get("SteamAppId").map(String::as_str),
+            Some("1318690")
+        );
     }
 
     /// Native Steam / Proton games carry the appid on the window process
@@ -624,19 +645,40 @@ mod tests {
     #[test]
     fn shapezio_window_rejected_via_ancestor_appid() {
         let c = cfg();
-        let exe =
-            PathBuf::from("/home/u/.local/share/Steam/steamapps/common/shapez.io/shapezio");
+        let exe = PathBuf::from("/home/u/.local/share/Steam/steamapps/common/shapez.io/shapezio");
         let resolved = resolve_attribution_environ(
             HashMap::new(),
-            vec![env_of(&[("SteamAppId", "1318690"), ("STEAM_COMPAT_APP_ID", "1318690")])],
+            vec![env_of(&[
+                ("SteamAppId", "1318690"),
+                ("STEAM_COMPAT_APP_ID", "1318690"),
+            ])],
             &c,
         );
-        let d = decide_from_inputs(Some(&exe), Some(&resolved), Some(gl_only()), None, true, false, &c);
-        assert_eq!(d, GateDecision::Reject(RejectionReason::AttributedToLauncher));
+        let d = decide_from_inputs(
+            Some(&exe),
+            Some(&resolved),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &c,
+        );
+        assert_eq!(
+            d,
+            GateDecision::Reject(RejectionReason::AttributedToLauncher)
+        );
         // Guard: without the ancestor resolution (bare own environ), the
         // same window would be accepted — the bug we're fixing.
         let bare = HashMap::new();
-        let d_bug = decide_from_inputs(Some(&exe), Some(&bare), Some(gl_only()), None, true, false, &c);
+        let d_bug = decide_from_inputs(
+            Some(&exe),
+            Some(&bare),
+            Some(gl_only()),
+            None,
+            true,
+            false,
+            &c,
+        );
         assert!(matches!(d_bug, GateDecision::Accept(_)));
     }
 

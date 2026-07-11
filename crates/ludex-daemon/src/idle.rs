@@ -159,13 +159,21 @@ impl IdleTracker {
         // only the unused remainder of the grace is forgiven in-session.
         let mut first = true;
         for dur in s.closed_intervals_seconds.iter().skip(baseline_count) {
-            let forgiven = if first { baseline_open_seconds.max(grace_seconds) } else { grace_seconds };
+            let forgiven = if first {
+                baseline_open_seconds.max(grace_seconds)
+            } else {
+                grace_seconds
+            };
             total = total.saturating_add((*dur - forgiven).max(0));
             first = false;
         }
         if let Some(since) = s.since {
             let dur = seconds_since(since);
-            let forgiven = if first { baseline_open_seconds.max(grace_seconds) } else { grace_seconds };
+            let forgiven = if first {
+                baseline_open_seconds.max(grace_seconds)
+            } else {
+                grace_seconds
+            };
             total = total.saturating_add((dur - forgiven).max(0));
         }
         total

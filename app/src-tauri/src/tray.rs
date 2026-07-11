@@ -573,10 +573,7 @@ mod tests {
     /// on the channel. Tauri invokes Rust-side `listen_any` handlers
     /// synchronously within `emit`, so a `try_recv` right after observes
     /// the result without spinning.
-    fn update_for(
-        event: &str,
-        payload: impl serde::Serialize + Clone,
-    ) -> Option<TrayStateUpdate> {
+    fn update_for(event: &str, payload: impl serde::Serialize + Clone) -> Option<TrayStateUpdate> {
         let app = mock_app();
         let (tx, mut rx) = mpsc::unbounded_channel::<TrayStateUpdate>();
         register_event_listeners(app.handle(), tx);
