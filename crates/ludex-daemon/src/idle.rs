@@ -92,6 +92,23 @@ impl IdleTracker {
             .len()
     }
 
+    /// Snapshot for a session opening now: `(closed interval count,
+    /// seconds already elapsed on any currently-open idle interval)`.
+    ///
+    /// Both are read under a single lock so they stay mutually
+    /// consistent. If the open interval sealed between two separate
+    /// reads, the count would advance while the open-elapsed dropped to
+    /// zero, and the just-sealed interval's pre-session idle would leak
+    /// into the session. Feed the pair straight into
+    /// [`Self::billable_idle_seconds_since`].
+    #[must_use]
+    pub fn session_start_baseline(&self) -> (usize, i64) {
+        let s = self.state.lock().expect("idle tracker mutex poisoned");
+        let count = s.closed_intervals_seconds.len();
+        let open_elapsed = s.since.map_or(0, seconds_since);
+        (count, open_elapsed)
+    }
+
     /// Sum of `max(0, interval_duration − grace)` across every
     /// closed idle interval recorded after `baseline_count`, plus
     /// the same forgiveness applied to the currently-open interval
@@ -105,21 +122,42 @@ impl IdleTracker {
     /// interval credits those back into `interactive_runtime` while
     /// still subtracting the genuine AFK tail.
     ///
-    /// Sessions that started when the user was already idle (rare —
-    /// foreground-window activations require input, which clears
-    /// idle) have any open interval billed against them in full,
-    /// minus the grace. The slight over-forgiveness is acceptable
-    /// for the edge case it covers.
+    /// When a session starts while the user is already idle, only the
+    /// portion of that open interval that elapses *during* the session
+    /// counts against it. `baseline_open_seconds` is how much of the
+    /// open interval had already elapsed at session start (from
+    /// [`Self::session_start_baseline`]); it is subtracted from the
+    /// first post-baseline interval — whether that interval is still
+    /// open, or has since sealed into `closed_intervals_seconds[baseline_count]`
+    /// — before grace is applied. Without this, idle time from before
+    /// the session (and, when an interval spans two adjacent sessions,
+    /// the same wall-clock idle) would be billed to the session. This
+    /// is not the rare case it looks like: a gamepad / Big Picture
+    /// launch doesn't reset the compositor idle timer, so a session can
+    /// routinely open mid-idle-interval.
     #[must_use]
-    pub fn billable_idle_seconds_since(&self, baseline_count: usize, grace_seconds: i64) -> i64 {
+    pub fn billable_idle_seconds_since(
+        &self,
+        baseline_count: usize,
+        baseline_open_seconds: i64,
+        grace_seconds: i64,
+    ) -> i64 {
         let s = self.state.lock().expect("idle tracker mutex poisoned");
         let mut total: i64 = 0;
+        // Subtract the pre-session elapsed from whichever interval is
+        // first after the baseline: that is exactly the one that was
+        // open when the session started (a new interval cannot begin
+        // until the open one seals), be it still open or now closed.
+        let mut first = true;
         for dur in s.closed_intervals_seconds.iter().skip(baseline_count) {
-            total = total.saturating_add((*dur - grace_seconds).max(0));
+            let in_session = if first { (*dur - baseline_open_seconds).max(0) } else { *dur };
+            total = total.saturating_add((in_session - grace_seconds).max(0));
+            first = false;
         }
         if let Some(since) = s.since {
             let dur = seconds_since(since);
-            total = total.saturating_add((dur - grace_seconds).max(0));
+            let in_session = if first { (dur - baseline_open_seconds).max(0) } else { dur };
+            total = total.saturating_add((in_session - grace_seconds).max(0));
         }
         total
     }
@@ -405,7 +443,7 @@ mod tests {
         t.record_idle_interval(120); // 2 min
         t.record_idle_interval(180); // 3 min
                                      // Grace 5 min: both fully forgiven, both billable values 0.
-        assert_eq!(t.billable_idle_seconds_since(0, 300), 0);
+        assert_eq!(t.billable_idle_seconds_since(0, 0, 300), 0);
     }
 
     #[test]
@@ -413,7 +451,7 @@ mod tests {
         let t = IdleTracker::new();
         t.record_idle_interval(30 * 60); // 30 min AFK
                                          // Grace 5 min: billable = 25 min.
-        assert_eq!(t.billable_idle_seconds_since(0, 5 * 60), 25 * 60);
+        assert_eq!(t.billable_idle_seconds_since(0, 0, 5 * 60), 25 * 60);
     }
 
     #[test]
@@ -425,7 +463,7 @@ mod tests {
         // 10-min idle during the session — billable = 5 min with
         // grace = 5 min.
         t.record_idle_interval(10 * 60);
-        assert_eq!(t.billable_idle_seconds_since(baseline, 5 * 60), 5 * 60);
+        assert_eq!(t.billable_idle_seconds_since(baseline, 0, 5 * 60), 5 * 60);
     }
 
     #[test]
@@ -437,7 +475,7 @@ mod tests {
         // The latter is the right behaviour for "two cutscenes".
         t.record_idle_interval(4 * 60);
         t.record_idle_interval(4 * 60);
-        assert_eq!(t.billable_idle_seconds_since(0, 5 * 60), 0);
+        assert_eq!(t.billable_idle_seconds_since(0, 0, 5 * 60), 0);
     }
 
     /// Regression guard for IDLE-1: the resolved logind session path
@@ -487,7 +525,48 @@ mod tests {
         // interval has elapsed ~0s, so its billable contribution is
         // max(0, 0 - 300) = 0. Total billable = 10 min - 5 min = 5 min.
         t.set_idle(true);
-        let billable = t.billable_idle_seconds_since(0, 5 * 60);
+        let billable = t.billable_idle_seconds_since(0, 0, 5 * 60);
         assert_eq!(billable, 5 * 60);
+    }
+
+    /// IDLE-2: a session that opens while the user is already idle must
+    /// not be billed for the pre-session portion of that open interval.
+    /// The interval later seals at 300s total, but only the 200s that
+    /// elapsed after the session started (300 − 100 baseline) are
+    /// in-session; with grace 30 the billable idle is 200 − 30 = 170.
+    /// Before the fix this billed (300 − 30) = 270, charging the 100s of
+    /// pre-session idle to the session.
+    #[test]
+    fn billable_subtracts_pre_session_open_interval() {
+        let t = IdleTracker::new();
+        // Session opened with an idle interval already 100s in; that
+        // same interval later seals at 300s total.
+        t.record_idle_interval(300);
+        assert_eq!(t.billable_idle_seconds_since(0, 100, 30), 170);
+    }
+
+    /// The pre-session subtraction applies only to the *first*
+    /// post-baseline interval (the one open at session start); later
+    /// intervals are wholly in-session. Grace 0 isolates the
+    /// subtraction: (300 − 100) + 50 = 250.
+    #[test]
+    fn billable_pre_session_open_affects_only_first_interval() {
+        let t = IdleTracker::new();
+        t.record_idle_interval(300); // was open at start; sealed
+        t.record_idle_interval(50); // wholly in-session
+        assert_eq!(t.billable_idle_seconds_since(0, 100, 0), 250);
+    }
+
+    /// A zero open-baseline (the common case: not idle at session start)
+    /// leaves billing exactly as before — regression guard.
+    #[test]
+    fn billable_zero_open_baseline_is_unchanged() {
+        let t = IdleTracker::new();
+        t.record_idle_interval(30 * 60);
+        assert_eq!(
+            t.billable_idle_seconds_since(0, 0, 5 * 60),
+            25 * 60,
+            "with nothing open at start, billing is plain interval-minus-grace",
+        );
     }
 }

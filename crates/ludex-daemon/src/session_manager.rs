@@ -82,6 +82,11 @@ struct OpenSession {
     /// time before the user picked up the controller doesn't get
     /// rolled into this play's stats.
     baseline_idle_intervals_count: usize,
+    /// Seconds already elapsed on the idle interval that was open at
+    /// session start, if any. Subtracted from that interval's billable
+    /// idle so pre-session AFK time (and idle shared with an adjacent
+    /// session) is never charged to this session.
+    baseline_open_idle_seconds: i64,
     /// Monotonic instant captured when the session opened. Full runtime
     /// is measured as the delta from here to the current sample, so it
     /// is immune to wall-clock steps and excludes any time the system
@@ -303,7 +308,8 @@ impl SessionManager {
             }
             Err(e) => return Err(e),
         };
-        let baseline_idle_intervals_count = self.idle_tracker.closed_intervals_count();
+        let (baseline_idle_intervals_count, baseline_open_idle_seconds) =
+            self.idle_tracker.session_start_baseline();
         let started_instant = self.clock.now();
         // Game title logged at debug only; info keeps the numeric
         // identifiers that are enough for correlation without
@@ -326,6 +332,7 @@ impl SessionManager {
                 session_id: session.id,
                 application_id: app.id,
                 baseline_idle_intervals_count,
+                baseline_open_idle_seconds,
                 started_instant,
             },
         );
@@ -466,9 +473,11 @@ impl SessionManager {
                 .as_secs(),
         )
         .unwrap_or(i64::MAX);
-        let billable_idle = self
-            .idle_tracker
-            .billable_idle_seconds_since(open.baseline_idle_intervals_count, grace_seconds);
+        let billable_idle = self.idle_tracker.billable_idle_seconds_since(
+            open.baseline_idle_intervals_count,
+            open.baseline_open_idle_seconds,
+            grace_seconds,
+        );
         let interactive = (full - billable_idle).clamp(0, full);
         (full, interactive)
     }
