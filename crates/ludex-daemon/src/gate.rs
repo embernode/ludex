@@ -380,6 +380,47 @@ fn attributed_to_steam(env: &HashMap<String, String>, config: &GateConfig) -> bo
     })
 }
 
+/// Whether `env` carries any launcher-attribution variable at all — a
+/// Steam appid var or a foreground-source launcher id (by presence, not
+/// value). Used to decide whether a process's environ is the one that
+/// holds the launch's attribution, or whether to keep looking up the
+/// process tree.
+fn has_launcher_attribution(env: &HashMap<String, String>, config: &GateConfig) -> bool {
+    env.keys().any(|k| {
+        config.launcher_env_vars.contains(k)
+            || config.foreground_source_launcher_env_vars.contains(k)
+    })
+}
+
+/// Resolve the environ that carries a window's launcher attribution.
+///
+/// A game process can re-exec itself with the Steam/launcher env vars
+/// stripped from its *own* environ — shapez.io does exactly this: the
+/// `shapezio` window process shows no `SteamAppId`, while its ancestors
+/// in the pressure-vessel launch chain (`bash` → `pv-adverb` →
+/// `reaper`) still carry `SteamAppId=<appid>`. Reading only the window
+/// process then mis-classifies the game as a native window and tracks
+/// it a second time alongside the authoritative Steam source.
+///
+/// So when the window's `own` environ shows no attribution, fall back to
+/// the nearest ancestor environ that does. `ancestors` yields ancestor
+/// environs nearest-first (parent, grandparent, …). If neither the
+/// window nor any ancestor carries a launcher var, `own` is returned
+/// unchanged and the process flows through to the normal game gate.
+fn resolve_attribution_environ(
+    own: HashMap<String, String>,
+    ancestors: impl IntoIterator<Item = HashMap<String, String>>,
+    config: &GateConfig,
+) -> HashMap<String, String> {
+    if has_launcher_attribution(&own, config) {
+        return own;
+    }
+    ancestors
+        .into_iter()
+        .find(|env| has_launcher_attribution(env, config))
+        .unwrap_or(own)
+}
+
 fn is_blocklisted(exe: &Path, blocklist: &HashSet<String>) -> bool {
     let Some(name) = exe.file_name().and_then(std::ffi::OsStr::to_str) else {
         return false;
@@ -432,7 +473,39 @@ impl Gate {
         // (Heroic, Lutris) overrides the rejection — Heroic-via-Proton
         // and Lutris-via-Proton inherit `STEAM_COMPAT_APP_ID` even
         // though Steam itself never saw the launch.
-        let env = environ::read(input.pid).await.ok();
+        let env = match environ::read(input.pid).await.ok() {
+            // No environ (process gone or restricted): nothing to attribute.
+            None => None,
+            // The window process carries its own attribution — the common
+            // case (native Steam games, Proton, Heroic, Lutris). Use it
+            // directly, no ancestor walk needed.
+            Some(own) if has_launcher_attribution(&own, &config) => Some(own),
+            // The window process shows no attribution. It may have
+            // re-exec'd itself with the launcher vars stripped (shapez.io
+            // does this) while an ancestor in the launch chain kept them.
+            // Walk up until an ancestor carries attribution, then decide
+            // against that environ so the game isn't counted a second time
+            // as a native window alongside the Steam source.
+            //
+            // This reads each ancestor's environ, but only for a window
+            // whose own environ lacks attribution — most non-games find
+            // nothing and fall through. Foreground activations are
+            // user-paced and the gate already walks the ancestor chain for
+            // the gamescope check below, so the extra reads are negligible.
+            Some(own) => {
+                let mut ancestors = Vec::new();
+                for anc in tree::ancestors(input.pid) {
+                    if let Ok(anc_env) = environ::read(anc).await {
+                        let attributed = has_launcher_attribution(&anc_env, &config);
+                        ancestors.push(anc_env);
+                        if attributed {
+                            break;
+                        }
+                    }
+                }
+                Some(resolve_attribution_environ(own, ancestors, &config))
+            }
+        };
         if let Some(env) = env.as_ref() {
             let foreground_attributed = env
                 .keys()
@@ -495,6 +568,76 @@ mod tests {
 
     fn no_libs() -> GraphicsLibraries {
         GraphicsLibraries::default()
+    }
+
+    #[test]
+    fn has_launcher_attribution_detects_steam_and_foreground_vars() {
+        let c = cfg();
+        assert!(has_launcher_attribution(&env_of(&[("SteamAppId", "1318690")]), &c));
+        assert!(has_launcher_attribution(&env_of(&[("STEAM_COMPAT_APP_ID", "1318690")]), &c));
+        assert!(has_launcher_attribution(&env_of(&[("HEROIC_APP_NAME", "x")]), &c));
+        assert!(has_launcher_attribution(&env_of(&[("LUTRIS_GAME_UUID", "u")]), &c));
+        assert!(!has_launcher_attribution(&env_of(&[("PATH", "/usr/bin")]), &c));
+        assert!(!has_launcher_attribution(&HashMap::new(), &c));
+    }
+
+    /// shapez.io: the window process (`own`) and its immediate shapezio
+    /// parent have the Steam vars stripped; the bash launch wrapper two
+    /// levels up still carries them. Resolution must recover them.
+    #[test]
+    fn resolve_falls_back_to_ancestor_that_carries_the_appid() {
+        let own = HashMap::new();
+        let ancestors = vec![
+            env_of(&[("PWD", "/game")]), // shapezio parent: stripped
+            env_of(&[("SteamAppId", "1318690"), ("STEAM_COMPAT_APP_ID", "1318690")]), // bash wrapper
+        ];
+        let resolved = resolve_attribution_environ(own, ancestors, &cfg());
+        assert_eq!(resolved.get("SteamAppId").map(String::as_str), Some("1318690"));
+    }
+
+    /// Native Steam / Proton games carry the appid on the window process
+    /// itself — use it directly and never consult ancestors (an ancestor
+    /// could belong to a different, outer launch).
+    #[test]
+    fn resolve_prefers_own_environ_when_it_has_attribution() {
+        let own = env_of(&[("SteamAppId", "440")]);
+        let ancestors = vec![env_of(&[("SteamAppId", "999")])];
+        let resolved = resolve_attribution_environ(own, ancestors, &cfg());
+        assert_eq!(resolved.get("SteamAppId").map(String::as_str), Some("440"));
+    }
+
+    /// A genuine native (non-launcher) game: neither the window nor any
+    /// ancestor carries a launcher var, so the environ is unchanged and
+    /// the process flows through to the fullscreen/GPU gate.
+    #[test]
+    fn resolve_returns_own_when_no_ancestor_has_attribution() {
+        let own = env_of(&[("HOME", "/home/x")]);
+        let ancestors = vec![env_of(&[("PATH", "/usr/bin")]), HashMap::new()];
+        let resolved = resolve_attribution_environ(own.clone(), ancestors, &cfg());
+        assert_eq!(resolved, own);
+    }
+
+    /// End-to-end: a `shapezio` window whose own environ is bare but
+    /// whose launch chain carries the appid must be rejected as already
+    /// tracked by the Steam source — not accepted as a native game. This
+    /// is the fix for the native+Steam double-count.
+    #[test]
+    fn shapezio_window_rejected_via_ancestor_appid() {
+        let c = cfg();
+        let exe =
+            PathBuf::from("/home/u/.local/share/Steam/steamapps/common/shapez.io/shapezio");
+        let resolved = resolve_attribution_environ(
+            HashMap::new(),
+            vec![env_of(&[("SteamAppId", "1318690"), ("STEAM_COMPAT_APP_ID", "1318690")])],
+            &c,
+        );
+        let d = decide_from_inputs(Some(&exe), Some(&resolved), Some(gl_only()), None, true, false, &c);
+        assert_eq!(d, GateDecision::Reject(RejectionReason::AttributedToLauncher));
+        // Guard: without the ancestor resolution (bare own environ), the
+        // same window would be accepted — the bug we're fixing.
+        let bare = HashMap::new();
+        let d_bug = decide_from_inputs(Some(&exe), Some(&bare), Some(gl_only()), None, true, false, &c);
+        assert!(matches!(d_bug, GateDecision::Accept(_)));
     }
 
     #[test]
