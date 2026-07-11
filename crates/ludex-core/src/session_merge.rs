@@ -21,10 +21,11 @@
 //! `list_recent_with_app` and `list_for_application`); the fold
 //! returns newest-first merged spans paired with the database ids of
 //! the fragments that fused into each span (in input order — newest
-//! id first). The fragment-count field on the wire (`fragment_count`
-//! on `SessionSummary`) is just `frags.len()`. The id list is what
-//! lets `delete_and_recompute` drop a whole merged span as one
-//! transaction without re-running the fold against the database.
+//! id first). That id list is carried straight onto the wire as
+//! `SessionSummary.fragment_ids`, so the GUI can delete a whole
+//! merged span by handing the exact id set back to
+//! `delete_sessions_and_recompute` — the fold runs once, here, and
+//! the delete never re-derives the span against the database.
 
 use std::time::Duration;
 
@@ -45,8 +46,8 @@ pub const DEFAULT_MERGE_GAP_SECONDS: u64 = 60;
 /// underlying database rows that fused into it (newest id first,
 /// matching input order). A non-merging row produces a single-element
 /// id vector. The id vector is what lets the repo's
-/// `delete_and_recompute` drop every fragment of a merged span in
-/// one transaction without re-running the fold.
+/// `delete_sessions_and_recompute` drop every fragment of a merged
+/// span in one transaction without re-running the fold.
 ///
 /// `gap == Duration::ZERO` is treated as "merge only when consecutive
 /// fragments are touching" — practically a no-op, kept as a clean

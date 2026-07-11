@@ -42,8 +42,8 @@
 
     function statusLabel(s: SessionSummary): string {
         const base = s.exit_reason ? s.exit_reason.replace(/_/g, ' ') : 'open';
-        if (s.fragment_count > 1) {
-            return `${base} · ${s.fragment_count} merged`;
+        if (s.fragment_ids.length > 1) {
+            return `${base} · ${s.fragment_ids.length} merged`;
         }
         return base;
     }

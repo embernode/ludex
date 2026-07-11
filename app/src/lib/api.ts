@@ -56,13 +56,15 @@ export interface SessionSummary {
     /** Empty string while the session is still open. */
     exit_reason: string;
     /**
-     * Number of database rows folded into this summary. `1` means
-     * an unmerged row; values above one mean the daemon collapsed
-     * consecutive same-application sessions whose end-to-start gap
-     * was shorter than the merge threshold (about a minute today).
-     * Time totals reflect the merged span.
+     * Primary keys of the database rows folded into this summary,
+     * newest first. A single element means an unmerged row; more
+     * than one means the daemon collapsed consecutive same-application
+     * sessions whose end-to-start gap was shorter than the merge
+     * threshold (about a minute today). Time totals reflect the
+     * merged span. Pass this whole array to `deleteSession` to drop
+     * the span exactly as displayed.
      */
-    fragment_count: number;
+    fragment_ids: number[];
 }
 
 /** One day's aggregate runtime from `net.ludex.Tracker1.ListDailyPlaytime`. */
@@ -136,14 +138,19 @@ export async function unblockApplication(id: number): Promise<void> {
 }
 
 /**
- * Delete a closed session row and recompute the owning
- * application's denormalized stats. Resolves with `true` when a
- * row was actually removed, `false` when no row matched the id
- * (already gone). The daemon refuses to delete open sessions
- * and surfaces a clear error string the GUI can display.
+ * Delete the given closed session rows and recompute the owning
+ * application's denormalized stats. Resolves with `true` when at
+ * least one row was removed, `false` when none matched (already
+ * gone). The daemon refuses to delete open sessions and surfaces a
+ * clear error string the GUI can display.
+ *
+ * Pass a session summary's `fragment_ids` to delete the whole
+ * merged span exactly as displayed — the daemon drops precisely
+ * these rows and never re-derives the span, so it can't reach
+ * older fragments the user never saw (PERSIST-2).
  */
-export async function deleteSession(id: number): Promise<boolean> {
-    return invoke<boolean>('delete_session', { id });
+export async function deleteSession(ids: number[]): Promise<boolean> {
+    return invoke<boolean>('delete_session', { ids });
 }
 
 /** Read the per-process GPU memory threshold (bytes) used by the gate. */

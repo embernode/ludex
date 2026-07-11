@@ -276,136 +276,108 @@ impl<'a> SessionRepo<'a> {
         Ok(())
     }
 
-    /// Delete the merged span that contains `session_id` and rebuild
-    /// the owning application's denormalized aggregate stats from
-    /// the rows that remain. The whole operation runs in one
-    /// transaction so the application's counters can never observe
-    /// a half-deleted span.
+    /// Delete the given session rows and rebuild the owning
+    /// application(s)' denormalized aggregate stats from the rows that
+    /// remain. The whole operation runs in one transaction so the
+    /// counters can never observe a half-deleted set.
     ///
-    /// "Merged span" means the same fold the GUI applies before
-    /// rendering: consecutive same-application sessions whose
-    /// end-to-start gap is `<= DEFAULT_MERGE_GAP_SECONDS` collapse
-    /// into a single visible row. The user clicks delete on what
-    /// they see, so the row set we drop has to match that fold —
-    /// otherwise a "1 of 3 merged" delete would silently leave two
-    /// orphan fragments behind. For an unmerged single-row span
-    /// this collapses to deleting just that row, identical to the
-    /// pre-merge behaviour.
+    /// `ids` is the exact set of database rows to drop. For a merged
+    /// span the GUI displayed, that is every fragment id the daemon
+    /// folded into the visible span (carried on `SessionSummary`'s
+    /// `fragment_ids` and passed straight back here) — so the rows we
+    /// delete always match what the user saw, and a delete can never
+    /// reach older fragments outside the displayed window (PERSIST-2).
+    /// This method is deliberately span-agnostic: the fold happens
+    /// once, at list time, and the caller owns the id set. For a
+    /// single unmerged row `ids` is just `[id]`.
     ///
-    /// Returns `true` when at least one row was deleted, `false`
-    /// when the id didn't match any row (already gone — no-op).
-    /// Returns [`Error::Invariant`] when the requested session is
-    /// open, or when the merged span containing it includes an
-    /// open session as another fragment: the session manager is
-    /// the authoritative writer for an in-flight session, and
-    /// silently dropping its row mid-play would lose runtime that's
-    /// actively being tracked. The user can stop the game and try
-    /// again.
+    /// Returns `true` when at least one row was deleted, `false` when
+    /// none of the ids matched a row (already gone — no-op) or `ids`
+    /// is empty. Returns [`Error::Invariant`] when any requested id is
+    /// an open session: the session manager is the authoritative
+    /// writer for an in-flight row, and silently dropping it mid-play
+    /// would lose runtime that's actively being tracked. The user can
+    /// stop the game and try again. Nothing is deleted in that case.
     ///
-    /// Stats are rebuilt by re-querying the surviving sessions
-    /// rather than computed-and-subtracted; that keeps
-    /// `stat_longest_full` correct even when a deleted row was the
-    /// previous longest, and avoids any drift between the counters
-    /// and the row sums after enough deletes.
-    pub async fn delete_and_recompute(&self, session_id: i64) -> Result<bool> {
+    /// Stats are rebuilt by re-querying the surviving sessions rather
+    /// than computed-and-subtracted; that keeps `stat_longest_full`
+    /// correct even when a deleted row was the previous longest, and
+    /// avoids any drift between the counters and the row sums after
+    /// enough deletes. The rebuild counts only *closed* rows: an open
+    /// session's runtime is still being written and is added to these
+    /// aggregates by `close_and_rollup` when it ends — counting it
+    /// here too would double-count it (PERSIST-1).
+    pub async fn delete_sessions_and_recompute(&self, ids: &[i64]) -> Result<bool> {
+        if ids.is_empty() {
+            return Ok(false);
+        }
+
         let mut tx = self.pool.begin().await?;
 
-        let row: Option<(i64, Option<OffsetDateTime>)> =
-            sqlx::query_as("SELECT application_id, ended_at FROM sessions WHERE id = ?")
-                .bind(session_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        let Some((application_id, ended_at)) = row else {
+        // Resolve each id to its owning application and open/closed
+        // state. Missing ids (already deleted) are skipped; any open
+        // id aborts the whole operation before a single row is dropped.
+        let mut app_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut matched_any = false;
+        for &id in ids {
+            let row: Option<(i64, Option<OffsetDateTime>)> =
+                sqlx::query_as("SELECT application_id, ended_at FROM sessions WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            let Some((application_id, ended_at)) = row else {
+                continue;
+            };
+            if ended_at.is_none() {
+                tx.rollback().await?;
+                return Err(Error::Invariant(
+                    "cannot delete an open session; stop the game first",
+                ));
+            }
+            matched_any = true;
+            app_ids.insert(application_id);
+        }
+
+        if !matched_any {
             tx.rollback().await?;
             return Ok(false);
-        };
-        if ended_at.is_none() {
-            tx.rollback().await?;
-            return Err(Error::Invariant(
-                "cannot delete an open session; stop the game first",
-            ));
         }
 
-        // Pull every session for this app, run the same merge fold
-        // the GUI uses, find the span containing `session_id`, and
-        // collect every fragment id in that span.
-        let app_sessions: Vec<Session> = sqlx::query_as::<_, Session>(&format!(
-            "SELECT {SELECT_COLS} FROM sessions \
-             WHERE application_id = ? ORDER BY started_at DESC"
-        ))
-        .bind(application_id)
-        .fetch_all(&mut *tx)
-        .await?;
-
-        // Snapshot which ids are currently open before the fold
-        // consumes the vector — once merged, the per-fragment
-        // `ended_at` is folded into the accumulator and we lose
-        // direct visibility.
-        let open_ids: std::collections::HashSet<i64> = app_sessions
-            .iter()
-            .filter(|s| s.ended_at.is_none())
-            .map(|s| s.id)
-            .collect();
-
-        let merged = crate::session_merge::merge_adjacent_session(
-            app_sessions,
-            std::time::Duration::from_secs(crate::session_merge::DEFAULT_MERGE_GAP_SECONDS),
-        );
-        let Some((_, frags)) = merged
-            .into_iter()
-            .find(|(_, frags)| frags.contains(&session_id))
-        else {
-            // The lookup above proved `session_id` exists, the fold
-            // ran on the same transaction, so the id must surface
-            // in some span. Reaching this branch is a bug.
-            tx.rollback().await?;
-            return Err(Error::Invariant(
-                "session id missing from merge fold output; bug",
-            ));
-        };
-
-        if frags.iter().any(|fid| open_ids.contains(fid)) {
-            tx.rollback().await?;
-            return Err(Error::Invariant(
-                "cannot delete a merged span that contains an open session; stop the game first",
-            ));
-        }
-
-        // Bind ids one at a time inside the transaction. Typical
-        // span has 1-5 fragments; building a dynamic `IN` clause
-        // buys nothing here.
-        for fid in &frags {
+        // Delete the requested rows. Bind ids one at a time inside the
+        // transaction; a typical span has 1-5 fragments, so a dynamic
+        // `IN` clause buys nothing.
+        for &id in ids {
             sqlx::query("DELETE FROM sessions WHERE id = ?")
-                .bind(fid)
+                .bind(id)
                 .execute(&mut *tx)
                 .await?;
         }
 
-        // Rebuild only from *closed* sessions: an open session's
-        // runtime is still being written and is added to these
-        // aggregates by `close_and_rollup` when it ends. Counting it
-        // here too would double-count it (PERSIST-1). This mirrors the
-        // `ended_at IS NOT NULL` filter `last_played_at` already used.
-        sqlx::query(
-            "UPDATE applications SET \
-                stat_run_count         = (SELECT COUNT(*) FROM sessions \
-                                            WHERE application_id = ?1 AND ended_at IS NOT NULL), \
-                stat_total_full        = COALESCE((SELECT SUM(full_runtime_seconds) \
-                                                     FROM sessions \
-                                                     WHERE application_id = ?1 AND ended_at IS NOT NULL), 0), \
-                stat_total_interactive = COALESCE((SELECT SUM(interactive_runtime_seconds) \
-                                                     FROM sessions \
-                                                     WHERE application_id = ?1 AND ended_at IS NOT NULL), 0), \
-                stat_longest_full      = COALESCE((SELECT MAX(full_runtime_seconds) \
-                                                     FROM sessions \
-                                                     WHERE application_id = ?1 AND ended_at IS NOT NULL), 0), \
-                last_played_at         = (SELECT MAX(ended_at) FROM sessions \
-                                            WHERE application_id = ?1 AND ended_at IS NOT NULL) \
-             WHERE id = ?1",
-        )
-        .bind(application_id)
-        .execute(&mut *tx)
-        .await?;
+        // Rebuild each touched application's aggregates from its
+        // surviving *closed* rows. Normally a single app, but a caller
+        // that mixed apps in one call gets each reconciled.
+        for application_id in app_ids {
+            sqlx::query(
+                "UPDATE applications SET \
+                    stat_run_count         = (SELECT COUNT(*) FROM sessions \
+                                                WHERE application_id = ?1 AND ended_at IS NOT NULL), \
+                    stat_total_full        = COALESCE((SELECT SUM(full_runtime_seconds) \
+                                                         FROM sessions \
+                                                         WHERE application_id = ?1 AND ended_at IS NOT NULL), 0), \
+                    stat_total_interactive = COALESCE((SELECT SUM(interactive_runtime_seconds) \
+                                                         FROM sessions \
+                                                         WHERE application_id = ?1 AND ended_at IS NOT NULL), 0), \
+                    stat_longest_full      = COALESCE((SELECT MAX(full_runtime_seconds) \
+                                                         FROM sessions \
+                                                         WHERE application_id = ?1 AND ended_at IS NOT NULL), 0), \
+                    last_played_at         = (SELECT MAX(ended_at) FROM sessions \
+                                                WHERE application_id = ?1 AND ended_at IS NOT NULL) \
+                 WHERE id = ?1",
+            )
+            .bind(application_id)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         tx.commit().await?;
         Ok(true)

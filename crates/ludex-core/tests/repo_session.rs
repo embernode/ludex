@@ -194,14 +194,14 @@ async fn close_and_rollup_updates_app_stats_atomically() {
     assert_eq!(app_after.last_played_at, Some(end));
 }
 
-/// Deleting a closed session via `delete_and_recompute` must remove
-/// the row and rebuild the owning application's denormalized stats
-/// from the rows that remain. The rebuild — rather than a subtract —
-/// is what keeps `stat_longest_full` correct when the deleted
-/// session was the previous longest, and what prevents drift after
-/// repeated deletes.
+/// Deleting a closed session via `delete_sessions_and_recompute` must
+/// remove the row and rebuild the owning application's denormalized
+/// stats from the rows that remain. The rebuild — rather than a
+/// subtract — is what keeps `stat_longest_full` correct when the
+/// deleted session was the previous longest, and what prevents drift
+/// after repeated deletes.
 #[tokio::test]
-async fn delete_and_recompute_rebuilds_aggregate_stats() {
+async fn delete_sessions_and_recompute_rebuilds_aggregate_stats() {
     let db = Database::open_memory().await.unwrap();
     let apps = db.applications();
     let sessions = db.sessions();
@@ -241,8 +241,11 @@ async fn delete_and_recompute_rebuilds_aggregate_stats() {
     assert_eq!(before.stat_longest_full, 7_200);
 
     // Delete the long one.
-    let deleted = sessions.delete_and_recompute(ids[0]).await.unwrap();
-    assert!(deleted, "delete_and_recompute reports the row was removed");
+    let deleted = sessions
+        .delete_sessions_and_recompute(&[ids[0]])
+        .await
+        .unwrap();
+    assert!(deleted, "delete reports the row was removed");
 
     let after = apps.find_by_id(app.id).await.unwrap().unwrap();
     assert_eq!(after.stat_run_count, 2);
@@ -262,13 +265,13 @@ async fn delete_and_recompute_rebuilds_aggregate_stats() {
     assert!(sessions.find_by_id(ids[0]).await.unwrap().is_none());
 }
 
-/// Regression guard for PERSIST-1: `delete_and_recompute` must rebuild
-/// the aggregate stats from *closed* sessions only. If it folds in an
-/// unrelated open session's in-flight runtime, `close_and_rollup` adds
-/// that same runtime again when the session ends — permanently
-/// inflating the D-Bus-surfaced total playtime.
+/// Regression guard for PERSIST-1: the rebuild must draw from *closed*
+/// sessions only. If it folds in an unrelated open session's in-flight
+/// runtime, `close_and_rollup` adds that same runtime again when the
+/// session ends — permanently inflating the D-Bus-surfaced total
+/// playtime.
 #[tokio::test]
-async fn delete_and_recompute_excludes_open_session_runtime_from_rebuild() {
+async fn delete_sessions_and_recompute_excludes_open_session_runtime_from_rebuild() {
     let db = Database::open_memory().await.unwrap();
     let apps = db.applications();
     let sessions = db.sessions();
@@ -310,7 +313,10 @@ async fn delete_and_recompute_excludes_open_session_runtime_from_rebuild() {
 
     // Deleting the closed session rebuilds the app aggregates. The
     // open session's in-flight runtime must NOT be folded in.
-    sessions.delete_and_recompute(closed.id).await.unwrap();
+    sessions
+        .delete_sessions_and_recompute(&[closed.id])
+        .await
+        .unwrap();
 
     // The open session ends and rolls up its 300s exactly once.
     sessions
@@ -343,18 +349,28 @@ async fn delete_and_recompute_excludes_open_session_runtime_from_rebuild() {
 /// error — keeps the GUI's "click delete twice in quick succession"
 /// path simple.
 #[tokio::test]
-async fn delete_and_recompute_missing_id_is_no_op() {
+async fn delete_sessions_and_recompute_missing_ids_is_no_op() {
     let db = Database::open_memory().await.unwrap();
-    let deleted = db.sessions().delete_and_recompute(99_999).await.unwrap();
+    let deleted = db
+        .sessions()
+        .delete_sessions_and_recompute(&[99_999])
+        .await
+        .unwrap();
     assert!(!deleted);
+    // Empty input is likewise a quiet no-op.
+    let none = db
+        .sessions()
+        .delete_sessions_and_recompute(&[])
+        .await
+        .unwrap();
+    assert!(!none);
 }
 
-/// Deleting a row inside a display-merged span removes every
-/// fragment in that span — the GUI shows merged sessions as a single
-/// row and the user clicks delete on what they see. Same merge
-/// threshold the daemon uses for display (60 s).
+/// Deleting a display-merged span drops every fragment in it: the GUI
+/// shows the span as a single row and hands back the whole fragment-id
+/// set (`SessionSummary.fragment_ids`), which the caller passes here.
 #[tokio::test]
-async fn delete_and_recompute_drops_whole_merged_span() {
+async fn delete_sessions_and_recompute_drops_the_given_span() {
     let db = Database::open_memory().await.unwrap();
     let apps = db.applications();
     let sessions = db.sessions();
@@ -401,9 +417,11 @@ async fn delete_and_recompute_drops_whole_merged_span() {
         .await
         .unwrap();
 
-    // Delete via the *middle* fragment — the call must still drop
-    // all three fragments of the span.
-    let deleted = sessions.delete_and_recompute(frag_ids[1]).await.unwrap();
+    // The GUI passes the span's whole fragment-id set.
+    let deleted = sessions
+        .delete_sessions_and_recompute(&frag_ids)
+        .await
+        .unwrap();
     assert!(deleted);
 
     // All three fragments gone; standalone survives.
@@ -422,25 +440,93 @@ async fn delete_and_recompute_drops_whole_merged_span() {
     assert_eq!(after.stat_longest_full, 120);
 }
 
-/// A merged span whose newest fragment is the currently-running
-/// (open) session must refuse deletion: silently dropping an open
-/// row would lose runtime the session manager is actively writing
-/// to. Same spirit as the open-session-refusal check at the top of
-/// `delete_and_recompute`, just at the span level.
+/// Regression guard for PERSIST-2: the delete touches only the rows
+/// the caller names. The GUI shows the newest-N rows folded into
+/// spans and, when the user deletes a span, passes only *that span's*
+/// fragment ids. Older rows beyond the displayed window — even ones
+/// that would merge into the same chain if the fold saw them — must
+/// never be dropped, because the caller never named them.
 #[tokio::test]
-async fn delete_and_recompute_refuses_merged_span_with_open_fragment() {
+async fn delete_sessions_and_recompute_only_touches_given_rows() {
     let db = Database::open_memory().await.unwrap();
     let apps = db.applications();
     let sessions = db.sessions();
     let app = apps.create(sample_new_app()).await.unwrap();
 
-    // Closed older fragment, then an open newer one within the
-    // merge gap — the fold absorbs the older into the open head.
+    // Five closed fragments 70 s apart in start time (10 s end-to-start
+    // gaps) — one uninterrupted merge chain over the full history.
+    // Created oldest-first, so `frag_ids[0]` is the oldest and
+    // `frag_ids[4]` the newest.
+    let base = datetime!(2026-03-01 10:00:00 UTC);
+    let mut frag_ids = Vec::new();
+    for i in 0..5 {
+        let start = base + Duration::seconds(i * 70);
+        let s = sessions.begin(app.id, start).await.unwrap();
+        sessions
+            .close_and_rollup(
+                s.id,
+                app.id,
+                RuntimeSnapshot {
+                    full_runtime_seconds: 60,
+                    interactive_runtime_seconds: 60,
+                    at: start + Duration::seconds(60),
+                },
+                ExitReason::ForegroundChanged,
+            )
+            .await
+            .unwrap();
+        frag_ids.push(s.id);
+    }
+
+    // The GUI displayed only the newest three (a window of 3) as one
+    // span, so it passes exactly those three ids — not the older two
+    // it never showed.
+    let shown_span = [frag_ids[4], frag_ids[3], frag_ids[2]];
+    let deleted = sessions
+        .delete_sessions_and_recompute(&shown_span)
+        .await
+        .unwrap();
+    assert!(deleted);
+
+    // The three named fragments are gone…
+    for fid in &shown_span {
+        assert!(
+            sessions.find_by_id(*fid).await.unwrap().is_none(),
+            "named fragment {fid} should have been deleted",
+        );
+    }
+    // …but the two older, unshown fragments survive untouched.
+    for fid in &frag_ids[..2] {
+        assert!(
+            sessions.find_by_id(*fid).await.unwrap().is_some(),
+            "unshown fragment {fid} must survive the delete",
+        );
+    }
+
+    // Stats recompute over every surviving closed row (unbounded).
+    let after = apps.find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.stat_run_count, 2);
+    assert_eq!(after.stat_total_full, 120);
+}
+
+/// If any id in the set is an open session the whole delete is
+/// refused and nothing is dropped: silently removing an open row
+/// would lose runtime the session manager is actively writing to. A
+/// well-behaved GUI never offers to delete an open span, but the core
+/// must protect the invariant regardless of what the caller passes.
+#[tokio::test]
+async fn delete_sessions_and_recompute_refuses_when_any_id_open() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // One closed row and one open row for the same app.
     let older_start = datetime!(2026-03-01 10:00:00 UTC);
-    let older = sessions.begin(app.id, older_start).await.unwrap();
+    let closed = sessions.begin(app.id, older_start).await.unwrap();
     sessions
         .close_and_rollup(
-            older.id,
+            closed.id,
             app.id,
             RuntimeSnapshot {
                 full_runtime_seconds: 60,
@@ -456,23 +542,25 @@ async fn delete_and_recompute_refuses_merged_span_with_open_fragment() {
         .await
         .unwrap();
 
-    let result = sessions.delete_and_recompute(older.id).await;
+    let result = sessions
+        .delete_sessions_and_recompute(&[closed.id, open.id])
+        .await;
     assert!(
         matches!(result, Err(ludex_core::Error::Invariant(_))),
-        "deleting a closed fragment whose merged span includes an open one must error",
+        "an id set containing an open session must error",
     );
-    // Both rows still present — the refusal must protect both the
-    // requested closed fragment and the live open fragment.
-    assert!(sessions.find_by_id(older.id).await.unwrap().is_some());
+    // Nothing deleted — the closed row the caller also named must be
+    // protected too, not partially removed before the open id was seen.
+    assert!(sessions.find_by_id(closed.id).await.unwrap().is_some());
     assert!(sessions.find_by_id(open.id).await.unwrap().is_some());
 }
 
-/// Refusing to delete an open session protects in-flight runtime
+/// Refusing to delete a lone open session protects in-flight runtime
 /// from being silently dropped. The session manager is the
 /// authoritative writer for an open row; the GUI must stop the
 /// game before deleting.
 #[tokio::test]
-async fn delete_and_recompute_refuses_open_session() {
+async fn delete_sessions_and_recompute_refuses_open_session() {
     let db = Database::open_memory().await.unwrap();
     let apps = db.applications();
     let sessions = db.sessions();
@@ -482,7 +570,7 @@ async fn delete_and_recompute_refuses_open_session() {
         .begin(app.id, OffsetDateTime::now_utc())
         .await
         .unwrap();
-    let result = sessions.delete_and_recompute(open.id).await;
+    let result = sessions.delete_sessions_and_recompute(&[open.id]).await;
     assert!(matches!(result, Err(ludex_core::Error::Invariant(_))));
 
     // Session row must still exist after the refused delete.

@@ -21,6 +21,9 @@
         type TimestampFormat,
     } from '$lib/format';
 
+    /** How many of the newest session rows this view fetches. */
+    const SESSION_LIMIT = 100;
+
     let app = $state<ApplicationSummary | null>(null);
     let sessions = $state<SessionSummary[]>([]);
     let loading = $state(true);
@@ -77,7 +80,7 @@
         try {
             const [results, sess] = await Promise.all([
                 getApplication(id),
-                listSessionsForApplication(id, 100),
+                listSessionsForApplication(id, SESSION_LIMIT),
             ]);
             app = results[0] ?? null;
             sessions = sess;
@@ -91,8 +94,8 @@
 
     function statusLabel(s: SessionSummary): string {
         const base = s.exit_reason ? s.exit_reason.replace(/_/g, ' ') : 'open';
-        if (s.fragment_count > 1) {
-            return `${base} · ${s.fragment_count} merged`;
+        if (s.fragment_ids.length > 1) {
+            return `${base} · ${s.fragment_ids.length} merged`;
         }
         return base;
     }
@@ -101,8 +104,8 @@
      * Whether this session row is safe to delete from the GUI.
      * Open sessions belong to the daemon and would lose in-flight
      * runtime if dropped — those still bail out. Merged spans are
-     * fine to delete: the daemon's `delete_and_recompute` removes
-     * every fragment of the visible span in one transaction, and
+     * fine to delete: we hand the daemon the span's `fragment_ids`
+     * and it removes exactly those rows in one transaction, and
      * the confirm dialog tells the user how many underlying rows
      * are about to go.
      */
@@ -125,7 +128,7 @@
     async function performDelete() {
         if (!pendingDelete) return;
         try {
-            await deleteSession(pendingDelete.id);
+            await deleteSession(pendingDelete.fragment_ids);
             deleteDialog?.close();
             pendingDelete = null;
             // Refresh both the session list and the application
@@ -318,10 +321,10 @@
                         )}
                     </dd>
                 </dl>
-                {#if pendingDelete.fragment_count > 1}
+                {#if pendingDelete.fragment_ids.length > 1}
                     <p class="confirm-warning">
                         This row is a merged span;
-                        <strong>all {pendingDelete.fragment_count} underlying sessions</strong>
+                        <strong>all {pendingDelete.fragment_ids.length} underlying sessions</strong>
                         will be removed.
                     </p>
                 {/if}

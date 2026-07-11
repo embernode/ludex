@@ -85,7 +85,7 @@ pub(crate) trait Tracker {
     fn list_blocked_application_ids(&self) -> zbus::Result<Vec<i64>>;
     fn block_application(&self, id: i64) -> zbus::Result<()>;
     fn unblock_application(&self, id: i64) -> zbus::Result<()>;
-    fn delete_session(&self, id: i64) -> zbus::Result<bool>;
+    fn delete_session(&self, ids: Vec<i64>) -> zbus::Result<bool>;
     fn get_gpu_memory_threshold_bytes(&self) -> zbus::Result<u64>;
     fn set_gpu_memory_threshold_bytes(&self, bytes: u64) -> zbus::Result<()>;
     fn get_alt_tab_grace_seconds(&self) -> zbus::Result<u64>;
@@ -255,16 +255,24 @@ pub(crate) async fn unblock_application(
     Ok(())
 }
 
-/// `invoke('delete_session', { id })`. Removes the session row and
-/// recomputes the owning application's denormalized stats in one
-/// transaction. Returns `true` when a row was actually removed,
-/// `false` when no row matched (already gone). Open sessions are
+/// `invoke('delete_session', { ids })`. Removes the given session
+/// rows and recomputes the owning application's denormalized stats in
+/// one transaction. Returns `true` when at least one row was removed,
+/// `false` when none matched (already gone). Open sessions are
 /// refused; the daemon's error message tells the user to stop the
 /// game before trying again.
+///
+/// `ids` is the fragment id set of the displayed merged span
+/// (`SessionSummary.fragment_ids`); the daemon deletes exactly those
+/// rows, so a delete can't reach older fragments the user never saw
+/// (PERSIST-2).
 #[tauri::command]
-pub(crate) async fn delete_session(bridge: BridgeState<'_>, id: i64) -> Result<bool, String> {
+pub(crate) async fn delete_session(
+    bridge: BridgeState<'_>,
+    ids: Vec<i64>,
+) -> Result<bool, String> {
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
-    proxy.delete_session(id).await.map_err(|e| friendly(&e))
+    proxy.delete_session(ids).await.map_err(|e| friendly(&e))
 }
 
 /// `invoke('get_gpu_memory_threshold_bytes')`.

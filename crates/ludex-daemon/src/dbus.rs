@@ -187,7 +187,7 @@ impl Tracker {
                 full_runtime_seconds: row.full_runtime_seconds,
                 interactive_runtime_seconds: row.interactive_runtime_seconds,
                 exit_reason: row.exit_reason.map(|r| r.to_string()).unwrap_or_default(),
-                fragment_count: i64::try_from(frags.len()).unwrap_or(i64::MAX),
+                fragment_ids: frags,
             })
             .collect())
     }
@@ -216,29 +216,33 @@ impl Tracker {
             .collect())
     }
 
-    /// Delete a closed session row by primary key. Used by the GUI's
-    /// per-session delete affordance on the game-detail view.
-    /// Returns `true` when a row was removed, `false` when no row
-    /// matched the id (already gone — no-op).
+    /// Delete a set of closed session rows by primary key. Used by the
+    /// GUI's per-session delete affordance on the game-detail view: the
+    /// caller passes every fragment id of the displayed merged span
+    /// (`SessionSummary.fragment_ids`), so the rows dropped match
+    /// exactly what was shown — the daemon never re-derives the span
+    /// (PERSIST-2). For an unmerged row this is a single-element list.
+    /// Returns `true` when at least one row was removed, `false` when
+    /// none matched (already gone — no-op).
     ///
     /// The owning application's denormalized stats
     /// (`stat_run_count`, `stat_total_full`, `stat_total_interactive`,
     /// `stat_longest_full`, `last_played_at`) are recomputed from
     /// the surviving sessions in the same transaction.
     ///
-    /// Refuses to delete an open session — the session manager owns
-    /// in-flight rows and silently dropping one would lose actively
-    /// tracked runtime. The error message tells the user to stop
-    /// the game first.
-    async fn delete_session(&self, id: i64) -> zbus::fdo::Result<bool> {
+    /// Refuses (deleting nothing) if any id is an open session — the
+    /// session manager owns in-flight rows and silently dropping one
+    /// would lose actively tracked runtime. The error message tells
+    /// the user to stop the game first.
+    async fn delete_session(&self, ids: Vec<i64>) -> zbus::fdo::Result<bool> {
         let removed = self
             .db
             .sessions()
-            .delete_and_recompute(id)
+            .delete_sessions_and_recompute(&ids)
             .await
             .map_err(|e| into_fdo(&e))?;
         if removed {
-            info!(session_id = id, "session deleted via D-Bus");
+            info!(ids = ?ids, "session span deleted via D-Bus");
         }
         Ok(removed)
     }
@@ -272,14 +276,7 @@ impl Tracker {
         );
         Ok(merged
             .into_iter()
-            .map(|(s, frags)| {
-                session_summary_for(
-                    application_id,
-                    product_name.clone(),
-                    &s,
-                    i64::try_from(frags.len()).unwrap_or(i64::MAX),
-                )
-            })
+            .map(|(s, frags)| session_summary_for(application_id, product_name.clone(), &s, frags))
             .collect())
     }
 
@@ -650,7 +647,7 @@ fn session_summary_for(
     application_id: i64,
     product_name: String,
     s: &Session,
-    fragment_count: i64,
+    fragment_ids: Vec<i64>,
 ) -> SessionSummary {
     SessionSummary {
         id: s.id,
@@ -661,7 +658,7 @@ fn session_summary_for(
         full_runtime_seconds: s.full_runtime_seconds,
         interactive_runtime_seconds: s.interactive_runtime_seconds,
         exit_reason: s.exit_reason.map(|r| r.to_string()).unwrap_or_default(),
-        fragment_count,
+        fragment_ids,
     }
 }
 

@@ -128,12 +128,19 @@ pub struct SessionSummary {
     /// Reason for closure (`"terminated"`, `"foreground_changed"`,
     /// `"recovered"`, `"sleep_split"`); empty for open sessions.
     pub exit_reason: String,
-    /// Number of underlying database session rows folded into this
-    /// summary. `1` for a row that wasn't merged with any neighbour;
-    /// values above one mean the daemon collapsed consecutive
-    /// same-application sessions whose end-to-start gap was shorter
-    /// than the merge threshold. The fields above (started_at,
-    /// runtime totals, exit_reason, …) reflect the merged span;
-    /// `id` is the most recent fragment's primary key.
-    pub fragment_count: i64,
+    /// Primary keys of the underlying database session rows folded
+    /// into this summary, newest id first. A single-element vector is
+    /// a row that wasn't merged with any neighbour; more than one
+    /// means the daemon collapsed consecutive same-application
+    /// sessions whose end-to-start gap was shorter than the merge
+    /// threshold. The fields above (started_at, runtime totals,
+    /// exit_reason, …) reflect the merged span; `id` is the most
+    /// recent fragment's primary key (== `fragment_ids[0]`).
+    ///
+    /// The GUI deletes a whole span by passing this exact id set to
+    /// `delete_session`, so the rows dropped always match what was
+    /// displayed — the fold runs once, here, and the delete never
+    /// re-derives the span or reaches unshown older fragments
+    /// (PERSIST-2).
+    pub fragment_ids: Vec<i64>,
 }
