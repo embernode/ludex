@@ -142,12 +142,16 @@ impl<'a> SessionRepo<'a> {
             .map_err(Into::into)
     }
 
-    /// Aggregate total runtime per *local* calendar day for sessions
-    /// that started at or after `cutoff`. Bucketing uses SQLite's
-    /// `localtime` modifier, which converts each stored UTC timestamp
-    /// with the daemon's system timezone (DST handled per timestamp),
-    /// so an evening session lands on the day the user actually
-    /// played it rather than the next UTC day.
+    /// Aggregate total runtime per *local* calendar day for sessions on
+    /// or after `cutoff`'s local calendar day. Both the filter and the
+    /// bucketing use SQLite's `localtime` modifier, which converts each
+    /// stored UTC timestamp with the daemon's system timezone (DST
+    /// handled per timestamp), so an evening session lands on the day the
+    /// user actually played it rather than the next UTC day. The filter
+    /// compares whole local days (`DATE(started_at,'localtime') >=
+    /// DATE(cutoff,'localtime')`) rather than the raw instant, so the
+    /// oldest bucket includes the *entire* cutoff day — a session logged
+    /// before the cutoff's time-of-day is not silently dropped.
     /// Returns one row per day that has
     /// at least one session; days with no sessions are omitted
     /// (callers that need a continuous range fill zeros). Includes
@@ -169,7 +173,7 @@ impl<'a> SessionRepo<'a> {
             CAST(COALESCE(SUM(s.interactive_runtime_seconds), 0) AS INTEGER) AS interactive_runtime_seconds, \
             CAST(COUNT(*) AS INTEGER) AS session_count \
             FROM sessions s \
-            WHERE s.started_at >= ? \
+            WHERE DATE(s.started_at, 'localtime') >= DATE(?, 'localtime') \
               AND s.application_id NOT IN ( \
                 SELECT a.id FROM applications a \
                 JOIN blocked_applications b \

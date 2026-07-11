@@ -630,6 +630,63 @@ async fn daily_playtime_since_groups_by_local_not_utc_day() {
     assert_eq!(total_full, 600);
 }
 
+/// Regression for PERSIST-4: the cutoff must be compared at local-day
+/// granularity to match the local-day `GROUP BY`, not as a raw instant.
+/// A session earlier on the cutoff's own local day — before the cutoff
+/// instant's time-of-day — must still be counted; otherwise the oldest
+/// bucket silently undercounts every session logged before "now o'clock"
+/// on that day. Exercises the bug in any timezone (the two times share a
+/// local day under UTC and every moderate offset), so it is not vacuous
+/// under `TZ=UTC`.
+#[tokio::test]
+async fn daily_playtime_since_counts_full_cutoff_local_day() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // Cutoff at mid-day; an earlier session the SAME local day (two hours
+    // before the cutoff instant) must count. A session on the prior local
+    // day must stay excluded.
+    let cutoff = datetime!(2026-03-10 12:00:00 UTC);
+    let same_day_earlier = datetime!(2026-03-10 10:00:00 UTC);
+    let prior_day = datetime!(2026-03-09 10:00:00 UTC);
+
+    for (start, full) in [(same_day_earlier, 300_i64), (prior_day, 999)] {
+        let s = sessions.begin(app.id, start).await.unwrap();
+        sessions
+            .close_and_rollup(
+                s.id,
+                app.id,
+                RuntimeSnapshot {
+                    full_runtime_seconds: full,
+                    interactive_runtime_seconds: full,
+                    at: start + Duration::seconds(full),
+                },
+                ExitReason::Terminated,
+            )
+            .await
+            .unwrap();
+    }
+
+    let rows = sessions.daily_playtime_since(cutoff).await.unwrap();
+    let cutoff_day = local_date(&db, same_day_earlier).await;
+    let prior = local_date(&db, prior_day).await;
+
+    let bucket = rows
+        .iter()
+        .find(|r| r.date == cutoff_day)
+        .expect("the cutoff's own local day must be present");
+    assert_eq!(
+        bucket.full_runtime_seconds, 300,
+        "a session earlier on the cutoff day must be counted, not dropped by an instant compare",
+    );
+    assert!(
+        rows.iter().all(|r| r.date != prior),
+        "the prior local day is before the cutoff and stays excluded",
+    );
+}
+
 /// Blocking an application removes its sessions from the
 /// dashboard aggregates — matches the behaviour users see in the
 /// Games + Recent GUI views. Covers the dashboard-shows-blocked
