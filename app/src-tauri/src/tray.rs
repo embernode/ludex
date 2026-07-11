@@ -37,7 +37,8 @@ use tauri::{AppHandle, Listener, Manager, Runtime, Theme, WindowEvent};
 use tokio::sync::mpsc;
 
 use crate::bridge::{
-    TrackerBridge, EVENT_DAEMON_DISCONNECTED, EVENT_SESSION_ENDED, EVENT_SESSION_STARTED,
+    TrackerBridge, EVENT_DAEMON_DISCONNECTED, EVENT_DAEMON_RECONNECTED, EVENT_SESSION_ENDED,
+    EVENT_SESSION_STARTED,
 };
 
 const MAIN_WINDOW: &str = "main";
@@ -172,6 +173,12 @@ impl<R: Runtime> Tray for LudexTray<R> {
 enum TrayStateUpdate {
     TooltipStarted(i64),
     TooltipEnded,
+    /// The bridge reconnected to the daemon. The tray reconciles its
+    /// active state against the daemon rather than trusting that it
+    /// caught the `SessionStarted` signal, which can be missed in the
+    /// window between the daemon claiming its bus name and the bridge
+    /// rebuilding its signal subscription.
+    DaemonReconnected,
     ThemeChanged(bool),
 }
 
@@ -312,9 +319,16 @@ fn register_event_listeners<R: Runtime>(
     app.listen_any(EVENT_SESSION_ENDED, move |_event| {
         let _ = tx_ended.send(TrayStateUpdate::TooltipEnded);
     });
-    let tx_disconnected = tx;
+    let tx_disconnected = tx.clone();
     app.listen_any(EVENT_DAEMON_DISCONNECTED, move |_event| {
         let _ = tx_disconnected.send(TrayStateUpdate::TooltipEnded);
+    });
+    // On reconnect, reconcile rather than assume idle: a game may have
+    // been running the whole time (or the daemon just re-detected one at
+    // cold start) and its SessionStarted can land before we re-subscribe.
+    let tx_reconnected = tx;
+    app.listen_any(EVENT_DAEMON_RECONNECTED, move |_event| {
+        let _ = tx_reconnected.send(TrayStateUpdate::DaemonReconnected);
     });
 }
 
@@ -346,6 +360,23 @@ async fn run_tray_worker<R: Runtime>(
             TrayStateUpdate::TooltipEnded => {
                 apply_session(&handle_slot, false, TOOLTIP_IDLE.to_owned()).await;
             }
+            TrayStateUpdate::DaemonReconnected => {
+                // Reconcile against the daemon's current state instead of
+                // waiting for the next session boundary. If a game is
+                // being tracked, go (back) to active with its name;
+                // otherwise settle on idle.
+                match active_session(&bridge).await {
+                    Some(name) => {
+                        let text = if name.trim().is_empty() {
+                            TOOLTIP_ACTIVE_UNRESOLVED.to_owned()
+                        } else {
+                            format!("ludex · {name}")
+                        };
+                        apply_session(&handle_slot, true, text).await;
+                    }
+                    None => apply_session(&handle_slot, false, TOOLTIP_IDLE.to_owned()).await,
+                }
+            }
             TrayStateUpdate::ThemeChanged(is_dark) => {
                 apply_theme(&handle_slot, is_dark).await;
             }
@@ -368,6 +399,37 @@ async fn resolve_app_name(bridge: &Arc<TrackerBridge>, id: i64) -> Option<String
             None
         }
     }
+}
+
+/// Ask the daemon whether a game is being tracked right now, returning
+/// its product name (possibly empty) if so. The newest session is open
+/// exactly when its `ended_at` is empty; `list_recent_sessions` orders by
+/// start time and includes open sessions, so the first row is the live
+/// one. Used to reconcile the tray after a reconnect without depending on
+/// a `SessionStarted` signal that may have been missed.
+///
+/// Best-effort: any proxy/RPC failure returns `None`, so a transient
+/// error at reconnect settles the tray on idle rather than green. That
+/// only re-opens the original stuck-idle window until the next
+/// `SessionStarted` (the subscription is live again by this point), so it
+/// degrades to the pre-fix behaviour rather than to something worse.
+async fn active_session(bridge: &Arc<TrackerBridge>) -> Option<String> {
+    let proxy = match bridge.proxy().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!(error = %e, "tray worker: bridge proxy unavailable for reconcile");
+            return None;
+        }
+    };
+    let recent = match proxy.list_recent_sessions(1).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(error = %e, "tray worker: list_recent_sessions failed");
+            return None;
+        }
+    };
+    let top = recent.into_iter().next()?;
+    top.ended_at.trim().is_empty().then_some(top.product_name)
 }
 
 async fn apply_tooltip<R: Runtime>(
@@ -547,6 +609,17 @@ mod tests {
         assert_eq!(
             update_for(EVENT_DAEMON_DISCONNECTED, ()),
             Some(TrayStateUpdate::TooltipEnded),
+        );
+    }
+
+    /// On reconnect the tray must reconcile (query the daemon), not blindly
+    /// reset — a game may still be running. The listener routes the bridge's
+    /// reconnect event to the reconcile update.
+    #[test]
+    fn daemon_reconnected_maps_to_reconcile() {
+        assert_eq!(
+            update_for(EVENT_DAEMON_RECONNECTED, ()),
+            Some(TrayStateUpdate::DaemonReconnected),
         );
     }
 }
