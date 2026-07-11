@@ -4,18 +4,50 @@
 //! database state — no sources involved.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ludex_core::{Database, ExitReason, GameKey};
 use ludex_daemon::config::{BackupConfig, SharedConfig, TrackerConfig};
 use ludex_daemon::gate::GateConfig;
 use ludex_daemon::idle::IdleTracker;
-use ludex_daemon::sleep::SleepTracker;
-use ludex_daemon::{GameEvent, SessionManager, SharedBlocklist};
+use ludex_daemon::{Clock, GameEvent, SessionManager, SharedBlocklist};
 use ludex_enrich::EnrichmentContext;
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, watch, RwLock};
+
+/// Controllable monotonic clock for tests. Session runtime is a
+/// [`Instant`] delta, so a test fabricates a session duration by
+/// [`advance`](TestClock::advance)ing this between the `Started` and
+/// `Stopped` events rather than by spacing the event wall timestamps.
+struct TestClock {
+    base: Instant,
+    offset_nanos: AtomicU64,
+}
+
+impl TestClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            base: Instant::now(),
+            offset_nanos: AtomicU64::new(0),
+        })
+    }
+
+    /// Move the clock forward by `d`. Represents real awake time; a
+    /// suspend is modelled by *not* advancing (the real monotonic
+    /// clock pauses while asleep).
+    fn advance(&self, d: Duration) {
+        self.offset_nanos
+            .fetch_add(u64::try_from(d.as_nanos()).unwrap(), Ordering::SeqCst);
+    }
+}
+
+impl Clock for TestClock {
+    fn now(&self) -> Instant {
+        self.base + Duration::from_nanos(self.offset_nanos.load(Ordering::SeqCst))
+    }
+}
 
 fn default_enrichment_ctx() -> Arc<EnrichmentContext> {
     Arc::new(EnrichmentContext::default())
@@ -25,8 +57,10 @@ fn default_idle_tracker() -> Arc<IdleTracker> {
     Arc::new(IdleTracker::new())
 }
 
-fn default_sleep_tracker() -> Arc<SleepTracker> {
-    Arc::new(SleepTracker::new())
+/// A clock that never advances — for tests that don't assert on
+/// runtime duration (their sessions all record ~0 seconds).
+fn frozen_clock() -> Arc<dyn Clock> {
+    TestClock::new()
 }
 
 fn default_config() -> SharedConfig {
@@ -67,11 +101,12 @@ async fn yield_for(ms: u64) {
 #[tokio::test]
 async fn started_then_stopped_creates_one_closed_session() {
     let db = Database::open_memory().await.unwrap();
+    let clock = TestClock::new();
     let manager = SessionManager::new(
         db.clone(),
         default_enrichment_ctx(),
         default_idle_tracker(),
-        default_sleep_tracker(),
+        clock.clone(),
         default_config(),
         None,
         empty_blocklist(),
@@ -109,6 +144,8 @@ async fn started_then_stopped_creates_one_closed_session() {
     assert_eq!(open_sessions.len(), 1);
     assert!(open_sessions[0].ended_at.is_none());
 
+    // Two minutes of real play elapse on the monotonic clock.
+    clock.advance(Duration::from_secs(120));
     tx.send(GameEvent::Stopped {
         key: GameKey::steam("440"),
         at: at + time::Duration::seconds(120),
@@ -150,7 +187,7 @@ async fn blocked_key_drops_started_event() {
         db.clone(),
         default_enrichment_ctx(),
         default_idle_tracker(),
-        default_sleep_tracker(),
+        frozen_clock(),
         default_config(),
         None,
         blocklist_with([blocked_key.clone()]),
@@ -196,7 +233,7 @@ async fn unblocking_a_key_lets_subsequent_sessions_through() {
         db.clone(),
         default_enrichment_ctx(),
         default_idle_tracker(),
-        default_sleep_tracker(),
+        frozen_clock(),
         default_config(),
         None,
         Arc::clone(&blocklist),
@@ -247,7 +284,7 @@ async fn duplicate_started_is_ignored() {
         db.clone(),
         default_enrichment_ctx(),
         default_idle_tracker(),
-        default_sleep_tracker(),
+        frozen_clock(),
         default_config(),
         None,
         empty_blocklist(),
@@ -297,7 +334,7 @@ async fn shutdown_closes_open_sessions() {
         db.clone(),
         default_enrichment_ctx(),
         default_idle_tracker(),
-        default_sleep_tracker(),
+        frozen_clock(),
         default_config(),
         None,
         empty_blocklist(),
@@ -390,7 +427,7 @@ async fn recover_orphans_closes_stale_sessions() {
         db.clone(),
         default_enrichment_ctx(),
         default_idle_tracker(),
-        default_sleep_tracker(),
+        frozen_clock(),
         default_config(),
         None,
         empty_blocklist(),
@@ -471,7 +508,7 @@ async fn recover_orphans_closes_recently_heartbeated_session() {
         db.clone(),
         default_enrichment_ctx(),
         default_idle_tracker(),
-        default_sleep_tracker(),
+        frozen_clock(),
         default_config(),
         None,
         empty_blocklist(),
@@ -497,11 +534,12 @@ async fn recover_orphans_closes_recently_heartbeated_session() {
 async fn idle_time_reduces_interactive_runtime() {
     let db = Database::open_memory().await.unwrap();
     let idle = Arc::new(IdleTracker::new());
+    let clock = TestClock::new();
     let manager = SessionManager::new(
         db.clone(),
         default_enrichment_ctx(),
         Arc::clone(&idle),
-        default_sleep_tracker(),
+        clock.clone(),
         config_with_idle_grace(Duration::ZERO),
         None,
         empty_blocklist(),
@@ -524,6 +562,8 @@ async fn idle_time_reduces_interactive_runtime() {
     // User goes idle for 30s mid-session.
     idle.record_idle_interval(30);
 
+    // Two minutes of real play on the monotonic clock.
+    clock.advance(Duration::from_secs(120));
     let end = at + time::Duration::seconds(120);
     tx.send(GameEvent::Stopped {
         key: GameKey::steam("440"),
@@ -568,11 +608,12 @@ async fn idle_time_reduces_interactive_runtime() {
 async fn idle_under_grace_is_fully_forgiven() {
     let db = Database::open_memory().await.unwrap();
     let idle = Arc::new(IdleTracker::new());
+    let clock = TestClock::new();
     let manager = SessionManager::new(
         db.clone(),
         default_enrichment_ctx(),
         Arc::clone(&idle),
-        default_sleep_tracker(),
+        clock.clone(),
         config_with_idle_grace(Duration::from_mins(1)),
         None,
         empty_blocklist(),
@@ -595,6 +636,8 @@ async fn idle_under_grace_is_fully_forgiven() {
     // 30s "cutscene" — within the 60s grace.
     idle.record_idle_interval(30);
 
+    // Two minutes of real play on the monotonic clock.
+    clock.advance(Duration::from_secs(120));
     let end = at + time::Duration::seconds(120);
     tx.send(GameEvent::Stopped {
         key: GameKey::steam("440"),
@@ -629,11 +672,12 @@ async fn idle_under_grace_is_fully_forgiven() {
 async fn idle_above_grace_bills_only_the_tail() {
     let db = Database::open_memory().await.unwrap();
     let idle = Arc::new(IdleTracker::new());
+    let clock = TestClock::new();
     let manager = SessionManager::new(
         db.clone(),
         default_enrichment_ctx(),
         Arc::clone(&idle),
-        default_sleep_tracker(),
+        clock.clone(),
         config_with_idle_grace(Duration::from_mins(1)),
         None,
         empty_blocklist(),
@@ -656,6 +700,8 @@ async fn idle_above_grace_bills_only_the_tail() {
     // 10-minute AFK during a 20-minute session.
     idle.record_idle_interval(10 * 60);
 
+    // Twenty minutes of real play on the monotonic clock.
+    clock.advance(Duration::from_secs(20 * 60));
     let end = at + time::Duration::seconds(20 * 60);
     tx.send(GameEvent::Stopped {
         key: GameKey::steam("440"),
@@ -682,19 +728,23 @@ async fn idle_above_grace_bills_only_the_tail() {
     handle.await.unwrap().unwrap();
 }
 
-/// System suspend that happens during a session must be subtracted
-/// from the session's *full* runtime (not just interactive). A game
-/// that ran for 10 minutes, then the laptop slept for 8 hours, then
-/// was closed should record 10 minutes, not 8 hours and 10 minutes.
+/// System suspend that happens during a session must not count toward
+/// the session's *full* runtime. A game that ran for 10 minutes, then
+/// the laptop slept for 8 hours, then was closed should record 10
+/// minutes, not 8 hours and 10 minutes.
+///
+/// The monotonic clock pauses while the system is suspended, so the
+/// suspend is modelled by advancing the clock only over the awake
+/// stretch (600s) even though the *wall*-clock end is 8h 10min later.
 #[tokio::test]
-async fn suspended_time_reduces_full_runtime() {
+async fn suspended_time_does_not_count_toward_full_runtime() {
     let db = Database::open_memory().await.unwrap();
-    let sleep = Arc::new(SleepTracker::new());
+    let clock = TestClock::new();
     let manager = SessionManager::new(
         db.clone(),
         default_enrichment_ctx(),
         default_idle_tracker(),
-        Arc::clone(&sleep),
+        clock.clone(),
         default_config(),
         None,
         empty_blocklist(),
@@ -714,10 +764,11 @@ async fn suspended_time_reduces_full_runtime() {
     .unwrap();
     yield_for(50).await;
 
-    // Simulate 8 hours of suspend mid-session.
-    sleep.record_suspended_interval(8 * 3600);
+    // 10 minutes of real play; the 8-hour suspend that follows does
+    // not advance the monotonic clock.
+    clock.advance(Duration::from_secs(600));
 
-    // Wall-clock end is 8h 10min after start.
+    // Wall-clock end is 8h 10min after start (play + suspend).
     let end = at + time::Duration::seconds(8 * 3600 + 600);
     tx.send(GameEvent::Stopped {
         key: GameKey::steam("440"),
@@ -739,7 +790,7 @@ async fn suspended_time_reduces_full_runtime() {
         .await
         .unwrap();
     let session = &sessions[0];
-    // full = wall (29400s) − suspend (28800s) = 600s = 10 minutes.
+    // full = monotonic elapsed (600s) = 10 minutes; the suspend is invisible.
     assert_eq!(session.full_runtime_seconds, 600);
     // No idle; interactive equals full.
     assert_eq!(session.interactive_runtime_seconds, 600);
@@ -749,23 +800,23 @@ async fn suspended_time_reduces_full_runtime() {
     handle.await.unwrap().unwrap();
 }
 
-/// Only idle time that happened *during* the session is subtracted —
-/// idle accumulated before `Started` must not count against the
-/// session's interactive runtime.
+/// Full runtime is a monotonic-clock delta, so a wall-clock jump
+/// during the session (an NTP step correcting the system time) must
+/// not change it. Here 2 minutes of real play elapse on the monotonic
+/// clock while the wall clock lurches nearly three hours forward; the
+/// session must record 120s, not the ~2.7h wall gap.
+///
+/// Regression test for TIME-4: the previous `wall = now - started_at`
+/// computation billed the entire NTP step as phantom playtime.
 #[tokio::test]
-async fn pre_session_idle_does_not_count_against_session() {
+async fn full_runtime_ignores_wall_clock_jump() {
     let db = Database::open_memory().await.unwrap();
-    let idle = Arc::new(IdleTracker::new());
-    // Before any session exists, pretend the user had already been
-    // idle for two minutes while using the daemon to, say, browse the
-    // GUI. The next session's interactive runtime must not be cut.
-    idle.record_idle_interval(120);
-
+    let clock = TestClock::new();
     let manager = SessionManager::new(
         db.clone(),
         default_enrichment_ctx(),
-        Arc::clone(&idle),
-        default_sleep_tracker(),
+        default_idle_tracker(),
+        clock.clone(),
         default_config(),
         None,
         empty_blocklist(),
@@ -785,6 +836,74 @@ async fn pre_session_idle_does_not_count_against_session() {
     .unwrap();
     yield_for(50).await;
 
+    // Two minutes of real play; the wall clock is then stepped ~2.7h
+    // forward by NTP mid-session.
+    clock.advance(Duration::from_secs(120));
+    let end = at + time::Duration::seconds(10_000);
+    tx.send(GameEvent::Stopped {
+        key: GameKey::steam("440"),
+        at: end,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    let app = db
+        .applications()
+        .find_by_key(&GameKey::steam("440"))
+        .await
+        .unwrap()
+        .unwrap();
+    let session = &db.sessions().list_for_application(app.id, 1).await.unwrap()[0];
+    assert_eq!(
+        session.full_runtime_seconds, 120,
+        "runtime must follow the monotonic clock, not the stepped wall clock",
+    );
+
+    shutdown_tx.send(true).unwrap();
+    drop(tx);
+    handle.await.unwrap().unwrap();
+}
+
+/// Only idle time that happened *during* the session is subtracted —
+/// idle accumulated before `Started` must not count against the
+/// session's interactive runtime.
+#[tokio::test]
+async fn pre_session_idle_does_not_count_against_session() {
+    let db = Database::open_memory().await.unwrap();
+    let idle = Arc::new(IdleTracker::new());
+    // Before any session exists, pretend the user had already been
+    // idle for two minutes while using the daemon to, say, browse the
+    // GUI. The next session's interactive runtime must not be cut.
+    idle.record_idle_interval(120);
+
+    let clock = TestClock::new();
+    let manager = SessionManager::new(
+        db.clone(),
+        default_enrichment_ctx(),
+        Arc::clone(&idle),
+        clock.clone(),
+        default_config(),
+        None,
+        empty_blocklist(),
+    );
+    let (tx, rx) = mpsc::channel::<GameEvent>(16);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let handle = tokio::spawn(manager.run(rx, shutdown_rx));
+
+    let at = OffsetDateTime::now_utc();
+    tx.send(GameEvent::Started {
+        key: GameKey::steam("440"),
+        display_name: "Team Fortress 2".into(),
+        executable_path: None,
+        at,
+    })
+    .await
+    .unwrap();
+    yield_for(50).await;
+
+    // One minute of real play on the monotonic clock.
+    clock.advance(Duration::from_secs(60));
     let end = at + time::Duration::seconds(60);
     tx.send(GameEvent::Stopped {
         key: GameKey::steam("440"),
@@ -839,7 +958,7 @@ async fn enrichment_fires_on_new_application() {
         db.clone(),
         ctx,
         default_idle_tracker(),
-        default_sleep_tracker(),
+        frozen_clock(),
         default_config(),
         None,
         empty_blocklist(),
@@ -898,7 +1017,7 @@ async fn started_with_executable_path_seeds_application_executable_path() {
         db.clone(),
         default_enrichment_ctx(),
         default_idle_tracker(),
-        default_sleep_tracker(),
+        frozen_clock(),
         default_config(),
         None,
         empty_blocklist(),

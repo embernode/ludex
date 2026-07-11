@@ -144,9 +144,10 @@ pub enum ExitReason {
     Recovered,
     /// Reserved: a suspend longer than the split threshold splits the
     /// session at the boundary. No code path produces this yet — the
-    /// daemon's `SleepTracker` subtracts suspended seconds from the
-    /// running session instead. The variant stays in the enum (and in
-    /// the schema CHECK constraint) for when splitting is implemented.
+    /// daemon measures runtime from a monotonic clock that pauses while
+    /// the system is suspended, so a suspend simply doesn't accrue
+    /// instead of splitting. The variant stays in the enum (and in the
+    /// schema CHECK constraint) for when splitting is implemented.
     SleepSplit,
 }
 

@@ -17,6 +17,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ludex_core::{
     Application, Database, Error, ExitReason, GameKey, GraphicsPlatform, Icons, NewApplication,
@@ -39,29 +40,53 @@ use crate::config::SharedConfig;
 use crate::dbus::TrackerNotification;
 use crate::event::GameEvent;
 use crate::idle::IdleTracker;
-use crate::sleep::SleepTracker;
 
 /// Heartbeat cadence in seconds. Also the upper bound on runtime lost to
 /// a daemon crash.
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 60;
+
+/// Monotonic clock used to measure session runtime.
+///
+/// A session's `full_runtime_seconds` is the elapsed [`Instant`] delta
+/// between its start and the current sample — never a wall-clock
+/// (`CLOCK_REALTIME`) difference. `CLOCK_MONOTONIC` (what [`Instant`]
+/// reads on Linux) has the two properties runtime accounting needs:
+/// it is immune to wall-clock jumps (an NTP step mid-session cannot
+/// inflate or shrink recorded playtime) and it pauses while the system
+/// is suspended (a laptop-closed stretch simply doesn't accrue, with
+/// no separate suspend-subtraction step to get wrong). Production uses
+/// [`SystemClock`]; tests inject a controllable clock.
+pub trait Clock: Send + Sync {
+    /// The current monotonic instant.
+    fn now(&self) -> Instant;
+}
+
+/// Real monotonic clock backed by [`Instant::now`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
 
 /// In-memory state for a session currently open in the database.
 #[derive(Debug, Clone, Copy)]
 struct OpenSession {
     session_id: i64,
     application_id: i64,
-    started_at: OffsetDateTime,
     /// Number of completed idle intervals on the [`IdleTracker`] at
     /// session start. The session's billable-idle calculation only
     /// considers intervals recorded after this baseline so that AFK
     /// time before the user picked up the controller doesn't get
     /// rolled into this play's stats.
     baseline_idle_intervals_count: usize,
-    /// Cumulative suspended seconds at session start. The delta is
-    /// subtracted from wall-clock elapsed time before anything else;
-    /// a system that suspended for eight hours mid-session must not
-    /// count those eight hours as either full or interactive runtime.
-    baseline_suspended_seconds: i64,
+    /// Monotonic instant captured when the session opened. Full runtime
+    /// is measured as the delta from here to the current sample, so it
+    /// is immune to wall-clock steps and excludes any time the system
+    /// spent suspended (the monotonic clock pauses while asleep).
+    started_instant: Instant,
 }
 
 /// Stateful session bookkeeper.
@@ -69,7 +94,7 @@ pub struct SessionManager {
     db: Database,
     enrichment_ctx: Arc<EnrichmentContext>,
     idle_tracker: Arc<IdleTracker>,
-    sleep_tracker: Arc<SleepTracker>,
+    clock: Arc<dyn Clock>,
     /// Shared tunable config. Read on each heartbeat / close so a
     /// `SetIdleGraceSeconds` D-Bus call lands on the very next
     /// runtime calculation — no daemon restart required.
@@ -85,9 +110,10 @@ pub struct SessionManager {
 impl SessionManager {
     /// Construct a manager that reads/writes the given [`Database`],
     /// spawns enrichment with the given [`EnrichmentContext`] on new
-    /// applications, and queries the shared [`IdleTracker`] and
-    /// [`SleepTracker`] for the user's idle and system-suspended time
-    /// during each session.
+    /// applications, and queries the shared [`IdleTracker`] for the
+    /// user's idle time during each session. `clock` is the monotonic
+    /// clock each session's runtime is measured against — production
+    /// passes [`SystemClock`].
     ///
     /// `notifications` is the optional channel to the
     /// [`net.ludex.Tracker1`](crate::dbus) D-Bus notifier; pass
@@ -101,7 +127,7 @@ impl SessionManager {
         db: Database,
         enrichment_ctx: Arc<EnrichmentContext>,
         idle_tracker: Arc<IdleTracker>,
-        sleep_tracker: Arc<SleepTracker>,
+        clock: Arc<dyn Clock>,
         config: SharedConfig,
         notifications: Option<mpsc::Sender<TrackerNotification>>,
         blocklist: SharedBlocklist,
@@ -110,7 +136,7 @@ impl SessionManager {
             db,
             enrichment_ctx,
             idle_tracker,
-            sleep_tracker,
+            clock,
             config,
             notifications,
             blocklist,
@@ -278,7 +304,7 @@ impl SessionManager {
             Err(e) => return Err(e),
         };
         let baseline_idle_intervals_count = self.idle_tracker.closed_intervals_count();
-        let baseline_suspended_seconds = self.sleep_tracker.accumulated_suspended_seconds();
+        let started_instant = self.clock.now();
         // Game title logged at debug only; info keeps the numeric
         // identifiers that are enough for correlation without
         // leaking play history into journalctl / stderr captures.
@@ -292,7 +318,6 @@ impl SessionManager {
             app_id = app.id,
             session_id = session.id,
             baseline_idle_intervals_count,
-            baseline_suspended_seconds,
             "session opened"
         );
         self.open.insert(
@@ -300,9 +325,8 @@ impl SessionManager {
             OpenSession {
                 session_id: session.id,
                 application_id: app.id,
-                started_at: at,
                 baseline_idle_intervals_count,
-                baseline_suspended_seconds,
+                started_instant,
             },
         );
         self.notify(TrackerNotification::SessionStarted {
@@ -378,13 +402,14 @@ impl SessionManager {
             return Ok(());
         }
         let now = OffsetDateTime::now_utc();
+        let now_instant = self.clock.now();
         // Read the live grace setting once per heartbeat batch — the
         // alternative (one read per open session) would be redundant
         // because in practice there's at most one open session.
         let grace_seconds =
             i64::try_from(self.config.read().await.idle_grace.as_secs()).unwrap_or(i64::MAX);
         for open in self.open.values() {
-            let (full, interactive) = self.runtimes_for(open, now, grace_seconds);
+            let (full, interactive) = self.runtimes_for(open, now_instant, grace_seconds);
             self.db
                 .sessions()
                 .heartbeat(
@@ -401,34 +426,46 @@ impl SessionManager {
     }
 
     /// Compute full and interactive runtime seconds for an open
-    /// session at `now`, applying `grace_seconds` of cutscene
-    /// forgiveness to each natural idle interval.
+    /// session sampled at monotonic instant `now_instant`, applying
+    /// `grace_seconds` of cutscene forgiveness to each natural idle
+    /// interval.
     ///
-    /// Wall-clock elapsed time is the upper bound. From it we
-    /// subtract system-suspend time to produce `full_runtime` — a
-    /// session that survives an eight-hour laptop-closed stretch
-    /// must not count those hours as gameplay. Interactive runtime
-    /// further subtracts billable idle time: each natural input-idle
-    /// interval is forgiven up to `grace_seconds` (the typical
-    /// cutscene length) and only the tail beyond that counts as the
-    /// user genuinely stepping away.
+    /// `full_runtime` is the monotonic elapsed time since the session
+    /// opened. Reading it from `CLOCK_MONOTONIC` rather than the wall
+    /// clock means an NTP step mid-session can neither inflate nor
+    /// shrink it, and a laptop-closed suspend contributes nothing
+    /// because the monotonic clock pauses while asleep — no separate
+    /// suspend subtraction is required. Interactive runtime further
+    /// subtracts billable idle time: each natural input-idle interval
+    /// is forgiven up to `grace_seconds` (the typical cutscene length)
+    /// and only the tail beyond that counts as the user genuinely
+    /// stepping away.
     ///
-    /// Both outputs are clamped into `[0, full_runtime]` because the
+    /// `interactive` is clamped into `[0, full_runtime]` because the
     /// CHECK constraints on `sessions.*_runtime_seconds` reject
-    /// negative values and require `interactive ≤ full`. A single
-    /// buggy sample (spurious clock jump, NTP step) must not corrupt
-    /// an in-flight heartbeat.
+    /// negative values and require `interactive ≤ full`.
+    ///
+    /// Both endpoints are sampled at *event-processing* time (the
+    /// session's `started_instant` at `Started`, `now_instant` here),
+    /// not from the event's wall-clock `at`. This is correct only while
+    /// sources emit `at ≈ now`; every current source stamps `at =
+    /// now_utc()` at emission and the manager drains its channel with
+    /// sub-millisecond lag, so the two anchors cancel. A future source
+    /// that backdates `Stopped.at` (e.g. a poll-detected exit time)
+    /// would make `full` over-count the detection lag — such a source
+    /// must carry its own monotonic anchor instead.
     fn runtimes_for(
         &self,
         open: &OpenSession,
-        now: OffsetDateTime,
+        now_instant: Instant,
         grace_seconds: i64,
     ) -> (i64, i64) {
-        let wall = (now - open.started_at).whole_seconds().max(0);
-        let suspended_during = (self.sleep_tracker.accumulated_suspended_seconds()
-            - open.baseline_suspended_seconds)
-            .max(0);
-        let full = (wall - suspended_during).clamp(0, wall);
+        let full = i64::try_from(
+            now_instant
+                .saturating_duration_since(open.started_instant)
+                .as_secs(),
+        )
+        .unwrap_or(i64::MAX);
         let billable_idle = self
             .idle_tracker
             .billable_idle_seconds_since(open.baseline_idle_intervals_count, grace_seconds);
@@ -444,7 +481,7 @@ impl SessionManager {
     ) -> Result<(), Error> {
         let grace_seconds =
             i64::try_from(self.config.read().await.idle_grace.as_secs()).unwrap_or(i64::MAX);
-        let (full, interactive) = self.runtimes_for(&open, ended_at, grace_seconds);
+        let (full, interactive) = self.runtimes_for(&open, self.clock.now(), grace_seconds);
         self.db
             .sessions()
             .close_and_rollup(

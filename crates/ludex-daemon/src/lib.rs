@@ -15,9 +15,8 @@ pub mod gate;
 pub mod idle;
 pub mod proc;
 pub mod session_manager;
-pub mod sleep;
 pub mod sources;
 
 pub use daemon::{init_tracing, run};
 pub use event::GameEvent;
-pub use session_manager::{SessionManager, SharedBlocklist};
+pub use session_manager::{Clock, SessionManager, SharedBlocklist, SystemClock};

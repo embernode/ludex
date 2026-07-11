@@ -17,8 +17,7 @@ use crate::config::{BackupConfig, SharedConfig, TrackerConfig};
 use crate::dbus::{self, TrackerNotification};
 use crate::gate::{Gate, GateConfig};
 use crate::idle::{self, IdleTracker};
-use crate::session_manager::{SessionManager, SharedBlocklist};
-use crate::sleep::{self, SleepTracker};
+use crate::session_manager::{SessionManager, SharedBlocklist, SystemClock};
 use crate::sources::{KWinForegroundSource, SteamSource};
 use ludex_core::repo::{
     ALT_TAB_GRACE_SECONDS, BACKUP_INTERVAL_HOURS, BACKUP_RETENTION_COUNT,
@@ -72,7 +71,6 @@ pub async fn run() -> Result<()> {
     );
 
     let idle_tracker = Arc::new(IdleTracker::new());
-    let sleep_tracker = Arc::new(SleepTracker::new());
 
     // Hydrate the in-memory blocklist from the DB. Future D-Bus
     // write methods will mutate the same Arc<RwLock<…>> so the
@@ -110,7 +108,7 @@ pub async fn run() -> Result<()> {
         db.clone(),
         Arc::clone(&enrichment_ctx),
         Arc::clone(&idle_tracker),
-        Arc::clone(&sleep_tracker),
+        Arc::new(SystemClock),
         Arc::clone(&shared_config),
         Some(notif_tx),
         Arc::clone(&blocklist),
@@ -142,15 +140,6 @@ pub async fn run() -> Result<()> {
                 warn!(error = %e, "idle watcher exited with error");
             }
         })
-    };
-
-    // Sleep tracker polls the wall/monotonic clock drift every
-    // `DEFAULT_TICK_SECONDS` and adds any detected suspend to the
-    // accumulator. No D-Bus dependency; works across every desktop.
-    let sleep_handle = {
-        let tracker = Arc::clone(&sleep_tracker);
-        let sd = shutdown_rx.clone();
-        tokio::spawn(async move { sleep::run_watcher(tracker, sd).await })
     };
 
     // Periodic + on-shutdown database snapshots. Runs against the
@@ -186,7 +175,6 @@ pub async fn run() -> Result<()> {
         let _ = h.await;
     }
     let _ = idle_handle.await;
-    let _ = sleep_handle.await;
     // Back up BEFORE closing the database pool — run_scheduler's
     // shutdown path needs a live pool to take the final snapshot.
     let _ = backup_handle.await;
