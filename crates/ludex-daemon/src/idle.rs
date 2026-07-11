@@ -126,15 +126,19 @@ impl IdleTracker {
     /// portion of that open interval that elapses *during* the session
     /// counts against it. `baseline_open_seconds` is how much of the
     /// open interval had already elapsed at session start (from
-    /// [`Self::session_start_baseline`]); it is subtracted from the
-    /// first post-baseline interval — whether that interval is still
-    /// open, or has since sealed into `closed_intervals_seconds[baseline_count]`
-    /// — before grace is applied. Without this, idle time from before
-    /// the session (and, when an interval spans two adjacent sessions,
-    /// the same wall-clock idle) would be billed to the session. This
-    /// is not the rare case it looks like: a gamepad / Big Picture
-    /// launch doesn't reset the compositor idle timer, so a session can
-    /// routinely open mid-idle-interval.
+    /// [`Self::session_start_baseline`]). For the first post-baseline
+    /// interval — the one that was open at session start, whether it is
+    /// still open or has since sealed into
+    /// `closed_intervals_seconds[baseline_count]` — the session bills
+    /// `max(0, duration − max(baseline_open, grace))`: the pre-session
+    /// elapsed is never charged, and the cutscene grace is forgiven once
+    /// for the whole natural interval rather than once per session that
+    /// observes it. Without this, idle from before the session (and,
+    /// when an interval spans two adjacent sessions, the same wall-clock
+    /// idle) would be billed to the session. It is not the rare case it
+    /// looks like: a gamepad / Big Picture launch doesn't reset the
+    /// compositor idle timer, so a session can routinely open
+    /// mid-idle-interval.
     #[must_use]
     pub fn billable_idle_seconds_since(
         &self,
@@ -144,20 +148,25 @@ impl IdleTracker {
     ) -> i64 {
         let s = self.state.lock().expect("idle tracker mutex poisoned");
         let mut total: i64 = 0;
-        // Subtract the pre-session elapsed from whichever interval is
-        // first after the baseline: that is exactly the one that was
-        // open when the session started (a new interval cannot begin
-        // until the open one seals), be it still open or now closed.
+        // The first interval after the baseline is exactly the one that
+        // was open when the session started (a new interval cannot begin
+        // until the open one seals), whether it is still open or now
+        // closed. Forgive `grace` once for that whole natural interval,
+        // not once per session that observes it: subtract
+        // `max(baseline_open, grace)`. When the pre-session elapsed
+        // already exceeds the grace the cutscene window was spent before
+        // the session, so the in-session tail bills in full; otherwise
+        // only the unused remainder of the grace is forgiven in-session.
         let mut first = true;
         for dur in s.closed_intervals_seconds.iter().skip(baseline_count) {
-            let in_session = if first { (*dur - baseline_open_seconds).max(0) } else { *dur };
-            total = total.saturating_add((in_session - grace_seconds).max(0));
+            let forgiven = if first { baseline_open_seconds.max(grace_seconds) } else { grace_seconds };
+            total = total.saturating_add((*dur - forgiven).max(0));
             first = false;
         }
         if let Some(since) = s.since {
             let dur = seconds_since(since);
-            let in_session = if first { (dur - baseline_open_seconds).max(0) } else { dur };
-            total = total.saturating_add((in_session - grace_seconds).max(0));
+            let forgiven = if first { baseline_open_seconds.max(grace_seconds) } else { grace_seconds };
+            total = total.saturating_add((dur - forgiven).max(0));
         }
         total
     }
@@ -530,10 +539,11 @@ mod tests {
     }
 
     /// IDLE-2: a session that opens while the user is already idle must
-    /// not be billed for the pre-session portion of that open interval.
-    /// The interval later seals at 300s total, but only the 200s that
-    /// elapsed after the session started (300 − 100 baseline) are
-    /// in-session; with grace 30 the billable idle is 200 − 30 = 170.
+    /// not be billed for the pre-session portion of that open interval,
+    /// and the cutscene grace is forgiven once for the whole natural
+    /// interval. The interval seals at 300s total; 100s elapsed before
+    /// the session, and that 100s already exceeds the 30s grace, so the
+    /// 200s in-session tail bills in full: 300 − max(100, 30) = 200.
     /// Before the fix this billed (300 − 30) = 270, charging the 100s of
     /// pre-session idle to the session.
     #[test]
@@ -542,7 +552,18 @@ mod tests {
         // Session opened with an idle interval already 100s in; that
         // same interval later seals at 300s total.
         t.record_idle_interval(300);
-        assert_eq!(t.billable_idle_seconds_since(0, 100, 30), 170);
+        assert_eq!(t.billable_idle_seconds_since(0, 100, 30), 200);
+    }
+
+    /// When the pre-session elapsed is *under* the grace, only the
+    /// unused remainder of the grace is forgiven in-session — the grace
+    /// still applies exactly once to the natural interval. Interval
+    /// seals at 300s, 10s pre-session, grace 30: 300 − max(10, 30) = 270.
+    #[test]
+    fn billable_open_baseline_below_grace_forgives_grace_once() {
+        let t = IdleTracker::new();
+        t.record_idle_interval(300);
+        assert_eq!(t.billable_idle_seconds_since(0, 10, 30), 270);
     }
 
     /// The pre-session subtraction applies only to the *first*
