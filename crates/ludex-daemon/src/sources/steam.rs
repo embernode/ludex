@@ -36,7 +36,6 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, instrument, warn};
 
 use crate::event::GameEvent;
-use crate::proc::environ;
 
 /// Steam `App Running` bit in the appmanifest `StateFlags` bitmask.
 const APP_RUNNING_FLAG: u64 = 64;
@@ -132,23 +131,6 @@ impl SteamSource {
         tx: &mpsc::Sender<GameEvent>,
         running: &mut HashSet<String>,
     ) -> Result<()> {
-        // Resolve which appids actually have a live process, so a
-        // stale `App Running` bit left in a manifest by a hard crash
-        // doesn't spawn a phantom session (GATE-5). `None` means we
-        // couldn't enumerate `/proc` at all — in that case we don't
-        // trust the guard and fall back to emitting on the bit alone,
-        // since suppressing a *real* running game is the worse failure.
-        let live_appids = Self::live_steam_appids().await;
-        self.cold_start_scan_with(tx, running, live_appids.as_ref())
-            .await
-    }
-
-    async fn cold_start_scan_with(
-        &self,
-        tx: &mpsc::Sender<GameEvent>,
-        running: &mut HashSet<String>,
-        live_appids: Option<&HashSet<String>>,
-    ) -> Result<()> {
         for dir in self.library_steamapps_dirs().await {
             let mut entries = match tokio::fs::read_dir(&dir).await {
                 Ok(d) => d,
@@ -180,23 +162,6 @@ impl SteamSource {
                 };
                 let flags = parse_vdf_top_level_u64(&content, "StateFlags").unwrap_or(0);
                 if flags & APP_RUNNING_FLAG != 0 {
-                    // GATE-5: the `App Running` bit can survive a hard
-                    // crash that never rewrote the manifest, leaving a
-                    // "running" game with no process. Cross-check a live
-                    // process before trusting it. `live_appids` is
-                    // `None` only when `/proc` couldn't be enumerated at
-                    // all — then we don't second-guess the bit, because
-                    // dropping a real running game is worse than a rare
-                    // phantom.
-                    if let Some(live) = live_appids {
-                        if !live.contains(appid) {
-                            info!(
-                                appid,
-                                "cold-start: App-Running bit set but no live process; skipping stale manifest"
-                            );
-                            continue;
-                        }
-                    }
                     // Emit each appid at most once per scan. A game can
                     // surface in more than one scanned dir if the primary
                     // library is also listed in libraryfolders.vdf under a
@@ -229,64 +194,6 @@ impl SteamSource {
             }
         }
         Ok(())
-    }
-
-    /// Scan `/proc` once for the set of Steam appids that currently
-    /// have a live process. Steam stamps `SteamAppId` (and Proton adds
-    /// `STEAM_COMPAT_APP_ID`) into every game process's environment and
-    /// its descendants, so a genuinely running game — native or Proton,
-    /// at any depth in the process tree — surfaces here regardless of
-    /// which pid holds the window. Used to reject a stale `App Running`
-    /// manifest bit left behind by a hard crash (GATE-5).
-    ///
-    /// Returns `None` only when `/proc` itself can't be enumerated, so
-    /// the caller can distinguish "scanned, nothing live" (suppress the
-    /// phantom) from "couldn't check" (don't second-guess the bit). A
-    /// single process whose `environ` is unreadable (gone mid-scan, or
-    /// a foreign uid) just doesn't contribute; game processes are the
-    /// daemon user's own, so their environ is readable in practice.
-    async fn live_steam_appids() -> Option<HashSet<String>> {
-        let mut entries = match tokio::fs::read_dir("/proc").await {
-            Ok(e) => e,
-            Err(e) => {
-                warn!(error = %e, "cannot enumerate /proc for Steam liveness; emitting on the App-Running bit alone");
-                return None;
-            }
-        };
-        let mut appids = HashSet::new();
-        loop {
-            let entry = match entries.next_entry().await {
-                Ok(Some(entry)) => entry,
-                Ok(None) => break,
-                Err(e) => {
-                    // A mid-scan enumeration error means we can't claim
-                    // to have seen every process, so we must not report
-                    // a partial set as authoritative — that would let a
-                    // not-yet-read running game be suppressed. Fall back
-                    // to trusting the App-Running bit (return `None`).
-                    warn!(error = %e, "error enumerating /proc mid-scan; not trusting the liveness guard");
-                    return None;
-                }
-            };
-            let name = entry.file_name();
-            let Some(pid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
-                continue;
-            };
-            let Ok(env) = environ::read(pid).await else {
-                continue;
-            };
-            for key in ["SteamAppId", "STEAM_COMPAT_APP_ID"] {
-                if let Some(value) = env.get(key) {
-                    // Real appids are nonzero digits; "0" is the
-                    // non-Steam-shortcut sentinel (no appmanifest anyway).
-                    if value != "0" && !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
-                    {
-                        appids.insert(value.clone());
-                    }
-                }
-            }
-        }
-        Some(appids)
     }
 
     /// Run the Steam source until `shutdown` fires.
@@ -621,13 +528,7 @@ mod tests {
         let source = SteamSource::new(primary.path().to_path_buf());
         let (tx, mut rx) = mpsc::channel::<GameEvent>(8);
         let mut running = HashSet::new();
-        // Treat appid 999 as live so the liveness guard passes it
-        // through — this test is about library enumeration, not GATE-5.
-        let live = HashSet::from(["999".to_string()]);
-        source
-            .cold_start_scan_with(&tx, &mut running, Some(&live))
-            .await
-            .unwrap();
+        source.cold_start_scan(&tx, &mut running).await.unwrap();
         drop(tx);
 
         let ev = rx
@@ -644,81 +545,6 @@ mod tests {
             other @ GameEvent::Stopped { .. } => panic!("expected Started, got {other:?}"),
         }
         assert!(running.contains("999"));
-    }
-
-    /// GATE-5: a manifest with the `App Running` bit set but no live
-    /// process (stale bit after a hard crash) must NOT emit a Started —
-    /// the liveness set was scanned and the appid isn't in it.
-    #[tokio::test]
-    async fn cold_start_scan_skips_running_bit_without_live_process() {
-        let steam = tempfile::tempdir().unwrap();
-        let steamapps = steam.path().join("steamapps");
-        tokio::fs::create_dir_all(&steamapps).await.unwrap();
-        let manifest = "\
-\"AppState\"
-{
-\t\"appid\"\t\t\"777\"
-\t\"name\"\t\t\"Crashed Game\"
-\t\"StateFlags\"\t\t\"68\"
-}";
-        tokio::fs::write(steamapps.join("appmanifest_777.acf"), manifest)
-            .await
-            .unwrap();
-
-        let source = SteamSource::new(steam.path().to_path_buf());
-        let (tx, mut rx) = mpsc::channel::<GameEvent>(8);
-        let mut running = HashSet::new();
-        // Scanned successfully, but nothing live → the stale bit is
-        // suppressed.
-        let live = HashSet::new();
-        source
-            .cold_start_scan_with(&tx, &mut running, Some(&live))
-            .await
-            .unwrap();
-        drop(tx);
-
-        assert!(
-            rx.recv().await.is_none(),
-            "a running-bit manifest with no live process must not emit Started",
-        );
-        assert!(
-            !running.contains("777"),
-            "the phantom appid must not be marked running",
-        );
-    }
-
-    /// GATE-5 fallback: when `/proc` couldn't be scanned (`None`), the
-    /// guard is bypassed and the `App Running` bit is trusted — dropping
-    /// a genuinely running game is worse than a rare phantom.
-    #[tokio::test]
-    async fn cold_start_scan_trusts_bit_when_liveness_unknown() {
-        let steam = tempfile::tempdir().unwrap();
-        let steamapps = steam.path().join("steamapps");
-        tokio::fs::create_dir_all(&steamapps).await.unwrap();
-        let manifest = "\
-\"AppState\"
-{
-\t\"appid\"\t\t\"555\"
-\t\"name\"\t\t\"Running Game\"
-\t\"StateFlags\"\t\t\"68\"
-}";
-        tokio::fs::write(steamapps.join("appmanifest_555.acf"), manifest)
-            .await
-            .unwrap();
-
-        let source = SteamSource::new(steam.path().to_path_buf());
-        let (tx, mut rx) = mpsc::channel::<GameEvent>(8);
-        let mut running = HashSet::new();
-        source
-            .cold_start_scan_with(&tx, &mut running, None)
-            .await
-            .unwrap();
-        drop(tx);
-
-        match rx.recv().await {
-            Some(GameEvent::Started { key, .. }) => assert_eq!(key, GameKey::steam("555")),
-            other => panic!("expected Started for 555, got {other:?}"),
-        }
     }
 
     /// A partial line at the end of the file (the bytes between the
