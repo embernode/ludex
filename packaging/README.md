@@ -43,8 +43,10 @@ session):
 install -Dm755 ../target/release/ludex-gui ~/.local/bin/ludex-gui
 install -Dm644 ../packaging/net.ludex.gui.desktop \
     ~/.local/share/applications/net.ludex.gui.desktop
-install -Dm644 src-tauri/icons/icon_light.png \
+install -Dm644 src-tauri/icons/icon_app.png \
     ~/.local/share/icons/hicolor/256x256/apps/net.ludex.gui.png
+install -Dm644 src-tauri/icons/icon_app.svg \
+    ~/.local/share/icons/hicolor/scalable/apps/net.ludex.gui.svg
 update-desktop-database ~/.local/share/applications 2>/dev/null || true
 gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
 ```

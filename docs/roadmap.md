@@ -191,6 +191,9 @@ they become user-visible or when neighbouring work lands.
   requires the daemon stopped, and the file-picker UX inside a
   webview is awkward — the CLI handles all of that already.
   Revisit only if a user without terminal comfort asks for it.
+
+### Post-M6 (unscheduled)
+
 - Overlay or transient notifications.
 - Localisation via `gettext`.
 - `ludex migrate` — optional importer for users with per-game time data in other formats.

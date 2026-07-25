@@ -6,14 +6,13 @@
   and 64. The ring is a clock face with four ticks cut out of a heavy
   stroke; the play triangle sits inside it.
 
-  Colour rule: the ring is `currentColor`, so a host that themes text
-  themes the mark with it. Green appears only on the triangle, and it
-  is a fixed brand green — it deliberately does not follow the app's
-  accent picker, because the mark should not change colour when the
-  user retints the interface.
+  This is the *application* variant, and the one place the ring is a
+  concrete colour rather than `currentColor`. Nothing recolours a
+  desktop-file icon, so it cannot be handed to the panel to theme the
+  way the tray pair and the in-app mark are; a neutral ring is what
+  lets one file read against a light and a dark panel alike.
 
-  Rasterisations under assets/ substitute a concrete colour for
-  `currentColor`; see assets/README.md for the commands.
+  Generated from assets/logo.svg — see assets/README.md.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="ludex-mark-title">
   <title id="ludex-mark-title">ludex</title>

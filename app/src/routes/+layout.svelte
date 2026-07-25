@@ -170,11 +170,12 @@
         --pill-bg: color-mix(in oklab, var(--ac) 14%, transparent);
         --pill-fg: color-mix(in oklab, var(--ac) 70%, #10161a);
 
-        /* Scheme-independent. `--brand-green` is the daemon-health dot
-           in Settings (and, once it lands, the logo triangle): both
-           are fixed brand/health signals that must not follow the
-           accent picker — picking lavender must not turn "daemon
-           running" lavender. `--warn` is the destructive-action tint. */
+        /* Scheme-independent. `--brand-green` is the mark's play
+           triangle and the daemon-health dot in Settings: both are
+           fixed brand/health signals that must not follow the accent
+           picker — picking lavender must not turn "daemon running"
+           lavender, nor recolour the logo. `--warn` is the
+           destructive-action tint. */
         --warn: #e08b6a;
         --brand-green: #6ec46e;
 
