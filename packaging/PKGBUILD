@@ -86,21 +86,18 @@ package() {
     install -Dm644 "packaging/net.ludex.gui.desktop" \
         "$pkgdir/usr/share/applications/net.ludex.gui.desktop"
 
-    # Taskbar icon. Tauri's pre-rendered `32x32.png`, `128x128.png`,
-    # and `icon.png` are all the dark silhouette — invisible on
-    # Plasma's default dark theme. `icon_light.png` is the white
-    # variant the tray code already uses for dark-theme detection;
-    # ship it under the 256×256 hicolor slot and let KDE downscale
-    # for the panel. A proper multi-colour icon that reads on both
-    # light and dark themes is the long-term answer; until then
-    # this matches the dark-by-default majority.
+    # Taskbar icon. `icon_app.png` is the brand mark with a neutral
+    # ring and the green play triangle: unlike the two single-colour
+    # silhouettes the tray swaps between at runtime, it reads against
+    # both a light and a dark panel, so one file serves every theme.
     #
-    # `icon.svg` is intentionally NOT installed — it has Inkscape's
-    # A4 page bounds rather than a tight icon viewport, so the
-    # rasterisation lands a tiny shape on a huge transparent
-    # backdrop.
-    install -Dm644 "app/src-tauri/icons/icon_light.png" \
+    # The scalable SVG ships alongside it, which KDE prefers and which
+    # is now possible because the master has a tight 32x32 viewport
+    # instead of Inkscape's A4 page bounds.
+    install -Dm644 "app/src-tauri/icons/icon_app.png" \
         "$pkgdir/usr/share/icons/hicolor/256x256/apps/net.ludex.gui.png"
+    install -Dm644 "app/src-tauri/icons/icon_app.svg" \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/net.ludex.gui.svg"
 
     # systemd `--user` unit at the system path so every account
     # can `systemctl --user enable ludex-daemon` without copying

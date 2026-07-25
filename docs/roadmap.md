@@ -191,23 +191,6 @@ they become user-visible or when neighbouring work lands.
   requires the daemon stopped, and the file-picker UX inside a
   webview is awkward — the CLI handles all of that already.
   Revisit only if a user without terminal comfort asks for it.
-- **Multi-colour brand icon.** Today's icon set under
-  `app/src-tauri/icons/` ships two single-colour silhouettes:
-  the dark `icon.png` for light backgrounds and the white
-  `icon_light.png` for dark. The PKGBUILD picks the white one
-  because Plasma's default theme is dark, but a user on a light
-  theme then gets a faded white shape — the symmetric problem.
-  Proper fix is a multi-colour icon that reads on either
-  backdrop without theme-flipping (the way most modern
-  application icons are designed). Once a new master is in
-  place, `pnpm exec tauri icon <new.png>` regenerates the size
-  variants and the PKGBUILD's hicolor install drops back to the
-  standard 32 / 128 / 256 hicolor sizes. The current Inkscape
-  master (`icon.svg`) also has A4 page bounds rather than a
-  tight viewport — fix that too while the redesign is open.
-
-### Post-M6 (unscheduled)
-
 - Overlay or transient notifications.
 - Localisation via `gettext`.
 - `ludex migrate` — optional importer for users with per-game time data in other formats.

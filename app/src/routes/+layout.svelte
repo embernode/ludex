@@ -66,7 +66,32 @@
 
 <div class="app">
     <nav>
-        <a class="brand" href="/">ludex</a>
+        <a class="brand" href="/">
+            <!-- The mark is inline rather than an <img> so its ring
+                 inherits `currentColor` and themes with the chrome.
+                 The triangle stays the fixed brand green: it is the
+                 one thing that must not follow the accent picker. -->
+            <svg
+                class="mark"
+                viewBox="0 0 32 32"
+                width="22"
+                height="22"
+                aria-hidden="true"
+            >
+                <circle
+                    cx="16"
+                    cy="16"
+                    r="12"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="4"
+                    stroke-dasharray="15.35 3.5"
+                    stroke-dashoffset="-1.75"
+                />
+                <path d="M12.9 10.4 L21.7 16 L12.9 21.6 Z" fill="var(--brand-green)" />
+            </svg>
+            <span>ludex</span>
+        </a>
         <div class="links">
             <a
                 href="/"
@@ -345,11 +370,19 @@
     }
 
     .brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
         font-size: 15px;
         font-weight: 600;
         color: var(--fg);
         letter-spacing: -0.01em;
         text-decoration: none;
+    }
+
+    .mark {
+        display: block;
+        flex: none;
     }
 
     .links {

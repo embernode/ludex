@@ -1,109 +1,37 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ludex brand mark.
 
-<svg
-   width="210mm"
-   height="297mm"
-   viewBox="0 0 210 297"
-   version="1.1"
-   id="svg1"
-   xml:space="preserve"
-   inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
-   sodipodi:docname="logo.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg"><sodipodi:namedview
-     id="namedview1"
-     pagecolor="#505050"
-     bordercolor="#eeeeee"
-     borderopacity="1"
-     inkscape:showpageshadow="0"
-     inkscape:pageopacity="0"
-     inkscape:pagecheckerboard="0"
-     inkscape:deskcolor="#505050"
-     inkscape:document-units="mm"
-     showguides="true"
-     inkscape:zoom="1.0324986"
-     inkscape:cx="191.76782"
-     inkscape:cy="445.03692"
-     inkscape:window-width="3440"
-     inkscape:window-height="1368"
-     inkscape:window-x="0"
-     inkscape:window-y="0"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer3"><sodipodi:guide
-       position="262.14927,231.39862"
-       orientation="0,-1"
-       id="guide2"
-       inkscape:locked="false" /><sodipodi:guide
-       position="18.706644,134.27783"
-       orientation="1,0"
-       id="guide3"
-       inkscape:locked="false" /><sodipodi:guide
-       position="187.57895,131.20276"
-       orientation="1,0"
-       id="guide4"
-       inkscape:locked="false" /><sodipodi:guide
-       position="223.96721,59.707507"
-       orientation="0,-1"
-       id="guide5"
-       inkscape:locked="false" /></sodipodi:namedview><defs
-     id="defs1" /><g
-     inkscape:groupmode="layer"
-     id="layer3"
-     inkscape:label="Layer 1"><path
-       id="path2867"
-       style="display:inline;fill:#ffffff;stroke-width:0.264583;fill-opacity:1"
-       d="M 104.99979 63.5 A 85 85 0 0 0 19.999813 148.49998 A 85 85 0 0 0 104.99979 233.49996 A 85 85 0 0 0 189.99977 148.49998 A 85 85 0 0 0 104.99979 63.5 z M 104.99979 73.499906 A 75 75 0 0 1 179.99987 148.49998 A 75 75 0 0 1 104.99979 223.50005 A 75 75 0 0 1 30.000236 148.49998 A 75 75 0 0 1 104.99979 73.499906 z "
-       inkscape:label="curcle" /><rect
-       style="fill:#ffffff;stroke-width:0.264583;fill-opacity:1"
-       id="rect2867"
-       width="10"
-       height="25"
-       x="98.145821"
-       y="56.888699"
-       inkscape:label="top" /><rect
-       style="fill:#ffffff;stroke-width:0.264583;fill-opacity:1"
-       id="rect2867-5"
-       width="10"
-       height="25"
-       x="97.599854"
-       y="216.02818"
-       inkscape:label="bottom" /><rect
-       style="fill:#ffffff;stroke-width:0.264583;fill-opacity:1"
-       id="rect2867-8"
-       width="10"
-       height="25"
-       x="143.5"
-       y="-37.481354"
-       transform="rotate(90)"
-       inkscape:label="left" /><rect
-       style="fill:#ffffff;stroke-width:0.264583;fill-opacity:1"
-       id="rect2867-6"
-       width="10"
-       height="25"
-       x="143.5"
-       y="-197.12846"
-       transform="rotate(90)"
-       inkscape:label="right" /><path
-       sodipodi:type="star"
-       style="fill:#ffffff;fill-opacity:1;stroke-width:0.264583"
-       id="path2868"
-       inkscape:flatsided="true"
-       sodipodi:sides="3"
-       sodipodi:cx="97.633308"
-       sodipodi:cy="114.28991"
-       sodipodi:r1="48.702682"
-       sodipodi:r2="24.351341"
-       sodipodi:arg1="0"
-       sodipodi:arg2="1.0471976"
-       inkscape:rounded="0"
-       inkscape:randomized="0"
-       d="m 146.33599,114.28991 -73.054023,42.17776 0,-84.355521 z"
-       inkscape:transform-center-x="-12.175671"
-       transform="translate(4.5209301,34.668531)"
-       inkscape:label="Play"
-       inkscape:export-filename="logo_256_light.png"
-       inkscape:export-xdpi="35.215282"
-       inkscape:export-ydpi="35.215282" /></g></svg>
+  A 32x32 grid, chosen so every stroke lands on whole pixels at 16, 32
+  and 64. The ring is a clock face with four ticks cut out of a heavy
+  stroke; the play triangle sits inside it.
+
+  Colour rule: the ring is `currentColor`, so a host that themes text
+  themes the mark with it. Green appears only on the triangle, and it
+  is a fixed brand green — it deliberately does not follow the app's
+  accent picker, because the mark should not change colour when the
+  user retints the interface.
+
+  Rasterisations under assets/ substitute a concrete colour for
+  `currentColor`; see assets/README.md for the commands.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="ludex-mark-title">
+  <title id="ludex-mark-title">ludex</title>
+  <!--
+    r=12 with a 4-wide stroke gives a 75.398 circumference, which the
+    dash pattern divides almost exactly: 4 x (15.35 + 3.5) = 75.4.
+    The half-gap offset centres the four gaps on 0/90/180/270 degrees.
+  -->
+  <circle
+    cx="16"
+    cy="16"
+    r="12"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="4"
+    stroke-dasharray="15.35 3.5"
+    stroke-dashoffset="-1.75"
+  />
+  <!-- Height 11.2, nudged 0.4 left of centre so it reads as centred. -->
+  <path d="M12.9 10.4 L21.7 16 L12.9 21.6 Z" fill="#6ec46e" />
+</svg>
