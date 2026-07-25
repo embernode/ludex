@@ -328,13 +328,13 @@
                  without them a screen reader reads the header line
                  once as prose and then each row as unlabelled values. -->
             <div class="tablewrap" role="table" aria-label="Sessions">
-            <div class="grid thead" role="row">
-                <span role="columnheader">DATE</span>
-                <span role="columnheader">ENDED</span>
-                <span class="right" role="columnheader">FULL</span>
-                <span role="columnheader">INTERACTIVE</span>
-                <span role="columnheader">OUTCOME</span>
-                <span role="columnheader"><span class="visually-hidden">Actions</span></span>
+                <div class="grid thead" role="row">
+                    <span role="columnheader">DATE</span>
+                    <span role="columnheader">ENDED</span>
+                    <span class="right" role="columnheader">FULL</span>
+                    <span role="columnheader">INTERACTIVE</span>
+                    <span role="columnheader">OUTCOME</span>
+                    <span role="columnheader"><span class="visually-hidden">Actions</span></span>
             </div>
             <ul class="rows" role="rowgroup">
                 {#each sessions as s (s.id)}
@@ -606,8 +606,16 @@
         align-items: center;
     }
 
+    /* Same surface as the library and detections tables. */
+    .tablewrap {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        overflow: hidden;
+    }
+
     .thead {
-        padding: 0 12px 8px;
+        padding: 12px 12px 8px;
         border-bottom: 1px solid var(--line);
         font-size: 10.5px;
         font-weight: 500;
@@ -624,6 +632,10 @@
     .row {
         padding: 10px 12px;
         border-bottom: 1px solid var(--hair);
+    }
+
+    .rows li:last-child.row {
+        border-bottom: 0;
     }
 
     .right {
@@ -680,6 +692,11 @@
         padding: 2px 4px;
         cursor: pointer;
         border-radius: 4px;
+    }
+
+    .delete:focus-visible {
+        outline: 2px solid var(--ac);
+        outline-offset: -1px;
     }
 
     .delete:hover {

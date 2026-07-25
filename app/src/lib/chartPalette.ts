@@ -12,19 +12,16 @@
 // a 34% accent mix over `--lane`; `#457488` is the light scheme's
 // 62% darkening of the accent toward `#20262b`).
 //
-// These are literals on purpose, and only correct while the accent
-// is the default. Making them follow the user's accent is a later
-// step of the redesign, and there is a trap waiting there: reading
-// a `color-mix()` custom property back through `getComputedStyle`
-// yields `oklab(...)`, which zrender cannot parse and ECharts
-// silently renders as opaque black. Whatever resolves the accent at
-// runtime must convert to sRGB first — painting the value into a
-// 1x1 canvas and reading the pixel back works.
+// The neutrals stay literals — they don't vary with the accent. The
+// accent-derived entries are resolved from the live `--ac` at build
+// time so the charts follow the accent picker, and the literals below
+// are the fallback for that resolution. See `resolveCssColor` for why
+// resolving needs a canvas rather than just `getComputedStyle`.
 //
 // Both palettes render their charts with a transparent background
 // so the page surface shows through.
 
-import type { Theme } from './theme';
+import { resolveCssColor, type Theme } from './theme';
 
 export interface ChartPalette {
     /** `series` colors, cycled in order. */
@@ -81,6 +78,28 @@ const DARK: ChartPalette = {
     heatmapEmpty: '#111517',
 };
 
+/**
+ * Chart colours for the current scheme, with the accent-derived
+ * entries read from the page's live tokens.
+ *
+ * Callers that need to re-render when the user picks a new accent
+ * must depend on `currentAccent()` themselves — this reads the DOM,
+ * which is not something Svelte can track.
+ */
 export function palette(theme: Theme): ChartPalette {
-    return theme === 'dark' ? DARK : LIGHT;
+    const base = theme === 'dark' ? DARK : LIGHT;
+    return {
+        ...base,
+        series: [
+            resolveCssColor('var(--ac)', base.series[0]),
+            base.series[1],
+        ],
+        heatmapRange: [
+            resolveCssColor(
+                'color-mix(in oklab, var(--ac) 34%, var(--lane))',
+                base.heatmapRange[0],
+            ),
+            resolveCssColor('var(--ac)', base.heatmapRange[1]),
+        ],
+    };
 }

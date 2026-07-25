@@ -173,3 +173,72 @@ export function observeTheme(callback: (theme: Theme) => void): () => void {
     });
     return () => obs.disconnect();
 }
+
+/**
+ * Resolve an **opaque** CSS colour expression — including `var()`
+ * chains and `color-mix()` — to a concrete `rgb(...)` string.
+ *
+ * Two steps, both necessary. Painting the expression on a throwaway
+ * element and reading back `background-color` resolves the custom
+ * properties, but a computed colour serialises *in its mixing space*,
+ * so anything built with `color-mix(in oklab, …)` comes back as
+ * `oklab(…)`. zrender has no parser for that and ECharts silently
+ * substitutes opaque black, with the warning compiled out of release
+ * builds. Passing the result through a 1x1 canvas forces the engine
+ * to convert to sRGB, which is what charts can actually consume.
+ *
+ * Translucent expressions are refused rather than flattened: painting
+ * one onto an empty canvas and reading the pixel back loses the alpha
+ * and quantises the channels, which would return a confidently wrong
+ * opaque colour. `rgba()` that needs no conversion is passed through
+ * untouched.
+ *
+ * Returns `fallback` if anything is unavailable or unparseable, so a
+ * failure degrades to the palette's built-in literals rather than to
+ * black.
+ */
+export function resolveCssColor(expression: string, fallback: string): string {
+    if (typeof document === 'undefined') return fallback;
+    const probe = document.createElement('span');
+    try {
+        probe.style.display = 'none';
+        probe.style.backgroundColor = expression;
+        // Must be in the tree to inherit custom properties from :root.
+        document.documentElement.append(probe);
+        const computed = getComputedStyle(probe).backgroundColor;
+
+        // An unparseable value leaves the initial `transparent`.
+        if (!computed || computed === 'rgba(0, 0, 0, 0)') return fallback;
+        // Already sRGB — `rgba()` included, so alpha survives here.
+        if (computed.startsWith('rgb')) return computed;
+        // A colour in another space carries alpha after a slash.
+        if (computed.includes('/')) return fallback;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return fallback;
+
+        // Assigning an unparseable value to `fillStyle` is specified to
+        // be *ignored*, leaving the previous value in place — so a
+        // canvas that couldn't parse `computed` would silently paint
+        // the default black and we would return it as if it were the
+        // answer. Seed a sentinel and check it actually moved.
+        const sentinel = '#010203';
+        ctx.fillStyle = sentinel;
+        ctx.fillStyle = computed;
+        if (ctx.fillStyle === sentinel) return fallback;
+
+        ctx.fillRect(0, 0, 1, 1);
+        const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+        return `rgb(${r}, ${g}, ${b})`;
+    } catch (_) {
+        return fallback;
+    } finally {
+        // Also runs on the error paths above, so a throw between the
+        // append and the read can't leave probes accumulating on
+        // <html> — this is called several times per chart build.
+        probe.remove();
+    }
+}

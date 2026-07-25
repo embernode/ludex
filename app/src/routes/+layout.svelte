@@ -38,9 +38,27 @@
     <nav>
         <a class="brand" href="/">ludex</a>
         <div class="links">
-            <a href="/" class:active={isActive('/')}>Library</a>
-            <a href="/activity" class:active={isActive('/activity')}>Activity</a>
-            <a href="/settings" class:active={isActive('/settings')}>Settings</a>
+            <a
+                href="/"
+                class:active={isActive('/')}
+                aria-current={isActive('/') ? 'page' : undefined}
+            >
+                Library
+            </a>
+            <a
+                href="/activity"
+                class:active={isActive('/activity')}
+                aria-current={isActive('/activity') ? 'page' : undefined}
+            >
+                Activity
+            </a>
+            <a
+                href="/settings"
+                class:active={isActive('/settings')}
+                aria-current={isActive('/settings') ? 'page' : undefined}
+            >
+                Settings
+            </a>
         </div>
         <LiveSessionPill />
         <ThemeCycleButton />
@@ -108,11 +126,9 @@
         /* --- bridge: older token names onto the scale above --- */
         --bg-page: var(--bg);
         --bg-surface: var(--surface);
-        --bg-nav: var(--chrome);
         --bg-hover: var(--tile);
         --border: var(--line);
         --border-strong: var(--fg3);
-        --border-soft: var(--hair);
         --text-primary: var(--fg);
         --text-secondary: var(--fg);
         --text-body: var(--fg);
@@ -129,7 +145,6 @@
            button it composites to a ~3/255 difference in light mode
            — no visible hover at all. */
         --button-hover-bg: color-mix(in srgb, var(--tile), var(--fg) 8%);
-        --active-bg: var(--tile);
         --code-bg: var(--tile);
         --code-text: var(--fg);
         --empty-border: var(--line);
@@ -286,26 +301,30 @@
         flex-direction: column;
     }
 
+    /* Fixed height with no vertical padding, as the design's chrome
+       bar is — sizing it from the tallest child instead left the bar
+       noticeably deeper than the mockup. */
     nav {
         display: flex;
         align-items: center;
-        gap: 1.5rem;
-        padding: 0.9rem 2rem;
-        border-bottom: 1px solid var(--border);
-        background: var(--bg-nav);
+        gap: 20px;
+        height: 50px;
+        padding: 0 20px;
+        border-bottom: 1px solid var(--line);
+        background: var(--chrome);
     }
 
     .brand {
-        font-size: 1.15rem;
+        font-size: 15px;
         font-weight: 600;
-        color: var(--text-primary);
+        color: var(--fg);
         letter-spacing: -0.01em;
         text-decoration: none;
     }
 
     .links {
         display: flex;
-        gap: 0.25rem;
+        gap: 2px;
         flex: 1;
     }
 
@@ -314,25 +333,24 @@
     }
 
     .links a {
-        padding: 0.35rem 0.8rem;
-        border-radius: 6px;
-        color: var(--text-muted);
+        padding: 5px 11px;
+        color: var(--fg2);
         text-decoration: none;
-        font-size: 0.95rem;
-        transition:
-            background 120ms,
-            color 120ms;
+        font-size: 13px;
+        font-weight: 500;
+        transition: color 120ms;
     }
 
     .links a:hover {
-        background: var(--border-soft);
-        color: var(--text-primary);
+        color: var(--fg);
     }
 
+    /* An inset underline rather than a filled pill: the bar is only
+       50px tall, so a filled background reads as a block at this
+       height. This is what the design specifies. */
     .links a.active {
-        background: var(--active-bg);
-        color: var(--text-primary);
-        font-weight: 500;
+        color: var(--fg);
+        box-shadow: inset 0 -2px 0 var(--ac);
     }
 
     .content {

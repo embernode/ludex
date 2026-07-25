@@ -151,10 +151,11 @@
         </div>
     {/if}
 
-    <div class="thead">
-        <span>EXECUTABLE</span>
-        <span>DETECTED VIA</span>
-        <span class="right">BLOCKED</span>
+    <div class="tablecard">
+        <div class="thead">
+            <span>EXECUTABLE</span>
+            <span>DETECTED VIA</span>
+            <span class="right">BLOCKED</span>
     </div>
 
     {#if loading}
@@ -201,6 +202,7 @@
             {/each}
         </ul>
     {/if}
+    </div>
 </main>
 
 <style>
@@ -281,8 +283,17 @@
         align-items: center;
     }
 
+    /* Matches the library: a bare table on the page background reads
+       as flush to the window edge even with the page padding there. */
+    .tablecard {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        overflow: hidden;
+    }
+
     .thead {
-        padding: 0 12px 8px;
+        padding: 12px 12px 8px;
         border-bottom: 1px solid var(--line);
         font-size: 10.5px;
         font-weight: 500;
@@ -303,6 +314,15 @@
     .row {
         padding: 10px 12px;
         border-bottom: 1px solid var(--hair);
+    }
+
+    .row:focus-within {
+        outline: 2px solid var(--ac);
+        outline-offset: -2px;
+    }
+
+    .rows li:last-child.row {
+        border-bottom: 0;
     }
 
     .identity {

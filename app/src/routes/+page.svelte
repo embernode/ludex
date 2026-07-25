@@ -190,14 +190,15 @@
     {:else if visibleApps.length === 0}
         <p class="state">No games match "{filterQuery}".</p>
     {:else}
-        <div class="grid thead" aria-hidden="true">
-            <span></span>
-            <span>GAME</span>
-            <span class="right">RUNS</span>
-            <span class="right">FULL</span>
-            <span>INTERACTIVE</span>
-            <span>DETECTED VIA</span>
-            <span class="right">LAST PLAYED</span>
+        <div class="tablecard">
+            <div class="grid thead" aria-hidden="true">
+                <span></span>
+                <span>GAME</span>
+                <span class="right">RUNS</span>
+                <span class="right">FULL</span>
+                <span>INTERACTIVE</span>
+                <span>DETECTED VIA</span>
+                <span class="right">LAST PLAYED</span>
         </div>
         <ul class="rows">
             {#each visibleApps as app (app.id)}
@@ -230,6 +231,7 @@
                 </li>
             {/each}
         </ul>
+        </div>
     {/if}
 </main>
 
@@ -317,8 +319,19 @@
         align-items: center;
     }
 
+    /* The table sits on its own surface, like the activity cards, so
+       the page's side padding reads as a gap rather than as nothing —
+       a bare table on the page background looks flush to the window
+       edge even when the padding is there. */
+    .tablecard {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        overflow: hidden;
+    }
+
     .thead {
-        padding: 0 13px 8px;
+        padding: 12px 13px 8px;
         border-bottom: 1px solid var(--line);
         font-size: 10.5px;
         font-weight: 500;
@@ -337,6 +350,17 @@
         border-bottom: 1px solid var(--hair);
         text-decoration: none;
         color: inherit;
+    }
+
+    .rows li:last-child .row {
+        border-bottom: 0;
+    }
+
+    /* The card clips to its padding box, so an outline drawn outside
+       the row's border box would be cut off. Inset it. */
+    .row:focus-visible {
+        outline: 2px solid var(--ac);
+        outline-offset: -2px;
     }
 
     .row:hover {

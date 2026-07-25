@@ -7,6 +7,7 @@
         buildRecentBarOption,
     } from '$lib/dashboardCharts';
     import { observeTheme, type Theme } from '$lib/theme';
+    import { currentAccent } from '$lib/themeState.svelte';
     import { buildLanes } from '$lib/activityGrid';
     import {
         listBlockedApplicationIds,
@@ -61,8 +62,18 @@
         return () => clearInterval(tick);
     });
 
-    const barOption = $derived(buildRecentBarOption(rows, theme, tsFormat));
-    const heatmapOption = $derived(buildHeatmapOption(rows, theme, tsFormat));
+    // `currentAccent()` is read purely to create the dependency: the
+    // chart palette resolves the accent from the page's live tokens,
+    // which Svelte cannot see, so without this the charts would keep
+    // the previous accent until some other input changed.
+    const barOption = $derived.by(() => {
+        currentAccent();
+        return buildRecentBarOption(rows, theme, tsFormat);
+    });
+    const heatmapOption = $derived.by(() => {
+        currentAccent();
+        return buildHeatmapOption(rows, theme, tsFormat);
+    });
 
     const lanes = $derived(buildLanes(weekSessions, GRID_DAYS, now));
 
@@ -279,16 +290,11 @@
                     </span>
                 </div>
             {/each}
-            <p class="note">
-                One block per session, positioned by the clock time it
-                occupied. Idle time inside a session isn't drawn separately —
-                only the interactive total is stored, not the intervals.
-            </p>
         </section>
 
         <section class="card">
             <div class="cardhead">
-                <span class="cardtitle">How much</span>
+                <span class="cardtitle">Daily playtime</span>
                 <span class="dim">last 30 days</span>
             </div>
             <Chart
@@ -300,7 +306,7 @@
 
         <section class="card">
             <div class="cardhead">
-                <span class="cardtitle">Consistency</span>
+                <span class="cardtitle">Play history</span>
                 <span class="dim">
                     last 12 months ·
                     <b>{formatSeconds(yearTotals.full)} full</b>
@@ -310,7 +316,7 @@
             </div>
             <Chart
                 option={heatmapOption}
-                height="200px"
+                height="150px"
                 label="Daily activity over the last 12 months"
             />
         </section>
@@ -654,13 +660,5 @@
         color: var(--fg3);
         padding: 20px 12px;
         margin: 0;
-    }
-
-    .note {
-        font-size: 11.5px;
-        line-height: 1.55;
-        color: var(--fg3);
-        max-width: 700px;
-        margin: 14px 0 0;
     }
 </style>
