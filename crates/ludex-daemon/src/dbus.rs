@@ -640,6 +640,9 @@ fn application_summary_from(app: ludex_core::Application) -> ApplicationSummary 
         total_interactive_seconds: app.stat_total_interactive,
         run_count: app.stat_run_count,
         last_played_at: app.last_played_at.map(format_datetime).unwrap_or_default(),
+        executable_path: app.executable_path.unwrap_or_default(),
+        first_seen_at: format_datetime(app.first_seen_at),
+        longest_full_seconds: app.stat_longest_full,
     }
 }
 
@@ -771,5 +774,69 @@ async fn emit(
     };
     if let Err(e) = result {
         warn!(error = %e, ?notification, "failed to emit D-Bus signal");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ludex_core::{Application, GraphicsPlatform, LauncherType, ProcessArchitecture};
+    use time::macros::datetime;
+
+    /// Fully-specified application row. Written out rather than
+    /// defaulted so that adding a field to `Application` forces a
+    /// decision here about whether the wire type should carry it.
+    fn application() -> Application {
+        Application {
+            id: 7,
+            launcher_type: LauncherType::Steam,
+            launcher_id: "1621690".into(),
+            product_name: "Core Keeper".into(),
+            publisher: Some("Pugstorm".into()),
+            version: None,
+            executable_path: Some("/games/CoreKeeper/CoreKeeper.x86_64".into()),
+            launcher_exe_path: None,
+            wineprefix_path: None,
+            installed_flatpak_ref: None,
+            graphics_platform: GraphicsPlatform::Unknown,
+            process_architecture: ProcessArchitecture::Unknown,
+            group_id: None,
+            icon_16: None,
+            icon_32: None,
+            icon_48: None,
+            icon_256: None,
+            first_seen_at: datetime!(2022-12-28 06:20:00 UTC),
+            last_played_at: Some(datetime!(2026-07-25 20:42:00 UTC)),
+            stat_run_count: 3,
+            stat_total_full: 4620,
+            stat_total_interactive: 4300,
+            stat_longest_full: 3900,
+        }
+    }
+
+    // The detections ledger renders the executable path and a NEW
+    // badge derived from first-seen, and the app-detail view shows
+    // first-seen and the longest session. All three are columns the
+    // database has always had; the wire type simply never carried
+    // them.
+    #[test]
+    fn summary_carries_executable_path_first_seen_and_longest() {
+        let s = application_summary_from(application());
+        assert_eq!(
+            s.executable_path, "/games/CoreKeeper/CoreKeeper.x86_64",
+            "executable path must reach the detections ledger"
+        );
+        assert_eq!(s.first_seen_at, "2022-12-28T06:20:00Z");
+        assert_eq!(s.longest_full_seconds, 3900);
+    }
+
+    // Steam titles detected through the content log have no
+    // executable on record, and the ledger has to render a blank line
+    // rather than the string "null".
+    #[test]
+    fn absent_executable_path_becomes_empty_string() {
+        let mut app = application();
+        app.executable_path = None;
+        assert_eq!(application_summary_from(app).executable_path, "");
     }
 }

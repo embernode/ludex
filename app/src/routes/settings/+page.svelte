@@ -1,9 +1,9 @@
 <script lang="ts">
     import AppearanceCard from '$lib/settings/AppearanceCard.svelte';
     import BackupsCard from '$lib/settings/BackupsCard.svelte';
-    import BlockedGamesCard from '$lib/settings/BlockedGamesCard.svelte';
     import DateTimeFormatCard from '$lib/settings/DateTimeFormatCard.svelte';
     import DetectionCard from '$lib/settings/DetectionCard.svelte';
+    import DetectionsLinkCard from '$lib/settings/DetectionsLinkCard.svelte';
     import GraceWindowsCard from '$lib/settings/GraceWindowsCard.svelte';
     import StatusStrip from '$lib/settings/StatusStrip.svelte';
 
@@ -48,7 +48,7 @@
     <DetectionCard onerror={handleError} />
     <GraceWindowsCard onerror={handleError} />
     <BackupsCard onerror={handleError} />
-    <BlockedGamesCard onerror={handleError} />
+    <DetectionsLinkCard onerror={handleError} />
     <DateTimeFormatCard />
 
     <StatusStrip onerror={handleError} />

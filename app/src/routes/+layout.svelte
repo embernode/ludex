@@ -259,51 +259,6 @@
         text-decoration: underline;
     }
 
-    /* Card chrome for Settings panels that haven't been rebuilt
-       against the redesign yet — currently just the blocked-games
-       card, which the Detections view replaces. Rebuilt cards use
-       the `SettingsCard` / `SettingRow` components instead, which
-       own their own styles. Retire this block with the last
-       consumer. */
-    :global(.settings-card) {
-        background: var(--bg-surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 1.25rem 1.5rem;
-        margin-bottom: 1rem;
-    }
-
-    :global(.settings-card h2) {
-        font-size: 1rem;
-        font-weight: 600;
-        color: var(--text-label);
-        margin: 0 0 0.5rem;
-    }
-
-    :global(.settings-card .description) {
-        color: var(--text-muted);
-        font-size: 0.88rem;
-        margin: 0 0 1rem;
-        line-height: 1.5;
-    }
-
-    :global(.settings-card input[type='search']),
-    :global(.settings-card select) {
-        font: inherit;
-        padding: 0.45rem 0.6rem;
-        border: 1px solid var(--button-border);
-        background: var(--bg-surface);
-        color: var(--text-primary);
-        border-radius: 6px;
-        font-variant-numeric: tabular-nums;
-    }
-
-    :global(.settings-card input[type='search']:focus),
-    :global(.settings-card select:focus) {
-        outline: 2px solid var(--accent);
-        outline-offset: -1px;
-    }
-
     /* Inline variant of the global `.error` block used for
        per-action failures so the form stays visible. Rendered
        above the cards in the Settings page wrapper. */

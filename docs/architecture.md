@@ -150,16 +150,40 @@ There is no per-day rollup table: daily aggregates are computed live from `sessi
 
 `net.ludex.Tracker1` on the session bus.
 
-Methods:
-- `ListApplications() -> a(ssts)` — `(id, product_name, publisher, total_runtime_seconds)`.
-- `GetSessions(application_id: s, from: t, to: t) -> a(stti)` — each `(id, started_at, ended_at, full_runtime_seconds, interactive_runtime_seconds)`.
-- `GetStatistics(application_id: s) -> a{sv}`.
-- `SetBlocked(key: (ss), blocked: b)` / `SetForced(key: (ss), forced: b)`.
+Timestamps cross the bus as RFC 3339 strings, and an empty string means
+"none" — D-Bus has no null. Struct signatures are derived from the DTOs
+in `ludex-dbus-types`, so they are not restated here; adding a field to
+one of those structs changes the signature and both ends must be
+rebuilt together.
+
+Applications and sessions:
+- `ListApplications() -> a(...)` — every tracked application.
+- `GetApplication(id: x) -> a(...)` — 0-or-1 element, standing in for an
+  optional return.
+- `ListRecentSessions(limit: u) -> a(...)` — newest first, with adjacent
+  same-application fragments folded into one row.
+- `ListSessionsForApplication(...)`.
+- `ListDailyPlaytime(days: u) -> a(...)` — one entry per day that has
+  sessions, bucketed by local calendar day.
+- `DeleteSession(ids: ax) -> b` — deletes an explicit set of ids and
+  recomputes the affected applications' totals.
+
+Blocklist:
+- `ListBlockedApplicationIds() -> ax`.
+- `BlockApplication(id: x)` / `UnblockApplication(id: x)`.
+
+Settings, each a getter/setter pair applied live by the daemon:
+`GpuMemoryThresholdBytes`, `AltTabGraceSeconds`, `IdleGraceSeconds`,
+`PauseWhenBackgrounded`, `BackupIntervalHours`, `BackupRetentionCount`.
+
+Backups:
+- `TakeBackupNow() -> s` — path of the snapshot written.
+- `GetBackupStats() -> (...)`.
 
 Signals:
-- `SessionStarted(application_id: s)`.
-- `SessionEnded(application_id: s, full: t, interactive: t)`.
-- `ApplicationAdded(application_id: s)`.
+- `ApplicationAdded(application_id: x)`.
+- `SessionStarted(application_id: x)`.
+- `SessionEnded(application_id: x, full: x, interactive: x)`.
 
 No methods require privileges beyond session-bus access.
 

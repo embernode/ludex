@@ -60,6 +60,16 @@ pub struct ApplicationSummary {
     /// RFC 3339 timestamp of the most recent session end, or empty
     /// when the app has never been played to completion.
     pub last_played_at: String,
+    /// Canonical path of the game's own executable, or empty when
+    /// none was recorded. Titles detected through Steam's content log
+    /// have no executable on record, so an empty string is ordinary
+    /// rather than exceptional.
+    pub executable_path: String,
+    /// RFC 3339 timestamp of when this application was first
+    /// observed.
+    pub first_seen_at: String,
+    /// Longest single session in full-runtime seconds.
+    pub longest_full_seconds: i64,
 }
 
 /// One day's worth of aggregate runtime, shaped for dashboards.

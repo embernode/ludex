@@ -41,6 +41,16 @@ export interface ApplicationSummary {
     run_count: number;
     /** RFC 3339 UTC timestamp; empty string for never-played apps. */
     last_played_at: string;
+    /**
+     * Canonical path of the game's own executable. Empty for titles
+     * detected through Steam's content log, which never record one —
+     * render a blank line rather than a placeholder.
+     */
+    executable_path: string;
+    /** RFC 3339 UTC timestamp of first detection. */
+    first_seen_at: string;
+    /** Longest single session, in full-runtime seconds. */
+    longest_full_seconds: number;
 }
 
 /** A session row sourced from `net.ludex.Tracker1.ListRecentSessions`. */
