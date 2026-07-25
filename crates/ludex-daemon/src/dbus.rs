@@ -192,6 +192,63 @@ impl Tracker {
             .collect())
     }
 
+    /// Every session overlapping the half-open window `[from, to)`,
+    /// oldest first. Both bounds are RFC 3339 strings.
+    ///
+    /// Unlike [`Self::list_recent_sessions`] this is bounded by the
+    /// window rather than by a row count, because the activity view's
+    /// clock grid needs *all* of a day's sessions — a newest-N fetch
+    /// drops the older ones as soon as a busy week overflows the
+    /// limit, and the grid would under-report without any sign that
+    /// it had.
+    ///
+    /// Rows are returned unfolded, unlike
+    /// [`Self::list_recent_sessions`]. The grid positions each session
+    /// by the clock time it occupied, so a gap between two fragments
+    /// is information rather than noise, and folding would draw over
+    /// it. `fragment_ids` therefore always holds exactly the row's own
+    /// id. (Folding here would also be wrong outright:
+    /// `merge_adjacent_recent` requires newest-first input and this
+    /// query is ascending, which makes its gap test vacuously true.)
+    async fn list_sessions_in_range(
+        &self,
+        from: String,
+        to: String,
+    ) -> zbus::fdo::Result<Vec<SessionSummary>> {
+        let parse = |s: &str, which: &str| {
+            OffsetDateTime::parse(s, &Rfc3339).map_err(|e| {
+                zbus::fdo::Error::InvalidArgs(format!("{which} is not an RFC 3339 timestamp: {e}"))
+            })
+        };
+        let from = parse(&from, "from")?;
+        let to = parse(&to, "to")?;
+        if to <= from {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "to must be later than from".to_owned(),
+            ));
+        }
+        let rows = self
+            .db
+            .sessions()
+            .list_in_range(from, to)
+            .await
+            .map_err(|e| into_fdo(&e))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SessionSummary {
+                id: row.id,
+                application_id: row.application_id,
+                product_name: row.product_name,
+                started_at: format_datetime(row.started_at),
+                ended_at: row.ended_at.map(format_datetime).unwrap_or_default(),
+                full_runtime_seconds: row.full_runtime_seconds,
+                interactive_runtime_seconds: row.interactive_runtime_seconds,
+                exit_reason: row.exit_reason.map(|r| r.to_string()).unwrap_or_default(),
+                fragment_ids: vec![row.id],
+            })
+            .collect())
+    }
+
     /// Per-day aggregate runtime for the last `days` days (clamped to
     /// `[1, 3650]`). One row per day that has at least one session;
     /// days with no activity are omitted, so the GUI fills gaps with

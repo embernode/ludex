@@ -122,6 +122,22 @@ export async function listDailyPlaytime(days: number): Promise<DailyPlaytime[]> 
     return invoke<DailyPlaytime[]>('list_daily_playtime', { days });
 }
 
+/**
+ * Every session overlapping the half-open window `[from, to)`, oldest
+ * first. Both bounds are RFC 3339 strings.
+ *
+ * Bounded by the window rather than by a row count, unlike
+ * `listRecentSessions` — the activity grid needs all of a day's
+ * sessions, and a newest-N fetch drops the older ones without any
+ * sign that it did.
+ */
+export async function listSessionsInRange(
+    from: string,
+    to: string,
+): Promise<SessionSummary[]> {
+    return invoke<SessionSummary[]>('list_sessions_in_range', { from, to });
+}
+
 export async function listSessionsForApplication(
     applicationId: number,
     limit = 50,

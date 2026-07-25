@@ -49,6 +49,7 @@ pub fn run() {
             bridge::list_applications,
             bridge::get_application,
             bridge::list_recent_sessions,
+            bridge::list_sessions_in_range,
             bridge::list_sessions_for_application,
             bridge::list_daily_playtime,
             bridge::list_blocked_application_ids,

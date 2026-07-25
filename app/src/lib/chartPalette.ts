@@ -5,11 +5,11 @@
 // colors per theme.
 //
 // The values below are the design's graphite token set resolved
-// against the default green accent: neutrals are transcribed
-// straight from the `--line` / `--fg2` / `--surface` scale, and the
-// two accent-derived entries are the `color-mix()` results
-// (`#274732` / `#afc6b8` are the heat ramp's lowest non-empty level,
-// a 34% accent mix over `--lane`; `#3f7d53` is the light scheme's
+// against the default accent: neutrals are transcribed straight from
+// the `--line` / `--fg2` / `--surface` scale, and the two
+// accent-derived entries are the `color-mix()` results
+// (`#29424d` / `#b0c3cb` are the heat ramp's lowest non-empty level,
+// a 34% accent mix over `--lane`; `#457488` is the light scheme's
 // 62% darkening of the accent toward `#20262b`).
 //
 // These are literals on purpose, and only correct while the accent
@@ -56,27 +56,27 @@ export interface ChartPalette {
 // dashed interactive overlay, kept neutral so it reads as a
 // secondary annotation over the accent-colored band.
 const LIGHT: ChartPalette = {
-    series: ['#3f7d53', '#5a6469'],
+    series: ['#457488', '#5a6469'],
     axis: 'rgba(20, 26, 32, 0.13)',
     axisLabel: '#5a6469',
     splitLine: 'rgba(20, 26, 32, 0.08)',
     tooltipBg: '#ffffff',
     tooltipText: '#1b2126',
     tooltipBorder: 'rgba(20, 26, 32, 0.13)',
-    heatmapRange: ['#afc6b8', '#3f7d53'],
+    heatmapRange: ['#b0c3cb', '#457488'],
     heatmapCellBorder: '#eef1f3',
     heatmapEmpty: '#e9edef',
 };
 
 const DARK: ChartPalette = {
-    series: ['#4fb96a', '#8b9298'],
+    series: ['#5aa9c9', '#8b9298'],
     axis: 'rgba(255, 255, 255, 0.09)',
     axisLabel: '#8b9298',
     splitLine: 'rgba(255, 255, 255, 0.055)',
     tooltipBg: '#14181b',
     tooltipText: '#e7ebee',
     tooltipBorder: 'rgba(255, 255, 255, 0.09)',
-    heatmapRange: ['#274732', '#4fb96a'],
+    heatmapRange: ['#29424d', '#5aa9c9'],
     heatmapCellBorder: '#0b0d0f',
     heatmapEmpty: '#111517',
 };

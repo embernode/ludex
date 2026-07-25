@@ -9,7 +9,7 @@ mod common;
 use common::sample_new_app;
 use ludex_core::{Database, ExitReason, GameKey, PlaybackDelta, RuntimeSnapshot};
 use time::macros::datetime;
-use time::{Duration, OffsetDateTime};
+use time::{Duration, OffsetDateTime, UtcOffset};
 
 #[tokio::test]
 async fn session_begin_heartbeat_end_and_playback_delta() {
@@ -915,4 +915,143 @@ async fn close_and_rollup_is_noop_when_session_already_closed() {
     assert_eq!(app_after.stat_total_full, 300);
     assert_eq!(app_after.stat_total_interactive, 240);
     assert_eq!(app_after.last_played_at, Some(snapshot.at));
+}
+
+/// The activity view's clock grid needs every session that overlaps a
+/// date window, which a newest-N fetch cannot guarantee: a heavy week
+/// pushes older rows past the limit and the grid silently under-reports
+/// the days it can no longer see. This query is bounded by the window
+/// instead of by a row count.
+#[tokio::test]
+async fn list_in_range_returns_every_session_overlapping_the_window() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    // Three days of sessions; the window covers only the middle one.
+    let day = |d: u8, h: u8| {
+        datetime!(2026-07-20 00:00:00 UTC)
+            + Duration::days(i64::from(d))
+            + Duration::hours(i64::from(h))
+    };
+
+    let mut ids = Vec::new();
+    for (d, h) in [(0u8, 20u8), (1, 9), (1, 21), (2, 10)] {
+        let s = sessions.begin(app.id, day(d, h)).await.unwrap();
+        sessions
+            .close_and_rollup(
+                s.id,
+                app.id,
+                RuntimeSnapshot {
+                    full_runtime_seconds: 600,
+                    interactive_runtime_seconds: 500,
+                    at: day(d, h) + Duration::minutes(10),
+                },
+                ExitReason::Terminated,
+            )
+            .await
+            .unwrap();
+        ids.push((d, s.id));
+    }
+
+    let from = day(1, 0);
+    let to = day(2, 0);
+    let rows = sessions.list_in_range(from, to).await.unwrap();
+
+    let got: Vec<i64> = rows.iter().map(|r| r.id).collect();
+    let want: Vec<i64> = ids
+        .iter()
+        .filter(|(d, _)| *d == 1)
+        .map(|(_, id)| *id)
+        .collect();
+    assert_eq!(got.len(), 2, "both of day 1's sessions must be returned");
+    for id in want {
+        assert!(got.contains(&id), "session {id} missing from the window");
+    }
+
+    // Oldest first: the grid draws left to right, top to bottom.
+    assert!(rows[0].started_at <= rows[1].started_at);
+
+    // The joined application identity is what the log pane labels rows
+    // with, so it has to ride along.
+    assert!(!rows[0].product_name.is_empty());
+}
+
+/// A session that began before the window but ran into it still belongs
+/// on the grid — otherwise a play session that crossed midnight vanishes
+/// from the day it actually occupied.
+#[tokio::test]
+async fn list_in_range_includes_a_session_that_began_before_the_window() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    let started = datetime!(2026-07-20 23:30:00 UTC);
+    let s = sessions.begin(app.id, started).await.unwrap();
+    sessions
+        .close_and_rollup(
+            s.id,
+            app.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 3_600,
+                interactive_runtime_seconds: 3_000,
+                at: datetime!(2026-07-21 00:30:00 UTC),
+            },
+            ExitReason::Terminated,
+        )
+        .await
+        .unwrap();
+
+    let rows = sessions
+        .list_in_range(
+            datetime!(2026-07-21 00:00:00 UTC),
+            datetime!(2026-07-22 00:00:00 UTC),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1, "a midnight-straddling session must appear");
+    assert_eq!(rows[0].id, s.id);
+}
+
+/// Timestamps are stored as TEXT with their offset intact, so SQLite
+/// compares them as strings. A window expressed in a non-UTC offset
+/// must still select by instant rather than by byte order.
+#[tokio::test]
+async fn list_in_range_normalises_non_utc_bounds() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let sessions = db.sessions();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    let started = datetime!(2026-07-20 12:00:00 UTC);
+    let s = sessions.begin(app.id, started).await.unwrap();
+    sessions
+        .close_and_rollup(
+            s.id,
+            app.id,
+            RuntimeSnapshot {
+                full_runtime_seconds: 3_600,
+                interactive_runtime_seconds: 3_000,
+                at: datetime!(2026-07-20 13:00:00 UTC),
+            },
+            ExitReason::Terminated,
+        )
+        .await
+        .unwrap();
+
+    // The same instants as the UTC window, expressed at +02:00.
+    let offset = UtcOffset::from_hms(2, 0, 0).unwrap();
+    let rows = sessions
+        .list_in_range(
+            datetime!(2026-07-20 00:00:00 UTC).to_offset(offset),
+            datetime!(2026-07-21 00:00:00 UTC).to_offset(offset),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1, "an offset window must select by instant");
+    assert_eq!(rows[0].id, s.id);
 }

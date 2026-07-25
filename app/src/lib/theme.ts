@@ -35,7 +35,13 @@ export const ACCENTS: readonly { hex: string; name: string }[] = [
     { hex: '#a58fd8', name: 'lavender' },
 ];
 
-export const DEFAULT_ACCENT = ACCENTS[0].hex;
+/**
+ * Accent applied when nothing is stored. Named rather than taken from
+ * `ACCENTS[0]` so the swatch order stays the design's and the default
+ * is an independent choice — changing one shouldn't silently change
+ * the other.
+ */
+export const DEFAULT_ACCENT = '#5aa9c9';
 
 /** Order the cycling control steps through, following the design. */
 const NEXT_MODE: Record<ThemeMode, ThemeMode> = {

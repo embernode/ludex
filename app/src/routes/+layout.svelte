@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { page } from '$app/state';
+    import LiveSessionPill from '$lib/LiveSessionPill.svelte';
     import ThemeCycleButton from '$lib/ThemeCycleButton.svelte';
     import { watchSystemScheme } from '$lib/theme';
     import { refreshAuto } from '$lib/themeState.svelte';
@@ -13,11 +14,19 @@
 
     // Mark a nav link active when the current route matches.
     // `startsWith` rather than `===` so nested routes (e.g.
-    // `/app/42`) keep the `Apps` link active.
+    // `/app/42`, `/settings/detections`) keep their parent active.
     function isActive(path: string): boolean {
         if (path === '/')
             return (
                 page.url.pathname === '/' || page.url.pathname.startsWith('/app/')
+            );
+        // The merged routes still resolve, as redirects; keep Activity
+        // lit while one of them is on screen.
+        if (path === '/activity')
+            return (
+                page.url.pathname.startsWith('/activity') ||
+                page.url.pathname === '/dashboard' ||
+                page.url.pathname === '/recent'
             );
         return (
             page.url.pathname === path || page.url.pathname.startsWith(`${path}/`)
@@ -30,10 +39,10 @@
         <a class="brand" href="/">ludex</a>
         <div class="links">
             <a href="/" class:active={isActive('/')}>Library</a>
-            <a href="/dashboard" class:active={isActive('/dashboard')}>Dashboard</a>
-            <a href="/recent" class:active={isActive('/recent')}>Recent</a>
+            <a href="/activity" class:active={isActive('/activity')}>Activity</a>
             <a href="/settings" class:active={isActive('/settings')}>Settings</a>
         </div>
+        <LiveSessionPill />
         <ThemeCycleButton />
     </nav>
     <div class="content">
@@ -69,7 +78,7 @@
            system light theme even when ludex is in dark mode. */
         color-scheme: light;
 
-        --raw: #4fb96a;
+        --raw: #5aa9c9;
         --bg: #eef1f3;
         --chrome: #ffffff;
         --surface: #ffffff;
@@ -298,6 +307,10 @@
         display: flex;
         gap: 0.25rem;
         flex: 1;
+    }
+
+    nav :global(.pill) {
+        margin-left: auto;
     }
 
     .links a {

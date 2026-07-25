@@ -162,6 +162,11 @@ Applications and sessions:
   optional return.
 - `ListRecentSessions(limit: u) -> a(...)` — newest first, with adjacent
   same-application fragments folded into one row.
+- `ListSessionsInRange(from: s, to: s) -> a(...)` — every session
+  overlapping the half-open window, oldest first and *unfolded*. Bounded
+  by the window rather than a row count, because the activity grid needs
+  all of a day's sessions and a newest-N fetch drops the older ones
+  without any sign that it did.
 - `ListSessionsForApplication(...)`.
 - `ListDailyPlaytime(days: u) -> a(...)` — one entry per day that has
   sessions, bucketed by local calendar day.

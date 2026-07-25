@@ -82,97 +82,6 @@ function indexByDate(rows: readonly DailyPlaytime[]): Map<string, DailyPlaytime>
     return m;
 }
 
-/**
- * Line chart: last 30 days of full runtime (hours) with zero-filled
- * gaps so the axis is continuous. The tooltip shows the exact HH MM
- * figure plus interactive time and session count.
- */
-export function buildDailyLineOption(
-    rows: readonly DailyPlaytime[],
-    theme: Theme,
-    tsFormat: TimestampFormat,
-): EChartsCoreOption {
-    const p = palette(theme);
-    const byDate = indexByDate(rows);
-    const end = today();
-
-    const days: string[] = [];
-    const full: number[] = [];
-    const interactive: number[] = [];
-    const sessions: number[] = [];
-    for (let i = 29; i >= 0; i--) {
-        const d = shiftDate(end, -i);
-        days.push(d);
-        const row = byDate.get(d);
-        full.push(hoursOf(row?.full_runtime_seconds ?? 0));
-        interactive.push(hoursOf(row?.interactive_runtime_seconds ?? 0));
-        sessions.push(row?.session_count ?? 0);
-    }
-
-    return {
-        backgroundColor: 'transparent',
-        grid: { left: 44, right: 16, top: 16, bottom: 36 },
-        tooltip: {
-            trigger: 'axis',
-            backgroundColor: p.tooltipBg,
-            borderColor: p.tooltipBorder,
-            textStyle: { color: p.tooltipText },
-            formatter: (params: unknown) => {
-                const arr = params as Array<{ dataIndex: number; axisValue: string }>;
-                const idx = arr[0]?.dataIndex ?? 0;
-                const axisValue = arr[0]?.axisValue ?? '';
-                const f = rowSeconds(byDate, axisValue, 'full');
-                const i = rowSeconds(byDate, axisValue, 'interactive');
-                const c = sessions[idx] ?? 0;
-                const dateLabel = formatTooltipDate(axisValue, tsFormat);
-                return `<div style="font-weight:600">${dateLabel}</div>
-<div>Full: ${formatDuration(f)}</div>
-<div>Interactive: ${formatDuration(i)}</div>
-<div>Sessions: ${c}</div>`;
-            },
-        },
-        xAxis: {
-            type: 'category',
-            data: days,
-            axisLine: { lineStyle: { color: p.axis } },
-            axisLabel: {
-                color: p.axisLabel,
-                formatter: (value: string) => formatAxisDate(value, tsFormat),
-            },
-            axisTick: { show: false },
-        },
-        yAxis: {
-            type: 'value',
-            name: 'hours',
-            nameTextStyle: { color: p.axisLabel, padding: [0, 0, 0, 32] },
-            axisLabel: { color: p.axisLabel },
-            axisLine: { show: false },
-            splitLine: { lineStyle: { color: p.splitLine } },
-        },
-        series: [
-            {
-                name: 'Full',
-                type: 'line',
-                smooth: true,
-                showSymbol: false,
-                areaStyle: { opacity: 0.15 },
-                lineStyle: { width: 2 },
-                itemStyle: { color: p.series[0] },
-                data: full,
-            },
-            {
-                name: 'Interactive',
-                type: 'line',
-                smooth: true,
-                showSymbol: false,
-                lineStyle: { width: 1.5, type: 'dashed' },
-                itemStyle: { color: p.series[1] },
-                data: interactive,
-            },
-        ],
-    };
-}
-
 function rowSeconds(
     byDate: Map<string, DailyPlaytime>,
     date: string,
@@ -262,34 +171,27 @@ export function buildHeatmapOption(
 }
 
 /**
- * Bar chart: hours played each day of the current (local) week,
- * Monday through Sunday. "Current week" is evaluated once per
- * render so the chart rolls over naturally when the daemon emits a
- * new session.
+ * Daily full runtime over the last `days` days as bars.
+ *
+ * Bars rather than a line: the series zero-fills days with no play,
+ * and a smoothed line drawn through those zeros implies a gentle
+ * decline into a day that actually had nothing in it. A bar of height
+ * zero reads as zero, which is the truth.
  */
-export function buildWeekBarOption(
+export function buildRecentBarOption(
     rows: readonly DailyPlaytime[],
     theme: Theme,
     tsFormat: TimestampFormat,
+    days = 30,
 ): EChartsCoreOption {
     const p = palette(theme);
     const byDate = indexByDate(rows);
 
-    // Find Monday of the current local week. `today()` is the local
-    // date and the daemon buckets by local day, so a session played
-    // after local midnight counts toward the day the user actually
-    // played it.
-    const todayStr = today();
-    const d = new Date(`${todayStr}T00:00:00Z`);
-    const weekday = d.getUTCDay(); // Sun=0..Sat=6
-    const deltaToMonday = weekday === 0 ? -6 : 1 - weekday;
-    const monday = shiftDate(todayStr, deltaToMonday);
-
-    const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const hours: number[] = [];
     const dates: string[] = [];
-    for (let i = 0; i < 7; i++) {
-        const date = shiftDate(monday, i);
+    const hours: number[] = [];
+    const start = shiftDate(today(), -(days - 1));
+    for (let i = 0; i < days; i++) {
+        const date = shiftDate(start, i);
         dates.push(date);
         hours.push(hoursOf(byDate.get(date)?.full_runtime_seconds ?? 0));
     }
@@ -309,17 +211,22 @@ export function buildWeekBarOption(
                 const row = date ? byDate.get(date) : undefined;
                 const full = row?.full_runtime_seconds ?? 0;
                 const sessions = row?.session_count ?? 0;
-                const dateLabel = date ? formatTooltipDate(date, tsFormat) : '';
-                return `<div style="font-weight:600">${labels[idx]} · ${dateLabel}</div>
-<div>${formatDuration(full)} · ${sessions} session${sessions === 1 ? '' : 's'}</div>`;
+                const label = date ? formatTooltipDate(date, tsFormat) : '';
+                return `<div style="font-weight:600">${label}</div>
+<div>${full > 0 ? formatDuration(full) : 'no play'} · ${sessions} session${sessions === 1 ? '' : 's'}</div>`;
             },
         },
         xAxis: {
             type: 'category',
-            data: labels,
+            data: dates,
             axisLine: { lineStyle: { color: p.axis } },
             axisTick: { show: false },
-            axisLabel: { color: p.axisLabel },
+            axisLabel: {
+                color: p.axisLabel,
+                // 30 labels don't fit; show roughly one per week.
+                interval: Math.floor(days / 4),
+                formatter: (value: string) => formatTooltipDate(value, tsFormat),
+            },
         },
         yAxis: {
             type: 'value',
@@ -331,9 +238,9 @@ export function buildWeekBarOption(
         },
         series: [
             {
+                name: 'Full',
                 type: 'bar',
-                barWidth: '55%',
-                itemStyle: { color: p.series[0], borderRadius: [4, 4, 0, 0] },
+                itemStyle: { color: p.series[0], borderRadius: [2, 2, 0, 0] },
                 data: hours,
             },
         ],

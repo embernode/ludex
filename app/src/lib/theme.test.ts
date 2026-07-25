@@ -29,9 +29,16 @@ describe('storedMode', () => {
 });
 
 describe('ACCENTS', () => {
-    it('offers the six authored swatches, green first', () => {
+    // The default is chosen independently of the ordering, so the
+    // invariant worth holding is that it is one of the swatches — a
+    // default outside the list would leave the picker showing nothing
+    // selected on a fresh profile.
+    it('offers the default as one of its swatches', () => {
+        expect(ACCENTS.map((a) => a.hex)).toContain(DEFAULT_ACCENT);
+    });
+
+    it('offers the six authored swatches in the design order', () => {
         expect(ACCENTS).toHaveLength(6);
-        expect(ACCENTS[0].hex).toBe(DEFAULT_ACCENT);
         expect(ACCENTS.map((a) => a.name)).toEqual([
             'green',
             'cyan',

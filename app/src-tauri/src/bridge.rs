@@ -57,7 +57,7 @@ pub(crate) const EVENT_DAEMON_RECONNECTED: &str = "ludex:daemon-reconnected";
 pub(crate) const EVENT_DAEMON_DISCONNECTED: &str = "ludex:daemon-disconnected";
 /// Tauri event emitted after a successful `block_application` /
 /// `unblock_application`. Listeners refresh so filtered views
-/// (Games, Recent, Dashboard) reflect the new blocklist without
+/// (Library, Activity) reflect the new blocklist without
 /// waiting for a session event. Emitted from the bridge rather
 /// than as a D-Bus signal from the daemon because every block
 /// path today goes through these Tauri commands — a future CLI
@@ -85,6 +85,7 @@ pub(crate) trait Tracker {
     fn list_applications(&self) -> zbus::Result<Vec<ApplicationSummary>>;
     fn get_application(&self, id: i64) -> zbus::Result<Vec<ApplicationSummary>>;
     fn list_recent_sessions(&self, limit: u32) -> zbus::Result<Vec<SessionSummary>>;
+    fn list_sessions_in_range(&self, from: &str, to: &str) -> zbus::Result<Vec<SessionSummary>>;
     fn list_sessions_for_application(
         &self,
         application_id: i64,
@@ -199,6 +200,22 @@ pub(crate) async fn list_recent_sessions(
     let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
     proxy
         .list_recent_sessions(limit)
+        .await
+        .map_err(|e| friendly(&e))
+}
+
+/// `invoke('list_sessions_in_range', { from, to })` returns every
+/// session overlapping the half-open window, oldest first. Both bounds
+/// are RFC 3339 strings.
+#[tauri::command]
+pub(crate) async fn list_sessions_in_range(
+    bridge: BridgeState<'_>,
+    from: String,
+    to: String,
+) -> Result<Vec<SessionSummary>, String> {
+    let proxy = bridge.proxy().await.map_err(|e| friendly(&e))?;
+    proxy
+        .list_sessions_in_range(&from, &to)
         .await
         .map_err(|e| friendly(&e))
 }

@@ -91,8 +91,6 @@
             ]);
             app = results[0] ?? null;
             sessions = sess;
-            fetchedAt = Date.now();
-            now = fetchedAt;
             error = null;
         } catch (e) {
             error = String(e);
@@ -115,37 +113,16 @@
      */
     const HEARTBEAT_MS = 60_000;
 
-    /** Ticks only while a session is open, to drive the elapsed pill. */
-    let now = $state<number>(Date.now());
-    /** Wall-clock instant the current `sessions` payload arrived. */
-    let fetchedAt = $state<number>(Date.now());
-
+    // The live elapsed pill lives in the header, where it is visible
+    // from every route; a second copy on the game's own page would
+    // show the same session twice with two independently-fetched
+    // counters that can disagree by up to a heartbeat. What this page
+    // still needs from `openSession` is a reason to re-poll, so the
+    // FULL column for an in-progress session doesn't sit stale.
     $effect(() => {
         if (!openSession) return;
-        const tick = setInterval(() => (now = Date.now()), 1000);
         const resync = setInterval(refresh, HEARTBEAT_MS);
-        return () => {
-            clearInterval(tick);
-            clearInterval(resync);
-        };
-    });
-
-    /**
-     * Elapsed play time for the open session.
-     *
-     * Seeded from the daemon's `full_runtime_seconds`, which it
-     * measures against `CLOCK_MONOTONIC` precisely so that an NTP step
-     * can't inflate or shrink it and a suspend contributes nothing.
-     * Deriving this from `started_at` and the local clock instead
-     * would reintroduce exactly that bug — and would visibly disagree
-     * with the FULL column for the same session further down the page.
-     * Only the sub-heartbeat delta since the payload arrived is added
-     * locally, and the re-fetch above bounds how far that can drift.
-     */
-    const elapsed = $derived.by(() => {
-        if (!openSession) return '';
-        const sinceFetch = Math.max(0, (now - fetchedAt) / 1000);
-        return formatSeconds(openSession.full_runtime_seconds + sinceFetch);
+        return () => clearInterval(resync);
     });
 
     /**
@@ -288,12 +265,6 @@
                     {/if}
                 </div>
             </div>
-            {#if openSession}
-                <span class="livepill">
-                    <span class="dot"></span>
-                    <span>Playing now · {elapsed}</span>
-                </span>
-            {/if}
         </div>
 
         <div class="statstrip">
@@ -413,10 +384,6 @@
                 {/each}
             </ul>
             </div>
-            <p class="note">
-                Every figure here comes from rows ludex already has: durations,
-                counts, first and last timestamps, and the key it detected.
-            </p>
         {/if}
     {/if}
 
@@ -535,31 +502,6 @@
     .protondb:hover {
         background: none;
         text-decoration: underline;
-    }
-
-    .livepill {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        padding: 5px 11px 5px 9px;
-        border-radius: 999px;
-        border: 1px solid var(--pill-bd);
-        background: var(--pill-bg);
-        flex: none;
-    }
-
-    .livepill .dot {
-        width: 7px;
-        height: 7px;
-        border-radius: 99px;
-        background: var(--ac);
-    }
-
-    .livepill span:last-child {
-        font-size: 12px;
-        font-weight: 500;
-        color: var(--pill-fg);
-        font-variant-numeric: tabular-nums;
     }
 
     .statstrip {
@@ -750,14 +692,6 @@
         color: var(--fg3);
         padding: 20px 12px;
         margin: 0;
-    }
-
-    .note {
-        font-size: 11.5px;
-        line-height: 1.55;
-        color: var(--fg3);
-        max-width: 700px;
-        margin: 14px 0 0;
     }
 
     /* Body content rendered into the ConfirmDialog component's `body`

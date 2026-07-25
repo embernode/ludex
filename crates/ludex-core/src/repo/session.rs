@@ -1,7 +1,7 @@
 //! Session-shaped queries.
 
 use sqlx::SqlitePool;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::error::{Error, Result};
 use crate::session::{DailyPlaytime, RecentSession, RuntimeSnapshot, Session};
@@ -137,6 +137,49 @@ impl<'a> SessionRepo<'a> {
              ORDER BY s.started_at DESC LIMIT ?";
         sqlx::query_as::<_, RecentSession>(sql)
             .bind(i64::from(limit))
+            .fetch_all(self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Every session overlapping the half-open window `[from, to)`,
+    /// oldest first, joined to the owning application's display
+    /// identity.
+    ///
+    /// A session counts as overlapping when it started before `to` and
+    /// had not already ended at `from` — so a play that crossed
+    /// midnight belongs to both days it touched, and an open session
+    /// (`ended_at IS NULL`) that began before the window is included
+    /// because it is still running inside it.
+    ///
+    /// Bounded by the window rather than by a row count on purpose:
+    /// the activity grid needs *all* of a day's sessions, and a
+    /// newest-N fetch silently drops the older ones as soon as a busy
+    /// week overflows the limit.
+    pub async fn list_in_range(
+        &self,
+        from: OffsetDateTime,
+        to: OffsetDateTime,
+    ) -> Result<Vec<RecentSession>> {
+        // Timestamps are TEXT and sqlx encodes an `OffsetDateTime`
+        // preserving its offset, so SQLite compares them bytewise.
+        // A bound carrying `+02:00` would therefore be compared as a
+        // string against stored UTC and silently select the wrong
+        // rows; normalise both ends first.
+        let from = from.to_offset(UtcOffset::UTC);
+        let to = to.to_offset(UtcOffset::UTC);
+        let sql = "SELECT \
+                s.id, s.application_id, a.product_name, a.launcher_type, a.launcher_id, \
+                s.started_at, s.ended_at, \
+                s.full_runtime_seconds, s.interactive_runtime_seconds, \
+                s.exit_reason \
+             FROM sessions s \
+             INNER JOIN applications a ON a.id = s.application_id \
+             WHERE s.started_at < ? AND (s.ended_at IS NULL OR s.ended_at > ?) \
+             ORDER BY s.started_at ASC";
+        sqlx::query_as::<_, RecentSession>(sql)
+            .bind(to)
+            .bind(from)
             .fetch_all(self.pool)
             .await
             .map_err(Into::into)
