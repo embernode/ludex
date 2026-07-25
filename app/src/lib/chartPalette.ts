@@ -4,9 +4,25 @@
 // means every chart shares the same axis / gridline / series
 // colors per theme.
 //
+// The values below are the design's graphite token set resolved
+// against the default green accent: neutrals are transcribed
+// straight from the `--line` / `--fg2` / `--surface` scale, and the
+// two accent-derived entries are the `color-mix()` results
+// (`#274732` / `#afc6b8` are the heat ramp's lowest non-empty level,
+// a 34% accent mix over `--lane`; `#3f7d53` is the light scheme's
+// 62% darkening of the accent toward `#20262b`).
+//
+// These are literals on purpose, and only correct while the accent
+// is the default. Making them follow the user's accent is a later
+// step of the redesign, and there is a trap waiting there: reading
+// a `color-mix()` custom property back through `getComputedStyle`
+// yields `oklab(...)`, which zrender cannot parse and ECharts
+// silently renders as opaque black. Whatever resolves the accent at
+// runtime must convert to sRGB first — painting the value into a
+// 1x1 canvas and reading the pixel back works.
+//
 // Both palettes render their charts with a transparent background
-// so the page surface shows through; on the dark palette that's
-// true black, which is exactly what the OLED user asked for.
+// so the page surface shows through.
 
 import type { Theme } from './theme';
 
@@ -33,30 +49,36 @@ export interface ChartPalette {
     readonly heatmapEmpty: string;
 }
 
+// `series[0]` carries full runtime and is also the only color the
+// week-bar chart uses, so it takes the accent itself rather than the
+// dimmed idle tint — a solitary filled bar in the idle tint sits at
+// roughly 1.5:1 against the card and disappears. `series[1]` is the
+// dashed interactive overlay, kept neutral so it reads as a
+// secondary annotation over the accent-colored band.
 const LIGHT: ChartPalette = {
-    series: ['#1e40af', '#059669'],
-    axis: '#e5e7eb',
-    axisLabel: '#6b7280',
-    splitLine: '#f3f4f6',
+    series: ['#3f7d53', '#5a6469'],
+    axis: 'rgba(20, 26, 32, 0.13)',
+    axisLabel: '#5a6469',
+    splitLine: 'rgba(20, 26, 32, 0.08)',
     tooltipBg: '#ffffff',
-    tooltipText: '#111111',
-    tooltipBorder: '#e5e7eb',
-    heatmapRange: ['#e5e7eb', '#1e40af'],
-    heatmapCellBorder: '#ffffff',
-    heatmapEmpty: '#f3f4f6',
+    tooltipText: '#1b2126',
+    tooltipBorder: 'rgba(20, 26, 32, 0.13)',
+    heatmapRange: ['#afc6b8', '#3f7d53'],
+    heatmapCellBorder: '#eef1f3',
+    heatmapEmpty: '#e9edef',
 };
 
 const DARK: ChartPalette = {
-    series: ['#60a5fa', '#34d399'],
-    axis: '#27272a',
-    axisLabel: '#a1a1aa',
-    splitLine: '#1a1a1d',
-    tooltipBg: '#0f0f10',
-    tooltipText: '#fafafa',
-    tooltipBorder: '#27272a',
-    heatmapRange: ['#1a1a1d', '#60a5fa'],
-    heatmapCellBorder: '#000000',
-    heatmapEmpty: '#18181b',
+    series: ['#4fb96a', '#8b9298'],
+    axis: 'rgba(255, 255, 255, 0.09)',
+    axisLabel: '#8b9298',
+    splitLine: 'rgba(255, 255, 255, 0.055)',
+    tooltipBg: '#14181b',
+    tooltipText: '#e7ebee',
+    tooltipBorder: 'rgba(255, 255, 255, 0.09)',
+    heatmapRange: ['#274732', '#4fb96a'],
+    heatmapCellBorder: '#0b0d0f',
+    heatmapEmpty: '#111517',
 };
 
 export function palette(theme: Theme): ChartPalette {

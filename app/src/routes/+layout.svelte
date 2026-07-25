@@ -1,31 +1,15 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { page } from '$app/state';
+    import ThemeCycleButton from '$lib/ThemeCycleButton.svelte';
+    import { watchSystemScheme } from '$lib/theme';
+    import { refreshAuto } from '$lib/themeState.svelte';
 
     let { children } = $props();
 
-    // Mirrors the `data-theme` attribute on <html>. Initialised from
-    // the DOM because the inline script in `app.html` has already
-    // resolved the effective theme before Svelte hydrates — reading
-    // from there keeps us in sync without re-running the media
-    // query or localStorage lookup.
-    let theme = $state<'light' | 'dark'>('light');
-
-    onMount(() => {
-        const current = document.documentElement.dataset.theme;
-        theme = current === 'dark' ? 'dark' : 'light';
-    });
-
-    function toggleTheme() {
-        theme = theme === 'dark' ? 'light' : 'dark';
-        document.documentElement.dataset.theme = theme;
-        try {
-            localStorage.setItem('ludex-theme', theme);
-        } catch (_) {
-            // User disabled localStorage — the toggle still works for
-            // the current session, just won't persist across restarts.
-        }
-    }
+    // While on `auto`, follow the desktop for as long as the window is
+    // open — not just at startup.
+    onMount(() => watchSystemScheme(refreshAuto));
 
     // Mark a nav link active when the current route matches.
     // `startsWith` rather than `===` so nested routes (e.g.
@@ -50,50 +34,7 @@
             <a href="/recent" class:active={isActive('/recent')}>Recent</a>
             <a href="/settings" class:active={isActive('/settings')}>Settings</a>
         </div>
-        <button
-            class="theme-toggle"
-            type="button"
-            onclick={toggleTheme}
-            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-            {#if theme === 'dark'}
-                <!-- Sun: currently dark, click for light. -->
-                <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                >
-                    <circle cx="12" cy="12" r="4" />
-                    <path
-                        d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
-                    />
-                </svg>
-            {:else}
-                <!-- Moon: currently light, click for dark. -->
-                <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                >
-                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-                </svg>
-            {/if}
-        </button>
+        <ThemeCycleButton />
     </nav>
     <div class="content">
         {@render children?.()}
@@ -101,74 +42,122 @@
 </div>
 
 <style>
-    /* Shared color tokens. The dark palette uses true black for the
-       page background on purpose — the user's OLED panel switches
-       those pixels off entirely, which is both easier on the eyes
-       and lower-power. Surface tones are close to but not black so
-       cards and tables still read as lifted. */
+    /* Colour tokens.
+       ----------------------------------------------------------------
+       The cool-graphite scale below is the design's own token set,
+       transcribed value-for-value (names kebab-cased to match the
+       rest of this stylesheet). Light is deliberately *not* an
+       inversion of dark: dark puts the page below the surfaces
+       (#0b0d0f page, #14181b cards), light puts it above (#eef1f3
+       page, #ffffff cards).
+
+       `--raw` is the accent, and it is the single input the user can
+       change — every accent-derived token is a `color-mix` on it, so
+       setting that one property re-tints the whole UI. Keep it that
+       way; resolving an accent to a literal anywhere in CSS silently
+       decouples that element from the picker.
+
+       The second block maps the older token names onto this scale so
+       pages that haven't been rebuilt against the new design still
+       paint from one palette. It is declared once, in `:root` only:
+       custom properties substitute at use time, so `var(--bg)` inside
+       these resolves per scheme without a dark-mode duplicate. */
     :global(:root) {
         /* Tell the browser which palette to render native UA
            controls in (<select> dropdown, scrollbars, date
            pickers). Without this the dropdown list paints from the
            system light theme even when ludex is in dark mode. */
         color-scheme: light;
-        --bg-page: #f7f7f9;
-        --bg-surface: #ffffff;
-        --bg-nav: #ffffff;
-        --bg-hover: #f9fafb;
-        --border: #e5e7eb;
-        --border-strong: #9ca3af;
-        --border-soft: #f3f4f6;
-        --text-primary: #111111;
-        --text-secondary: #333333;
-        --text-body: #1a1a1a;
-        --text-muted: #6b7280;
-        --text-subtle: #9ca3af;
-        --text-label: #374151;
-        --accent: #1e40af;
-        --status-open: #059669;
-        --button-bg: #ffffff;
-        --button-border: #d1d5db;
-        --button-text: #333333;
-        --button-hover-bg: #f4f5f7;
-        --active-bg: #e5e7eb;
-        --code-bg: #eceef2;
-        --code-text: inherit;
+
+        --raw: #4fb96a;
+        --bg: #eef1f3;
+        --chrome: #ffffff;
+        --surface: #ffffff;
+        --tile: #e7ebee;
+        --lane: #e9edef;
+        --line: rgba(20, 26, 32, 0.13);
+        --hair: rgba(20, 26, 32, 0.08);
+        --lane-line: rgba(20, 26, 32, 0.07);
+        --track: rgba(20, 26, 32, 0.1);
+        --fg: #1b2126;
+        --fg2: #5a6469;
+        --fg3: #828b91;
+        --ac: color-mix(in oklab, var(--raw) 62%, #20262b);
+        --ac-idle: color-mix(in oklab, var(--ac) 26%, #ffffff);
+        --pill-bd: color-mix(in oklab, var(--ac) 45%, transparent);
+        --pill-bg: color-mix(in oklab, var(--ac) 14%, transparent);
+        --pill-fg: color-mix(in oklab, var(--ac) 70%, #10161a);
+
+        /* Scheme-independent. `--brand-green` is the daemon-health dot
+           in Settings (and, once it lands, the logo triangle): both
+           are fixed brand/health signals that must not follow the
+           accent picker — picking lavender must not turn "daemon
+           running" lavender. `--warn` is the destructive-action tint. */
+        --warn: #e08b6a;
+        --brand-green: #6ec46e;
+
+        /* --- bridge: older token names onto the scale above --- */
+        --bg-page: var(--bg);
+        --bg-surface: var(--surface);
+        --bg-nav: var(--chrome);
+        --bg-hover: var(--tile);
+        --border: var(--line);
+        --border-strong: var(--fg3);
+        --border-soft: var(--hair);
+        --text-primary: var(--fg);
+        --text-secondary: var(--fg);
+        --text-body: var(--fg);
+        --text-muted: var(--fg2);
+        --text-subtle: var(--fg3);
+        --text-label: var(--fg2);
+        --accent: var(--ac);
+        --status-open: var(--ac);
+        --button-bg: var(--tile);
+        --button-border: var(--line);
+        --button-text: var(--fg);
+        /* Nudged toward the foreground rather than set to `--track`:
+           that token is translucent, and over an opaque `--tile`
+           button it composites to a ~3/255 difference in light mode
+           — no visible hover at all. */
+        --button-hover-bg: color-mix(in srgb, var(--tile), var(--fg) 8%);
+        --active-bg: var(--tile);
+        --code-bg: var(--tile);
+        --code-text: var(--fg);
+        --empty-border: var(--line);
+
+        /* Error states have no equivalent in the design's token set —
+           they stay their own semantic red rather than being folded
+           into the graphite scale. */
         --error-bg: #fef2f2;
         --error-border: #fecaca;
         --error-text: #991b1b;
-        --empty-border: #d1d5db;
         --row-shadow: rgba(0, 0, 0, 0.04);
     }
 
     :global(:root[data-theme='dark']) {
         color-scheme: dark;
-        --bg-page: #000000;
-        --bg-surface: #0f0f10;
-        --bg-nav: #0a0a0b;
-        --bg-hover: #18181b;
-        --border: #27272a;
-        --border-strong: #52525b;
-        --border-soft: #1a1a1d;
-        --text-primary: #fafafa;
-        --text-secondary: #e4e4e7;
-        --text-body: #e4e4e7;
-        --text-muted: #a1a1aa;
-        --text-subtle: #71717a;
-        --text-label: #d4d4d8;
-        --accent: #60a5fa;
-        --status-open: #34d399;
-        --button-bg: #18181b;
-        --button-border: #3f3f46;
-        --button-text: #e4e4e7;
-        --button-hover-bg: #27272a;
-        --active-bg: #27272a;
-        --code-bg: #18181b;
-        --code-text: #e4e4e7;
+
+        --bg: #0b0d0f;
+        --chrome: #13171a;
+        --surface: #14181b;
+        --tile: #1c2124;
+        --lane: #111517;
+        --line: rgba(255, 255, 255, 0.09);
+        --hair: rgba(255, 255, 255, 0.055);
+        --lane-line: rgba(255, 255, 255, 0.055);
+        --track: rgba(255, 255, 255, 0.08);
+        --fg: #e7ebee;
+        --fg2: #8b9298;
+        --fg3: #6e767c;
+        --ac: var(--raw);
+        --ac-idle: color-mix(in oklab, var(--ac) 34%, #101416);
+        --pill-bd: color-mix(in oklab, var(--ac) 45%, transparent);
+        --pill-bg: color-mix(in oklab, var(--ac) 12%, transparent);
+        --pill-fg: color-mix(in oklab, var(--ac) 52%, #f2f6f4);
+
         --error-bg: #1a0606;
         --error-border: #7f1d1d;
         --error-text: #fca5a5;
-        --empty-border: #3f3f46;
         --row-shadow: rgba(0, 0, 0, 0.4);
     }
 
@@ -270,12 +259,12 @@
         text-decoration: underline;
     }
 
-    /* Card-shaped surface used by every Settings panel and any
-       future page that wants the same chrome. The matching `h2`
-       rule below pins the heading style so cards don't have to
-       re-declare it. Form fields, action rows, and toggles inside
-       a `.settings-card` get a uniform look from the rules
-       further down so each card stays small. */
+    /* Card chrome for Settings panels that haven't been rebuilt
+       against the redesign yet — currently just the blocked-games
+       card, which the Detections view replaces. Rebuilt cards use
+       the `SettingsCard` / `SettingRow` components instead, which
+       own their own styles. Retire this block with the last
+       consumer. */
     :global(.settings-card) {
         background: var(--bg-surface);
         border: 1px solid var(--border);
@@ -298,40 +287,6 @@
         line-height: 1.5;
     }
 
-    /* Second `.description` block within a card — used to separate
-       two distinct sub-sections on the same surface (e.g. the
-       cutscene-grace section under the alt-tab grace). */
-    :global(.settings-card .sub-description) {
-        margin-top: 1.5rem;
-        padding-top: 1rem;
-        border-top: 1px solid var(--border-soft);
-    }
-
-    :global(.settings-card .sub-description code) {
-        font-family: 'JetBrains Mono', ui-monospace, monospace;
-        background: var(--code-bg);
-        color: var(--code-text);
-        padding: 0.05rem 0.3rem;
-        border-radius: 4px;
-        font-size: 0.78rem;
-    }
-
-    /* Labelled form field: caption above input. `max-width` keeps
-       single-value inputs (numbers, short strings) from stretching
-       across the card. */
-    :global(.settings-card .field) {
-        display: flex;
-        flex-direction: column;
-        gap: 0.35rem;
-        max-width: 18rem;
-    }
-
-    :global(.settings-card .field-label) {
-        font-size: 0.82rem;
-        color: var(--text-label);
-    }
-
-    :global(.settings-card input[type='number']),
     :global(.settings-card input[type='search']),
     :global(.settings-card select) {
         font: inherit;
@@ -343,41 +298,10 @@
         font-variant-numeric: tabular-nums;
     }
 
-    :global(.settings-card input[type='number']:focus),
     :global(.settings-card input[type='search']:focus),
     :global(.settings-card select:focus) {
         outline: 2px solid var(--accent);
         outline-offset: -1px;
-    }
-
-    :global(.settings-card input[type='number']:disabled) {
-        opacity: 0.55;
-        cursor: not-allowed;
-    }
-
-    /* Save / cancel / open-now button row. */
-    :global(.settings-card .actions) {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        margin-top: 0.75rem;
-    }
-
-    /* Inline checkbox + label, used for the "pause when backgrounded"
-       toggle and any future binary settings. */
-    :global(.settings-card .toggle) {
-        display: flex;
-        align-items: center;
-        gap: 0.6rem;
-        margin-bottom: 1rem;
-        font-size: 0.88rem;
-        color: var(--text-body);
-        cursor: pointer;
-    }
-
-    :global(.settings-card .toggle input[type='checkbox']) {
-        margin: 0;
-        accent-color: var(--accent);
     }
 
     /* Inline variant of the global `.error` block used for
@@ -441,20 +365,6 @@
         background: var(--active-bg);
         color: var(--text-primary);
         font-weight: 500;
-    }
-
-    .theme-toggle {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0.35rem;
-        width: 2rem;
-        height: 2rem;
-        color: var(--text-muted);
-    }
-
-    .theme-toggle:hover:not(:disabled) {
-        color: var(--text-primary);
     }
 
     .content {

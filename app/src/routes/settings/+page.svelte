@@ -1,16 +1,21 @@
 <script lang="ts">
-    import AboutCard from '$lib/settings/AboutCard.svelte';
-    import AltTabCard from '$lib/settings/AltTabCard.svelte';
+    import AppearanceCard from '$lib/settings/AppearanceCard.svelte';
     import BackupsCard from '$lib/settings/BackupsCard.svelte';
     import BlockedGamesCard from '$lib/settings/BlockedGamesCard.svelte';
     import DateTimeFormatCard from '$lib/settings/DateTimeFormatCard.svelte';
-    import DetectionThresholdsCard from '$lib/settings/DetectionThresholdsCard.svelte';
+    import DetectionCard from '$lib/settings/DetectionCard.svelte';
+    import GraceWindowsCard from '$lib/settings/GraceWindowsCard.svelte';
+    import StatusStrip from '$lib/settings/StatusStrip.svelte';
 
     /**
-     * Per-action error sink. Each card owns its own load + save
-     * state and bubbles errors up via `onerror`; the page renders
-     * a single dismissable banner so multiple cards failing at
-     * once (e.g. daemon down) don't stack six identical messages.
+     * Per-action error sink. Each card owns its own load + save state
+     * and bubbles errors up via `onerror`; the page renders a single
+     * dismissable banner so multiple cards failing at once (e.g.
+     * daemon down) don't stack identical messages.
+     *
+     * Per-field validation failures do NOT come here — they render
+     * inside the row that caused them, next to the value the user
+     * needs to fix.
      */
     let error = $state<string | null>(null);
 
@@ -22,6 +27,7 @@
 <main>
     <header>
         <h1>Settings</h1>
+        <span class="apply-note">Changes apply immediately</span>
     </header>
 
     {#if error}
@@ -38,32 +44,41 @@
         </div>
     {/if}
 
-    <DetectionThresholdsCard onerror={handleError} />
-    <AltTabCard onerror={handleError} />
-    <DateTimeFormatCard />
+    <AppearanceCard />
+    <DetectionCard onerror={handleError} />
+    <GraceWindowsCard onerror={handleError} />
     <BackupsCard onerror={handleError} />
     <BlockedGamesCard onerror={handleError} />
-    <AboutCard onerror={handleError} />
+    <DateTimeFormatCard />
+
+    <StatusStrip onerror={handleError} />
 </main>
 
 <style>
     main {
-        max-width: 80ch;
+        max-width: 760px;
         margin: 0 auto;
-        padding: 2rem;
+        padding: 22px 20px 40px;
     }
 
     header {
         display: flex;
+        align-items: baseline;
         justify-content: space-between;
-        align-items: center;
-        margin-bottom: 1.5rem;
+        gap: 14px;
+        margin-bottom: 16px;
     }
 
     h1 {
-        font-size: 1.75rem;
+        font-size: 24px;
         font-weight: 600;
+        line-height: 1;
         margin: 0;
         letter-spacing: -0.02em;
+    }
+
+    .apply-note {
+        font-size: 11.5px;
+        color: var(--fg3);
     }
 </style>

@@ -5,25 +5,33 @@
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>ludex</title>
         <!--
-          Set data-theme before the stylesheet loads so the first paint
-          already reflects the user's choice. Without this the page
-          briefly renders in the default (light) palette before the
-          Svelte runtime gets a chance to apply the saved preference,
-          which is jarring on OLED displays.
+          Set data-theme and the accent before the stylesheet loads so
+          the first paint already reflects the user's choice. Without
+          this the page briefly renders in the default palette before
+          the Svelte runtime gets a chance to apply the saved
+          preference, which is jarring on OLED displays.
+
+          `ludex-theme` holds the *mode* (dark / light / auto) while
+          data-theme holds the scheme it resolves to. Anything saved
+          by an older build is one of the two concrete values and
+          still reads correctly.
         -->
         <script>
             (function () {
                 try {
-                    var saved = localStorage.getItem('ludex-theme');
+                    var mode = localStorage.getItem('ludex-theme');
+                    if (mode !== 'light' && mode !== 'dark' && mode !== 'auto') {
+                        mode = 'auto';
+                    }
                     var prefersDark =
                         window.matchMedia &&
                         window.matchMedia('(prefers-color-scheme: dark)').matches;
                     document.documentElement.dataset.theme =
-                        saved === 'light' || saved === 'dark'
-                            ? saved
-                            : prefersDark
-                              ? 'dark'
-                              : 'light';
+                        mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode;
+                    var accent = localStorage.getItem('ludex-accent');
+                    if (accent && /^#[0-9a-fA-F]{6}$/.test(accent)) {
+                        document.documentElement.style.setProperty('--raw', accent);
+                    }
                     var savedFmt = localStorage.getItem('ludex-timestamp-format');
                     document.documentElement.dataset.timestampFormat =
                         savedFmt === 'iso' ||

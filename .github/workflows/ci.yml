@@ -79,6 +79,9 @@ jobs:
       - name: Type-check Svelte sources
         working-directory: app
         run: pnpm run check
+      - name: Run frontend tests
+        working-directory: app
+        run: pnpm run test
       - name: Build frontend bundle
         working-directory: app
         run: pnpm run build

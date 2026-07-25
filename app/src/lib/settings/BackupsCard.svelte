@@ -18,6 +18,9 @@
         observeTimestampFormat,
         type TimestampFormat,
     } from '$lib/format';
+    import SettingsCard from './SettingsCard.svelte';
+    import SettingRow from './SettingRow.svelte';
+    import NumberSetting from './NumberSetting.svelte';
 
     interface Props {
         onerror?: (message: string) => void;
@@ -26,36 +29,22 @@
 
     /** Lower bound on the backup interval. Mirrors the daemon's
      *  scheduler floor — the setter clamps any smaller value to this
-     *  before persisting, so 0 in the input becomes 1 on save. */
+     *  before persisting. */
     const BACKUP_INTERVAL_FLOOR_HOURS = 1;
 
-    let savedIntervalHours = $state<number>(24);
     let intervalHours = $state<number>(24);
-    let intervalStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
-
-    let savedRetention = $state<number>(14);
     let retention = $state<number>(14);
-    let retentionStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
     /** Directory + count + size summary. `null` while loading or when
      *  the daemon couldn't resolve a backup directory. */
     let stats = $state<BackupStats | null>(null);
 
-    let backupNowStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
-    let backupNowMessage = $state<string>('');
+    let backingUp = $state<boolean>(false);
+    let backupMessage = $state<string>('');
 
-    /** Mirrors the user's global timestamp preference so the
-     *  "Last snapshot" line follows the same format the rest of
-     *  the app uses. Updated by the layout-attribute observer. */
+    /** Mirrors the user's global timestamp preference so the "last
+     *  snapshot" cell follows the same format as the rest of the app. */
     let tsFormat = $state<TimestampFormat>(currentTimestampFormat());
-
-    const intervalDirty = $derived(
-        Math.max(BACKUP_INTERVAL_FLOOR_HOURS, Math.round(savedIntervalHours)) !==
-            intervalHours,
-    );
-    const retentionDirty = $derived(
-        Math.max(1, Math.round(savedRetention)) !== retention,
-    );
 
     async function load() {
         try {
@@ -64,12 +53,10 @@
                 getBackupRetentionCount(),
                 getBackupStats(),
             ]);
-            savedIntervalHours = hours;
             intervalHours = Math.max(
                 BACKUP_INTERVAL_FLOOR_HOURS,
                 Math.round(hours),
             );
-            savedRetention = ret;
             retention = Math.max(1, Math.round(ret));
             stats = s;
         } catch (e) {
@@ -77,10 +64,6 @@
         }
     }
 
-    /** Pull a fresh `BackupStats` without touching the rest of the
-     *  card. Called after manual snapshots and retention saves so
-     *  the count / size / last-snapshot fields update without
-     *  re-fetching the interval or retention values. */
     async function refreshStats() {
         try {
             stats = await getBackupStats();
@@ -89,67 +72,36 @@
         }
     }
 
-    async function saveInterval() {
-        const hours = Math.max(
-            BACKUP_INTERVAL_FLOOR_HOURS,
-            Math.floor(intervalHours),
-        );
-        intervalStatus = 'saving';
-        try {
-            await setBackupIntervalHours(hours);
-            savedIntervalHours = hours;
-            intervalHours = hours;
-            intervalStatus = 'saved';
-            setTimeout(() => {
-                if (intervalStatus === 'saved') intervalStatus = 'idle';
-            }, 2500);
-        } catch (e) {
-            onerror?.(String(e));
-            intervalStatus = 'error';
-        }
+    async function commitInterval(hours: number) {
+        await setBackupIntervalHours(hours);
+        intervalHours = hours;
     }
 
-    async function saveRetention() {
-        const count = Math.max(1, Math.floor(retention));
-        retentionStatus = 'saving';
-        try {
-            await setBackupRetentionCount(count);
-            savedRetention = count;
-            retention = count;
-            // The daemon prunes immediately on save so older snapshots
-            // beyond the new count are gone — refresh the stats so
-            // count and total size reflect that.
-            await refreshStats();
-            retentionStatus = 'saved';
-            setTimeout(() => {
-                if (retentionStatus === 'saved') retentionStatus = 'idle';
-            }, 2500);
-        } catch (e) {
-            onerror?.(String(e));
-            retentionStatus = 'error';
-        }
+    async function commitRetention(count: number) {
+        await setBackupRetentionCount(count);
+        retention = count;
+        // The daemon prunes immediately on save, so older snapshots
+        // beyond the new count are already gone — refresh so count and
+        // total size reflect that.
+        await refreshStats();
     }
 
     async function backupNow() {
-        backupNowStatus = 'saving';
-        backupNowMessage = '';
+        backingUp = true;
+        backupMessage = '';
         try {
             const path = await takeBackupNow();
-            const filename = path.split('/').pop() ?? path;
-            backupNowMessage = `Saved ${filename}`;
-            backupNowStatus = 'saved';
+            backupMessage = `Saved ${path.split('/').pop() ?? path}`;
             await refreshStats();
-            setTimeout(() => {
-                if (backupNowStatus === 'saved') backupNowStatus = 'idle';
-            }, 4000);
+            setTimeout(() => (backupMessage = ''), 4000);
         } catch (e) {
             onerror?.(String(e));
-            backupNowStatus = 'error';
-            backupNowMessage = '';
+        } finally {
+            backingUp = false;
         }
     }
 
-    async function openBackupFolder() {
+    async function openFolder() {
         if (!stats) return;
         try {
             await openBackupDirectory(stats.directory);
@@ -158,18 +110,17 @@
         }
     }
 
-    /** Format a byte count as a short human-readable string.
-     *  Mirrors the daemon CLI's `format_size` so the GUI and CLI
-     *  agree on labels for the same file sizes. */
+    /** Format a byte count as a short human-readable string. Mirrors
+     *  the CLI's `format_size` so both agree on the same file. */
     function formatBytes(bytes: number): string {
         const KIB = 1024;
-        const MIB_ = 1024 * 1024;
+        const MIB = 1024 * 1024;
         const GIB = 1024 * 1024 * 1024;
         if (bytes < KIB) return `${bytes} B`;
         const tenths = (n: number, unit: number) =>
             Math.floor((n * 10) / unit) / 10;
-        if (bytes < MIB_) return `${tenths(bytes, KIB).toFixed(1)} KiB`;
-        if (bytes < GIB) return `${tenths(bytes, MIB_).toFixed(1)} MiB`;
+        if (bytes < MIB) return `${tenths(bytes, KIB).toFixed(1)} KiB`;
+        if (bytes < GIB) return `${tenths(bytes, MIB).toFixed(1)} MiB`;
         return `${tenths(bytes, GIB).toFixed(1)} GiB`;
     }
 
@@ -186,143 +137,156 @@
     });
 </script>
 
-<section class="settings-card">
-    <h2>Backups</h2>
-    <p class="description">
-        The daemon snapshots your database on a fixed cadence and
-        once more on a clean shutdown. Snapshots are written to a
-        local directory; nothing leaves your machine.
-    </p>
-
+<SettingsCard
+    title="Backups"
+    subtitle="Snapshots of the database, kept locally."
+>
     {#if stats}
-        <dl class="backup-facts">
-            <dt>Snapshots</dt>
-            <dd>
-                {stats.count}
-                {#if stats.count > 0}
-                    · {formatBytes(stats.total_bytes)} on disk
-                {/if}
-            </dd>
-            <dt>Last snapshot</dt>
-            <dd>
-                {stats.latest_at
-                    ? formatTimestamp(stats.latest_at, tsFormat)
-                    : '—'}
-            </dd>
-            <dt>Folder</dt>
-            <dd class="backup-path">
-                <code>{stats.directory}</code>
-                <button
-                    type="button"
-                    class="link-button"
-                    onclick={openBackupFolder}
-                >
+        <div class="stats">
+            <div class="cell">
+                <div class="celllabel">SNAPSHOTS</div>
+                <!-- One expression rather than a trailing {#if}: Svelte
+                     trims the leading whitespace off a block's text, so
+                     the separator rendered as "14· 68.8 MiB". -->
+                <div class="cellvalue">
+                    {stats.count > 0
+                        ? `${stats.count} · ${formatBytes(stats.total_bytes)}`
+                        : stats.count}
+                </div>
+            </div>
+            <div class="cell">
+                <div class="celllabel">LAST</div>
+                <div class="cellvalue stamp">
+                    {stats.latest_at
+                        ? formatTimestamp(stats.latest_at, tsFormat)
+                        : '—'}
+                </div>
+            </div>
+            <div class="cell folder">
+                <div class="foldertext">
+                    <div class="celllabel">FOLDER</div>
+                    <div class="path" title={stats.directory}>
+                        {stats.directory}
+                    </div>
+                </div>
+                <button type="button" class="btn" onclick={openFolder}>
                     Open
                 </button>
-            </dd>
-        </dl>
+            </div>
+        </div>
     {/if}
 
-    <label class="field">
-        <span class="field-label">Snapshots to keep</span>
-        <input
-            type="number"
-            min="1"
-            max="365"
-            step="1"
-            bind:value={retention}
-        />
-    </label>
-    <div class="actions">
-        <button
-            type="button"
-            onclick={saveRetention}
-            disabled={!retentionDirty || retentionStatus === 'saving'}
-        >
-            {#if retentionStatus === 'saving'}Saving…{:else}Save retention{/if}
-        </button>
-        {#if retentionStatus === 'saved'}
-            <span class="hint">Saved.</span>
-        {:else if retentionDirty}
-            <span class="hint">Unsaved change.</span>
-        {/if}
-    </div>
+    <NumberSetting
+        label="Keep"
+        help="Older snapshots are pruned on save."
+        unit="snapshots"
+        bounds={{ min: 1, max: 365 }}
+        value={retention}
+        commit={commitRetention}
+    />
 
-    <label class="field">
-        <span class="field-label">Interval (hours)</span>
-        <input
-            type="number"
-            min={BACKUP_INTERVAL_FLOOR_HOURS}
-            max="720"
-            step="1"
-            bind:value={intervalHours}
-        />
-    </label>
-    <div class="actions">
-        <button
-            type="button"
-            onclick={saveInterval}
-            disabled={!intervalDirty || intervalStatus === 'saving'}
-        >
-            {#if intervalStatus === 'saving'}Saving…{:else}Save interval{/if}
-        </button>
-        {#if intervalStatus === 'saved'}
-            <span class="hint">Saved.</span>
-        {:else if intervalDirty}
-            <span class="hint">Unsaved change.</span>
-        {/if}
-    </div>
+    <NumberSetting
+        label="Interval"
+        help="Daemon reschedules live on change."
+        unit="h"
+        bounds={{ min: BACKUP_INTERVAL_FLOOR_HOURS, max: 720 }}
+        value={intervalHours}
+        commit={commitInterval}
+    />
 
-    <div class="actions">
-        <button
-            type="button"
-            onclick={backupNow}
-            disabled={backupNowStatus === 'saving'}
-        >
-            {#if backupNowStatus === 'saving'}Backing up…{:else}Back up now{/if}
-        </button>
-        {#if backupNowStatus === 'saved' && backupNowMessage}
-            <span class="hint">{backupNowMessage}</span>
-        {/if}
-    </div>
-</section>
+    <SettingRow
+        label="Manual snapshot"
+        help={backupMessage || 'Writes one now, outside the schedule.'}
+    >
+        {#snippet control()}
+            <button
+                type="button"
+                class="btn"
+                onclick={backupNow}
+                disabled={backingUp}
+            >
+                {backingUp ? 'Backing up…' : 'Back up now'}
+            </button>
+        {/snippet}
+    </SettingRow>
+</SettingsCard>
 
 <style>
-    .backup-facts {
-        display: grid;
-        grid-template-columns: max-content 1fr;
-        gap: 0.3rem 1rem;
-        margin: 0 0 1rem;
-        font-size: 0.88rem;
+    .stats {
+        display: flex;
+        border-bottom: 1px solid var(--hair);
     }
 
-    .backup-facts dt {
-        color: var(--text-subtle);
-        text-transform: uppercase;
-        font-size: 0.75rem;
-        letter-spacing: 0.03em;
-        align-self: center;
+    .cell {
+        flex: 1;
+        padding: 13px 16px;
+        border-right: 1px solid var(--hair);
+        min-width: 0;
     }
 
-    .backup-facts dd {
-        margin: 0;
-        color: var(--text-secondary);
+    .cell:last-child {
+        border-right: 0;
     }
 
-    .backup-path {
+    .folder {
+        flex: 1.4;
         display: flex;
         align-items: center;
-        gap: 0.6rem;
-        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 10px;
     }
 
-    .backup-path code {
+    .foldertext {
+        min-width: 0;
+    }
+
+    .celllabel {
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.09em;
+        color: var(--fg3);
+        margin-bottom: 6px;
+    }
+
+    .cellvalue {
+        font-size: 18px;
+        font-weight: 600;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* A full timestamp is a long run of digits, and at the stat-number
+       size it reads as one undifferentiated block. Monospace at text
+       size separates the groups and stops it competing with the two
+       actual numbers in the strip. Sized down rather than split into
+       date + time because the user's format is theirs to choose, and
+       one of the four options ("2 hours ago") has no such split. */
+    .stamp {
         font-family: 'JetBrains Mono', ui-monospace, monospace;
-        background: var(--code-bg);
-        color: var(--code-text);
-        padding: 0.1rem 0.35rem;
-        border-radius: 4px;
-        font-size: 0.8rem;
-        word-break: break-all;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.3;
+        color: var(--fg2);
+    }
+
+    .path {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        font-size: 11px;
+        color: var(--fg2);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .btn {
+        font-size: 12px;
+        font-weight: 500;
+        border-radius: 6px;
+        padding: 5px 11px;
+        cursor: pointer;
+        color: var(--fg);
+        background: var(--tile);
+        border: 1px solid var(--line);
+        flex: none;
     }
 </style>

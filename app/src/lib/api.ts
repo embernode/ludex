@@ -293,6 +293,15 @@ export function onDaemonReconnected(cb: () => void): Promise<UnlistenFn> {
 }
 
 /**
+ * Fires when the bridge's D-Bus subscription to the daemon drops —
+ * owner change, streams closed, or a failed re-subscribe. Pair with
+ * `onDaemonReconnected` to show live connection state.
+ */
+export function onDaemonDisconnected(cb: () => void): Promise<UnlistenFn> {
+    return safeListen<null>('ludex:daemon-disconnected', () => cb());
+}
+
+/**
  * Fires after a successful `blockApplication` / `unblockApplication`
  * call. Filtered views (Games, Recent, Dashboard) subscribe so the
  * blocklist change takes effect instantly instead of waiting for

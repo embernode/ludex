@@ -106,6 +106,12 @@ option-if-let-else = "allow"          # stylistic; often less readable rewritten
 doc-markdown = "allow"                # over-aggressive on brand names (KWin, Lutris); backticks also render as literal in clap --help output
 struct-field-names = "allow"          # fires on category structs (Icons { icon_16, icon_32, ... }) where the prefix is the intent
 
+[profile.dev]
+debug = "line-tables-only"            # backtraces keep file:line; full DWARF costs tens of GB across the Tauri tree
+
+[profile.dev.package."*"]
+debug = false                         # dependency debug info is never stepped through
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
