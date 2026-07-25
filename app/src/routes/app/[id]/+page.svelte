@@ -17,9 +17,11 @@
     import {
         formatSeconds,
         formatTimestamp,
+        interactiveShare,
         observeTimestampFormat,
         type TimestampFormat,
     } from '$lib/format';
+    import MonogramTile from '$lib/MonogramTile.svelte';
 
     /** How many of the newest session rows this view fetches. */
     const SESSION_LIMIT = 100;
@@ -73,6 +75,11 @@
 
     async function refresh() {
         if (!Number.isFinite(id) || id <= 0) {
+            // Clear first: the error renders as an inline banner above
+            // the content, so leaving the previous game's rows in place
+            // would attribute them to an id that doesn't exist.
+            app = null;
+            sessions = [];
             error = `Invalid application id: ${page.params.id}`;
             loading = false;
             return;
@@ -84,6 +91,8 @@
             ]);
             app = results[0] ?? null;
             sessions = sess;
+            fetchedAt = Date.now();
+            now = fetchedAt;
             error = null;
         } catch (e) {
             error = String(e);
@@ -91,6 +100,69 @@
             loading = false;
         }
     }
+
+    /**
+     * The open session, if this game is being played right now.
+     * `ended_at` is empty for exactly one row at most — the daemon
+     * holds a partial unique index that guarantees it.
+     */
+    const openSession = $derived(sessions.find((s) => !s.ended_at) ?? null);
+
+    /**
+     * How often the daemon heartbeats an open session's runtime to the
+     * database. Re-fetching on the same cadence keeps the pill anchored
+     * to the daemon's own number.
+     */
+    const HEARTBEAT_MS = 60_000;
+
+    /** Ticks only while a session is open, to drive the elapsed pill. */
+    let now = $state<number>(Date.now());
+    /** Wall-clock instant the current `sessions` payload arrived. */
+    let fetchedAt = $state<number>(Date.now());
+
+    $effect(() => {
+        if (!openSession) return;
+        const tick = setInterval(() => (now = Date.now()), 1000);
+        const resync = setInterval(refresh, HEARTBEAT_MS);
+        return () => {
+            clearInterval(tick);
+            clearInterval(resync);
+        };
+    });
+
+    /**
+     * Elapsed play time for the open session.
+     *
+     * Seeded from the daemon's `full_runtime_seconds`, which it
+     * measures against `CLOCK_MONOTONIC` precisely so that an NTP step
+     * can't inflate or shrink it and a suspend contributes nothing.
+     * Deriving this from `started_at` and the local clock instead
+     * would reintroduce exactly that bug — and would visibly disagree
+     * with the FULL column for the same session further down the page.
+     * Only the sub-heartbeat delta since the payload arrived is added
+     * locally, and the re-fetch above bounds how far that can drift.
+     */
+    const elapsed = $derived.by(() => {
+        if (!openSession) return '';
+        const sinceFetch = Math.max(0, (now - fetchedAt) / 1000);
+        return formatSeconds(openSession.full_runtime_seconds + sinceFetch);
+    });
+
+    /**
+     * Raw session rows behind the merged spans on screen. The daemon
+     * applies `SESSION_LIMIT` to rows *before* folding adjacent
+     * fragments, so the returned array is shorter than the limit
+     * whenever anything merged — comparing its length against the
+     * limit would hide the truncation notice in the common case.
+     */
+    const rawRowCount = $derived(
+        sessions.reduce((n, s) => n + s.fragment_ids.length, 0),
+    );
+
+    /** Idle time is the part of full runtime that wasn't interactive. */
+    const idleSeconds = $derived(
+        app ? Math.max(0, app.total_full_seconds - app.total_interactive_seconds) : 0,
+    );
 
     function statusLabel(s: SessionSummary): string {
         const base = s.exit_reason ? s.exit_reason.replace(/_/g, ' ') : 'open';
@@ -169,132 +241,183 @@
 </script>
 
 <main>
-    <nav class="crumb">
-        <a href="/">← Games</a>
-    </nav>
+    <a class="back" href="/">← Library</a>
 
     {#if loading && !app}
-        <p class="hint">Loading…</p>
-    {:else if error}
+        <p class="state">Loading…</p>
+    {:else if error && !app}
         <div class="error">
-            <p><strong>Couldn't load this application.</strong></p>
+            <p><strong>Couldn't load this game.</strong></p>
             <p class="detail">{error}</p>
         </div>
     {:else if !app}
         <div class="empty">
-            <p>No application with id {id}.</p>
-            <p class="hint">It may have been removed, or never existed.</p>
+            <p>No such application.</p>
+            <p class="hint"><a href="/">Back to the library</a></p>
         </div>
     {:else}
-        <header>
-            <div class="title">
-                <h1>{app.product_name}</h1>
-                {#if app.publisher}
-                    <span class="publisher">{app.publisher}</span>
-                {/if}
-                <span class="id-badge" title="Application id (for ludex merge)"
-                    >#{app.id}</span
+        {#if error}
+            <div class="error inline">
+                <p class="detail">{error}</p>
+                <button
+                    type="button"
+                    class="link-button"
+                    onclick={() => (error = null)}
                 >
+                    Dismiss
+                </button>
             </div>
-            <button onclick={refresh}>Refresh</button>
-        </header>
+        {/if}
 
-        <section class="stats">
-            <div class="stat-card">
-                <div class="stat-label">Runs</div>
-                <div class="stat-value">{app.run_count}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Full runtime</div>
-                <div class="stat-value">{formatSeconds(app.total_full_seconds)}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Interactive</div>
-                <div class="stat-value">
-                    {formatSeconds(app.total_interactive_seconds)}
-                </div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Last played</div>
-                <div class="stat-value">
-                    {formatTimestamp(app.last_played_at, tsFormat)}
-                </div>
-            </div>
-        </section>
-
-        <section class="identity">
-            <h2>Identity</h2>
-            <dl>
-                <dt>Launcher</dt>
-                <dd><code>{app.launcher_type}:{app.launcher_id}</code></dd>
-                {#if protondb}
-                    <dt>ProtonDB</dt>
-                    <dd>
+        <div class="identity">
+            <MonogramTile name={app.product_name} size={52} />
+            <div class="titles">
+                <h1>{app.product_name}</h1>
+                <div class="chips">
+                    <span class="keychip mono">
+                        {app.launcher_type}:{app.launcher_id}
+                    </span>
+                    {#if protondb}
                         <button
                             type="button"
-                            class="link-button"
+                            class="protondb"
                             onclick={openProtondb}
                         >
                             {protondb.label}
                         </button>
-                    </dd>
-                {/if}
-            </dl>
-        </section>
-
-        <section class="sessions">
-            <h2>Sessions</h2>
-            {#if sessions.length === 0}
-                <p class="hint">No sessions recorded for this application.</p>
-            {:else}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Started</th>
-                            <th>Ended</th>
-                            <th>Full</th>
-                            <th>Interactive</th>
-                            <th>Status</th>
-                            <th class="actions-col"
-                                ><span class="visually-hidden">Actions</span></th
-                            >
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {#each sessions as s (s.id)}
-                            <tr>
-                                <td>{formatTimestamp(s.started_at, tsFormat)}</td>
-                                <td>{formatTimestamp(s.ended_at, tsFormat)}</td>
-                                <td class="num"
-                                    >{formatSeconds(s.full_runtime_seconds)}</td
-                                >
-                                <td class="num"
-                                    >{formatSeconds(
-                                        s.interactive_runtime_seconds,
-                                    )}</td
-                                >
-                                <td class="status" class:open={!s.exit_reason}
-                                    >{statusLabel(s)}</td
-                                >
-                                <td class="actions-col">
-                                    {#if canDelete(s)}
-                                        <button
-                                            type="button"
-                                            class="row-action delete"
-                                            title="Delete this session"
-                                            aria-label="Delete this session"
-                                            onclick={() => openDeleteDialog(s)}
-                                        >
-                                            ✕
-                                        </button>
-                                    {/if}
-                                </td>
-                            </tr>
-                        {/each}
-                    </tbody>
-                </table>
+                    {/if}
+                </div>
+            </div>
+            {#if openSession}
+                <span class="livepill">
+                    <span class="dot"></span>
+                    <span>Playing now · {elapsed}</span>
+                </span>
             {/if}
-        </section>
+        </div>
+
+        <div class="statstrip">
+            <div class="cell runtime">
+                <div class="celllabel">RUNTIME</div>
+                <div class="bigline">
+                    <span class="num big">
+                        {formatSeconds(app.total_full_seconds)}
+                    </span>
+                    <span class="unit">full</span>
+                </div>
+                <div class="bar">
+                    <span
+                        style="width:{interactiveShare(
+                            app.total_interactive_seconds,
+                            app.total_full_seconds,
+                        )}%"
+                    ></span>
+                </div>
+                <div class="subline">
+                    <span class="num">
+                        {formatSeconds(app.total_interactive_seconds)} interactive
+                    </span>
+                    {#if idleSeconds > 0}
+                        <span class="dim">
+                            · {formatSeconds(idleSeconds)} idle subtracted
+                        </span>
+                    {/if}
+                </div>
+            </div>
+            <div class="cell">
+                <div class="celllabel">SESSIONS</div>
+                <div class="num big">{app.run_count}</div>
+            </div>
+            <div class="cell">
+                <div class="celllabel">FIRST SEEN</div>
+                <div class="num medium">
+                    {formatTimestamp(app.first_seen_at, tsFormat)}
+                </div>
+            </div>
+            <div class="cell">
+                <div class="celllabel">LONGEST</div>
+                <div class="num big">
+                    {formatSeconds(app.longest_full_seconds)}
+                </div>
+            </div>
+        </div>
+
+        <div class="sessionhead">
+            <h2>Sessions</h2>
+            {#if rawRowCount >= SESSION_LIMIT}
+                <span class="dim">newest {SESSION_LIMIT}</span>
+            {/if}
+        </div>
+
+        {#if sessions.length === 0}
+            <p class="state">No sessions recorded yet.</p>
+        {:else}
+            <!-- Laid out with grid rather than <table> to match the
+                 design, so the table roles are restated explicitly —
+                 without them a screen reader reads the header line
+                 once as prose and then each row as unlabelled values. -->
+            <div class="tablewrap" role="table" aria-label="Sessions">
+            <div class="grid thead" role="row">
+                <span role="columnheader">DATE</span>
+                <span role="columnheader">ENDED</span>
+                <span class="right" role="columnheader">FULL</span>
+                <span role="columnheader">INTERACTIVE</span>
+                <span role="columnheader">OUTCOME</span>
+                <span role="columnheader"><span class="visually-hidden">Actions</span></span>
+            </div>
+            <ul class="rows" role="rowgroup">
+                {#each sessions as s (s.id)}
+                    <li class="grid row" role="row">
+                        <span class="num dim" role="cell">
+                            {formatTimestamp(s.started_at, tsFormat)}
+                        </span>
+                        <span class="mono num dim" role="cell">
+                            {formatTimestamp(s.ended_at, tsFormat)}
+                        </span>
+                        <span class="right num strong" role="cell">
+                            {formatSeconds(s.full_runtime_seconds)}
+                        </span>
+                        <span class="interactive" role="cell">
+                            <span class="bar">
+                                <span
+                                    style="width:{interactiveShare(
+                                        s.interactive_runtime_seconds,
+                                        s.full_runtime_seconds,
+                                    )}%"
+                                ></span>
+                            </span>
+                            <span class="mono num dim">
+                                {formatSeconds(s.interactive_runtime_seconds)}
+                            </span>
+                        </span>
+                        <span class="status" class:open={!s.exit_reason} role="cell">
+                            {statusLabel(s)}
+                        </span>
+                        <span class="rowaction" role="cell">
+                            {#if canDelete(s)}
+                                <button
+                                    type="button"
+                                    class="delete"
+                                    title="Delete this session"
+                                    aria-label="Delete the session starting {formatTimestamp(
+                                        s.started_at,
+                                        tsFormat,
+                                    )}"
+                                    onclick={() => openDeleteDialog(s)}
+                                >
+                                    ✕
+                                </button>
+                            {/if}
+                        </span>
+                    </li>
+                {/each}
+            </ul>
+            </div>
+            <p class="note">
+                Every figure here comes from rows ludex already has: durations,
+                counts, first and last timestamps, and the key it detected.
+            </p>
+        {/if}
     {/if}
 
     <ConfirmDialog
@@ -340,197 +463,306 @@
 
 <style>
     main {
-        max-width: 80ch;
+        max-width: 900px;
         margin: 0 auto;
-        padding: 2rem;
+        padding: 22px 20px 40px;
     }
 
-    .crumb {
-        margin-bottom: 1rem;
-    }
-
-    .crumb a {
-        color: var(--text-muted);
+    .back {
+        display: inline-block;
+        font-size: 12.5px;
+        color: var(--fg3);
         text-decoration: none;
-        font-size: 0.9rem;
+        margin-bottom: 16px;
     }
 
-    .crumb a:hover {
-        color: var(--text-primary);
+    .back:hover {
+        color: var(--fg);
     }
 
-    header {
+    .identity {
         display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 1.5rem;
+        align-items: flex-start;
+        gap: 14px;
+        margin-bottom: 18px;
     }
 
-    .title {
-        display: flex;
-        align-items: baseline;
-        gap: 0.75rem;
-        flex-wrap: wrap;
+    .titles {
+        flex: 1;
+        min-width: 0;
     }
 
     h1 {
-        font-size: 1.75rem;
+        font-size: 26px;
         font-weight: 600;
-        margin: 0;
+        line-height: 1;
+        margin: 0 0 7px;
         letter-spacing: -0.02em;
     }
 
     h2 {
-        font-size: 1.05rem;
+        font-size: 15px;
         font-weight: 600;
-        margin: 2rem 0 0.75rem;
-        color: var(--text-label);
+        margin: 0;
     }
 
-    .publisher {
-        font-size: 0.95rem;
-        color: var(--text-muted);
+    .chips {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
     }
 
-    .id-badge {
-        font-family: 'JetBrains Mono', ui-monospace, monospace;
-        font-size: 0.78rem;
-        color: var(--text-subtle);
-        background: var(--tag-bg);
-        padding: 0.1rem 0.45rem;
+    .keychip {
+        font-size: 11.5px;
+        color: var(--fg2);
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 3px 8px;
+    }
+
+    .protondb {
+        font: inherit;
+        font-size: 11.5px;
+        color: var(--ac);
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+    }
+
+    .protondb:hover {
+        background: none;
+        text-decoration: underline;
+    }
+
+    .livepill {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 5px 11px 5px 9px;
         border-radius: 999px;
-        font-variant-numeric: tabular-nums;
-        cursor: help;
+        border: 1px solid var(--pill-bd);
+        background: var(--pill-bg);
+        flex: none;
     }
 
-    .stats {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 0.75rem;
+    .livepill .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 99px;
+        background: var(--ac);
     }
 
-    .stat-card {
-        background: var(--bg-surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 0.9rem 1rem;
-    }
-
-    .stat-label {
-        color: var(--text-subtle);
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-        margin-bottom: 0.25rem;
-    }
-
-    .stat-value {
-        color: var(--text-primary);
-        font-size: 1.15rem;
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-    }
-
-    .identity dl {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 0.35rem 1rem;
-        margin: 0;
-    }
-
-    .identity dt {
-        color: var(--text-subtle);
-        font-size: 0.85rem;
-    }
-
-    .identity dd {
-        margin: 0;
-        font-size: 0.9rem;
-    }
-
-    table {
-        width: 100%;
-        border-collapse: collapse;
-        background: var(--bg-surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        overflow: hidden;
-    }
-
-    th,
-    td {
-        padding: 0.55rem 0.85rem;
-        text-align: left;
-        font-size: 0.88rem;
-    }
-
-    th {
-        background: var(--bg-hover);
-        color: var(--text-muted);
+    .livepill span:last-child {
+        font-size: 12px;
         font-weight: 500;
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-        border-bottom: 1px solid var(--border);
+        color: var(--pill-fg);
+        font-variant-numeric: tabular-nums;
     }
 
-    tbody tr {
-        border-bottom: 1px solid var(--border-soft);
+    .statstrip {
+        display: flex;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        overflow: hidden;
+        margin-bottom: 20px;
     }
 
-    tbody tr:last-child {
-        border-bottom: none;
+    .cell {
+        flex: 1;
+        padding: 13px 16px;
+        border-right: 1px solid var(--hair);
+        min-width: 0;
+    }
+
+    .cell:last-child {
+        border-right: 0;
+    }
+
+    .runtime {
+        flex: 2;
+    }
+
+    .celllabel {
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.09em;
+        color: var(--fg3);
+        margin-bottom: 8px;
+    }
+
+    .bigline {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        white-space: nowrap;
+    }
+
+    .big {
+        font-size: 21px;
+        font-weight: 600;
+        line-height: 1;
+    }
+
+    .medium {
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 1.2;
+    }
+
+    .unit {
+        font-size: 12px;
+        color: var(--fg3);
+    }
+
+    .subline {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        margin-top: 6px;
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--fg2);
+        flex-wrap: wrap;
+    }
+
+    .runtime .bar {
+        margin-top: 8px;
+        height: 6px;
+    }
+
+    .bar {
+        flex: 1;
+        height: 5px;
+        border-radius: 99px;
+        overflow: hidden;
+        background: var(--track);
+    }
+
+    .bar > span {
+        display: block;
+        height: 100%;
+        background: var(--ac);
+    }
+
+    .sessionhead {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        margin-bottom: 9px;
+    }
+
+    .grid {
+        display: grid;
+        grid-template-columns:
+            150px 150px 88px 168px minmax(120px, 1fr) 30px;
+        gap: 12px;
+        align-items: center;
+    }
+
+    .thead {
+        padding: 0 12px 8px;
+        border-bottom: 1px solid var(--line);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.09em;
+        color: var(--fg3);
+    }
+
+    .rows {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .row {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--hair);
+    }
+
+    .right {
+        text-align: right;
     }
 
     .num {
         font-variant-numeric: tabular-nums;
-        color: var(--text-secondary);
     }
 
-    .status {
-        color: var(--text-muted);
-        font-size: 0.85rem;
+    .mono {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
     }
 
-    .status.open {
-        color: var(--status-open);
+    .dim {
+        font-size: 12px;
+        color: var(--fg2);
+    }
+
+    .strong {
+        font-size: 12.5px;
         font-weight: 500;
     }
 
-    /* Trailing-action column: narrow, right-aligned, only renders
-       a control on rows that are eligible (closed + unmerged). */
-    .actions-col {
-        width: 1%;
-        text-align: right;
+    .interactive {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+    }
+
+    .status {
+        font-size: 11.5px;
+        color: var(--fg2);
+        overflow: hidden;
+        text-overflow: ellipsis;
         white-space: nowrap;
     }
 
-    .row-action {
+    .status.open {
+        color: var(--ac);
+    }
+
+    .rowaction {
+        text-align: center;
+    }
+
+    .delete {
+        font: inherit;
+        font-size: 12px;
+        color: var(--fg3);
         background: none;
-        border: 1px solid transparent;
-        color: var(--text-subtle);
-        font-size: 0.85rem;
-        line-height: 1;
-        padding: 0.2rem 0.45rem;
-        border-radius: 4px;
+        border: 0;
+        padding: 2px 4px;
         cursor: pointer;
+        border-radius: 4px;
     }
 
-    .row-action:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
+    .delete:hover {
+        color: var(--warn);
+        background: none;
     }
 
-    .row-action.delete:hover {
-        color: var(--error-text, #ef4444);
-        border-color: var(--error-border, #ef4444);
+    .state {
+        font-size: 12.5px;
+        color: var(--fg3);
+        padding: 20px 12px;
+        margin: 0;
     }
 
-    /* Body content rendered into the ConfirmDialog component's
-       `body` snippet. The component owns the dialog frame /
-       buttons / ::backdrop; the parent supplies the content and
-       its styling — Svelte's scoped CSS keeps these from leaking
-       to other surfaces. */
+    .note {
+        font-size: 11.5px;
+        line-height: 1.55;
+        color: var(--fg3);
+        max-width: 700px;
+        margin: 14px 0 0;
+    }
+
+    /* Body content rendered into the ConfirmDialog component's `body`
+       snippet. The component owns the dialog frame / buttons /
+       ::backdrop; the parent supplies the content and its styling. */
     .confirm-facts {
         display: grid;
         grid-template-columns: max-content 1fr;
@@ -540,27 +772,18 @@
     }
 
     .confirm-facts dt {
-        color: var(--text-subtle);
-        text-transform: uppercase;
-        font-size: 0.72rem;
-        letter-spacing: 0.03em;
-        align-self: center;
+        color: var(--fg3);
     }
 
     .confirm-facts dd {
         margin: 0;
-        color: var(--text-secondary);
-        font-variant-numeric: tabular-nums;
+        color: var(--fg2);
     }
 
     .confirm-warning {
-        color: var(--text-muted);
         font-size: 0.85rem;
+        color: var(--fg2);
+        margin: 0 0 0.5rem;
         line-height: 1.5;
-        margin: 0 0 1.25rem;
-    }
-
-    .confirm-warning strong {
-        color: var(--text-primary);
     }
 </style>

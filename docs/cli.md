@@ -80,9 +80,8 @@ product name, run count, and last-played date. Newest-played first.
   5  native:h:\pelit\steam\…\core keeper\corekee…    Core Keeper         1  2023-08-04
 ```
 
-The id is what [`ludex merge`](#ludex-merge-src_id-dst_id) takes; the
-GUI's detail page also shows it as a small `#N` chip next to the
-publisher.
+The id is what [`ludex merge`](#ludex-merge-src_id-dst_id) takes. It is
+not shown in the GUI — this listing is the way to find it.
 
 Reads the database directly — works even when the daemon is stopped.
 

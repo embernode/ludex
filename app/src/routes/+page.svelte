@@ -14,9 +14,12 @@
     import {
         formatSeconds,
         formatTimestamp,
+        interactiveShare,
         observeTimestampFormat,
         type TimestampFormat,
     } from '$lib/format';
+    import MonogramTile from '$lib/MonogramTile.svelte';
+    import SourceLabel from '$lib/SourceLabel.svelte';
 
     let apps = $state<ApplicationSummary[]>([]);
     let hiddenBlocked = $state(0);
@@ -74,6 +77,20 @@
         return sorted;
     });
 
+    /** Doubles as a result counter while a filter is active. */
+    const subCount = $derived.by(() => {
+        const q = filterQuery.trim();
+        if (q) {
+            const n = visibleApps.length;
+            return `${n} ${n === 1 ? 'match' : 'matches'}`;
+        }
+        const sessions = apps.reduce((sum, a) => sum + a.run_count, 0);
+        return (
+            `${apps.length} ${apps.length === 1 ? 'game' : 'games'} · ` +
+            `${sessions} ${sessions === 1 ? 'session' : 'sessions'}`
+        );
+    });
+
     async function refresh() {
         try {
             const [allApps, blockedIds] = await Promise.all([
@@ -114,12 +131,39 @@
 </script>
 
 <main>
-    <header>
-        <h1>Games</h1>
-    </header>
+    <div class="titlerow">
+        <h1>Library</h1>
+        <!-- Counts are a claim about the user's data, so they wait for
+             a fetch that actually succeeded — "0 games · 0 sessions"
+             above "Couldn't reach the daemon" is a lie. -->
+        {#if !loading && !error}
+            <span class="subcount">{subCount}</span>
+        {/if}
+        <div class="spacer"></div>
+        {#if !loading && !error && apps.length > 0}
+            <div class="controls">
+                <label>
+                    <span class="visually-hidden">Filter games</span>
+                    <input
+                        type="search"
+                        placeholder="Filter by name or publisher…"
+                        bind:value={filterQuery}
+                    />
+                </label>
+                <label>
+                    <span class="visually-hidden">Sort games</span>
+                    <select bind:value={sortBy}>
+                        <option value="recent">Last played ↓</option>
+                        <option value="name">Name A–Z</option>
+                        <option value="played">Total runtime ↓</option>
+                    </select>
+                </label>
+            </div>
+        {/if}
+    </div>
 
     {#if loading && apps.length === 0}
-        <p class="hint">Loading…</p>
+        <p class="state">Loading…</p>
     {:else if error}
         <div class="error">
             <p><strong>Couldn't reach the daemon.</strong></p>
@@ -130,229 +174,232 @@
         <div class="empty">
             <p>No games tracked yet.</p>
             <p class="hint">
-                Launch a game through Steam or Proton while the daemon is running,
-                or open any fullscreen game with a graphics library loaded — it
-                will appear here automatically.
+                Launch a game through Steam or Proton while the daemon is
+                running, or open any fullscreen game with a graphics library
+                loaded — it will appear here automatically.
             </p>
         </div>
     {:else if apps.length === 0}
         <div class="empty">
             <p>Nothing to show — every tracked game is blocked.</p>
             <p class="hint">
-                Unblock from <a href="/settings">Settings</a> to see them here
-                again.
+                Unblock from <a href="/settings/detections">Detections</a> to see
+                them here again.
             </p>
         </div>
+    {:else if visibleApps.length === 0}
+        <p class="state">No games match "{filterQuery}".</p>
     {:else}
-        <div class="controls">
-            <label class="search">
-                <span class="visually-hidden">Filter games</span>
-                <input
-                    type="search"
-                    placeholder="Filter by name or publisher…"
-                    bind:value={filterQuery}
-                />
-            </label>
-            <label class="sort">
-                <span class="sort-label">Sort</span>
-                <select bind:value={sortBy}>
-                    <option value="recent">Last played</option>
-                    <option value="name">Name</option>
-                    <option value="played">Total runtime</option>
-                </select>
-            </label>
+        <div class="grid thead" aria-hidden="true">
+            <span></span>
+            <span>GAME</span>
+            <span class="right">RUNS</span>
+            <span class="right">FULL</span>
+            <span>INTERACTIVE</span>
+            <span>DETECTED VIA</span>
+            <span class="right">LAST PLAYED</span>
         </div>
-
-        {#if visibleApps.length === 0}
-            <p class="hint">No games match "{filterQuery}".</p>
-        {:else}
-        <ul class="apps">
+        <ul class="rows">
             {#each visibleApps as app (app.id)}
                 <li>
-                    <a class="row-link" href="/app/{app.id}">
-                        <div class="name">
-                            <span class="product">{app.product_name}</span>
-                            {#if app.publisher}
-                                <span class="publisher">{app.publisher}</span>
-                            {/if}
-                        </div>
-                        <div class="stats">
-                            <span class="stat">
-                                <span class="stat-label">runs</span>
-                                <span class="stat-value">{app.run_count}</span>
-                            </span>
-                            <span class="stat">
-                                <span class="stat-label">full</span>
-                                <span class="stat-value"
-                                    >{formatSeconds(app.total_full_seconds)}</span
-                                >
-                            </span>
-                            <span class="stat">
-                                <span class="stat-label">interactive</span>
-                                <span class="stat-value"
-                                    >{formatSeconds(
+                    <a class="grid row" href="/app/{app.id}">
+                        <MonogramTile name={app.product_name} />
+                        <span class="gname">{app.product_name}</span>
+                        <span class="right num dim">{app.run_count}</span>
+                        <span class="right num strong">
+                            {formatSeconds(app.total_full_seconds)}
+                        </span>
+                        <span class="interactive">
+                            <span class="bar">
+                                <span
+                                    style="width:{interactiveShare(
                                         app.total_interactive_seconds,
-                                    )}</span
-                                >
+                                        app.total_full_seconds,
+                                    )}%"
+                                ></span>
                             </span>
-                            <span class="stat">
-                                <span class="stat-label">last played</span>
-                                <span class="stat-value"
-                                    >{formatTimestamp(
-                                        app.last_played_at,
-                                        tsFormat,
-                                    )}</span
-                                >
+                            <span class="mono num dim">
+                                {formatSeconds(app.total_interactive_seconds)}
                             </span>
-                        </div>
+                        </span>
+                        <SourceLabel launcherType={app.launcher_type} />
+                        <span class="right num dim">
+                            {formatTimestamp(app.last_played_at, tsFormat)}
+                        </span>
                     </a>
                 </li>
             {/each}
         </ul>
-        {/if}
     {/if}
 </main>
 
 <style>
     main {
-        max-width: 72ch;
+        max-width: 1000px;
         margin: 0 auto;
-        padding: 2rem;
+        padding: 22px 20px 40px;
     }
 
-    header {
+    .titlerow {
         display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 1.5rem;
+        align-items: flex-end;
+        gap: 14px;
+        margin-bottom: 16px;
     }
 
     h1 {
-        font-size: 1.75rem;
+        font-size: 24px;
         font-weight: 600;
+        line-height: 1;
         margin: 0;
         letter-spacing: -0.02em;
     }
 
-    .controls {
-        display: flex;
-        gap: 0.75rem;
-        align-items: center;
-        margin-bottom: 1rem;
+    .subcount {
+        font-size: 13px;
+        padding-bottom: 2px;
+        color: var(--fg3);
     }
 
-    .search {
+    .spacer {
         flex: 1;
     }
 
-    .search input {
-        width: 100%;
-        box-sizing: border-box;
-    }
-
-    input[type='search'],
-    select {
-        font: inherit;
-        padding: 0.45rem 0.6rem;
-        border: 1px solid var(--button-border);
-        background: var(--bg-surface);
-        color: var(--text-primary);
-        border-radius: 6px;
-    }
-
-    input[type='search']:focus,
-    select:focus {
-        outline: 2px solid var(--accent);
-        outline-offset: -1px;
-    }
-
-    .sort {
+    .controls {
         display: flex;
         align-items: center;
-        gap: 0.5rem;
+        gap: 8px;
+        padding-bottom: 1px;
     }
 
-    .sort-label {
-        font-size: 0.82rem;
-        color: var(--text-label);
+    .controls input {
+        width: 180px;
+        font: inherit;
+        font-size: 12.5px;
+        color: var(--fg);
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 5px 9px;
+        outline: none;
     }
 
-    .apps {
+    .controls input:focus {
+        border-color: var(--ac);
+    }
+
+    /* Bare by design — the control reads as a label that happens to be
+       clickable rather than as a form field. */
+    .controls select {
+        appearance: none;
+        -webkit-appearance: none;
+        font: inherit;
+        font-size: 12.5px;
+        color: var(--fg2);
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        padding: 5px 4px;
+        cursor: pointer;
+        outline: none;
+    }
+
+    .controls select:focus-visible {
+        outline: 2px solid var(--ac);
+        outline-offset: 1px;
+    }
+
+    .grid {
+        display: grid;
+        grid-template-columns:
+            34px minmax(180px, 1fr) 54px 92px 168px 140px 112px;
+        gap: 13px;
+        align-items: center;
+    }
+
+    .thead {
+        padding: 0 13px 8px;
+        border-bottom: 1px solid var(--line);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.09em;
+        color: var(--fg3);
+    }
+
+    .rows {
         list-style: none;
-        padding: 0;
         margin: 0;
-        display: grid;
-        grid-template-columns: auto auto auto 1fr;
-        row-gap: 0.5rem;
-        column-gap: 1.25rem;
+        padding: 0;
     }
 
-    .apps li {
-        display: grid;
-        grid-template-columns: subgrid;
-        grid-column: 1 / -1;
-    }
-
-    .row-link {
-        display: grid;
-        grid-template-columns: subgrid;
-        grid-column: 1 / -1;
-        row-gap: 0.5rem;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 1rem 1.25rem;
-        background: var(--bg-surface);
-        color: inherit;
+    .row {
+        padding: 10px 13px;
+        border-bottom: 1px solid var(--hair);
         text-decoration: none;
-        transition:
-            border-color 120ms,
-            box-shadow 120ms;
+        color: inherit;
     }
 
-    .row-link:hover {
-        border-color: var(--border-strong);
-        box-shadow: 0 1px 3px var(--row-shadow);
+    .row:hover {
+        background: var(--tile);
     }
 
-    .name {
-        grid-column: 1 / -1;
-        display: flex;
-        align-items: baseline;
-        gap: 0.75rem;
-    }
-
-    .product {
-        font-size: 1.05rem;
+    .gname {
+        font-size: 13.5px;
         font-weight: 600;
-        color: var(--text-primary);
+        color: var(--fg);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
-    .publisher {
-        font-size: 0.85rem;
-        color: var(--text-muted);
+    .right {
+        text-align: right;
     }
 
-    .stats {
-        display: grid;
-        grid-template-columns: subgrid;
-        grid-column: 1 / -1;
-        font-size: 0.85rem;
-    }
-
-    .stat {
-        display: flex;
-        flex-direction: column;
-    }
-
-    .stat-label {
-        color: var(--text-subtle);
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-    }
-
-    .stat-value {
-        color: var(--text-secondary);
+    .num {
         font-variant-numeric: tabular-nums;
+    }
+
+    .mono {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        font-size: 12px;
+    }
+
+    .dim {
+        font-size: 12px;
+        color: var(--fg2);
+    }
+
+    .strong {
+        font-size: 13px;
+        font-weight: 500;
+    }
+
+    .interactive {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+    }
+
+    .bar {
+        flex: 1;
+        height: 5px;
+        border-radius: 99px;
+        overflow: hidden;
+        background: var(--track);
+    }
+
+    .bar > span {
+        display: block;
+        height: 100%;
+        background: var(--ac);
+    }
+
+    .state {
+        font-size: 12.5px;
+        color: var(--fg3);
+        padding: 20px 13px;
+        margin: 0;
     }
 </style>

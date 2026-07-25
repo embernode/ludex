@@ -143,3 +143,16 @@ function formatRelative(d: Date): string {
     if (abs < MS_YEAR) return rtf.format(Math.round(diff / MS_MONTH), 'month');
     return rtf.format(Math.round(diff / MS_YEAR), 'year');
 }
+
+/**
+ * Interactive runtime as a percentage of full runtime, for the share
+ * bars in the library and on the app-detail page.
+ *
+ * Clamped to `[0, 100]` and zero when there is no full runtime to
+ * divide by, so a bar can never render wider than its track or
+ * divide by zero on a session that recorded nothing.
+ */
+export function interactiveShare(interactive: number, full: number): number {
+    if (full <= 0) return 0;
+    return Math.max(0, Math.min(100, (interactive / full) * 100));
+}
