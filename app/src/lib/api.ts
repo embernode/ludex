@@ -148,6 +148,28 @@ export async function listSessionsForApplication(
     });
 }
 
+/**
+ * The desktop's colour-scheme preference, from the freedesktop
+ * appearance portal: `"dark"`, `"light"`, `"no-preference"`, or
+ * `"unavailable"` when no portal answered.
+ *
+ * Authoritative where the webview's own report is not — on KDE Plasma
+ * Wayland `prefers-color-scheme` frequently disagrees with the actual
+ * desktop setting.
+ */
+export async function getColorScheme(): Promise<string> {
+    return invoke<string>('get_color_scheme');
+}
+
+/** Fires when the desktop's colour-scheme preference changes. */
+export function onColorSchemeChanged(
+    cb: (scheme: string) => void,
+): Promise<UnlistenFn> {
+    return safeListen<string>('ludex:color-scheme-changed', (e) =>
+        cb(e.payload),
+    );
+}
+
 /** Primary keys of every application the user has blocked. */
 export async function listBlockedApplicationIds(): Promise<number[]> {
     return invoke<number[]>('list_blocked_application_ids');

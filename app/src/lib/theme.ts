@@ -20,6 +20,15 @@ export type ThemeMode = 'dark' | 'light' | 'auto';
 
 const MODE_KEY = 'ludex-theme';
 const ACCENT_KEY = 'ludex-accent';
+/**
+ * Last scheme the appearance portal reported. Cached only so the
+ * pre-paint bootstrap in `app.html` can seed `auto` with it: the
+ * portal answer itself arrives after mount, which on a desktop the
+ * media query gets wrong means every launch would paint the wrong
+ * scheme and then snap. A stale value costs at most that same frame,
+ * because the live answer overwrites it moments later.
+ */
+const PORTAL_KEY = 'ludex-portal-scheme';
 
 /**
  * Accent choices offered in Settings. The hexes come from the design's
@@ -77,16 +86,60 @@ export function storedMode(): ThemeMode {
     }
 }
 
+/**
+ * The desktop's preference as last reported by the appearance portal,
+ * or `null` when the portal expressed none or wasn't reachable.
+ */
+let portalPreference: Theme | null = null;
+
+/**
+ * Decode a portal answer into a scheme.
+ *
+ * `no-preference` is the desktop explicitly declining to choose, and
+ * `unavailable` means nothing answered; both fall through to the
+ * media query rather than being read as a preference for dark.
+ */
+export function preferenceFromPortal(scheme: string): Theme | null {
+    if (scheme === 'dark') return 'dark';
+    if (scheme === 'light') return 'light';
+    return null;
+}
+
+/**
+ * Record what the desktop asked for. Returns whether the value
+ * changed, so callers can skip a needless re-apply.
+ */
+export function setPortalPreference(scheme: string): boolean {
+    const next = preferenceFromPortal(scheme);
+    try {
+        if (next) localStorage.setItem(PORTAL_KEY, next);
+        else localStorage.removeItem(PORTAL_KEY);
+    } catch (_) {
+        // Non-fatal: only costs the pre-paint seed on the next launch.
+    }
+    if (next === portalPreference) return false;
+    portalPreference = next;
+    return true;
+}
+
 /** True when the desktop asks for a dark palette. */
 function prefersDark(): boolean {
     if (typeof window === 'undefined' || !window.matchMedia) return false;
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
-/** The scheme a mode paints as right now. */
+/**
+ * The scheme a mode paints as right now.
+ *
+ * `auto` prefers the portal's answer over `prefers-color-scheme`: the
+ * media query reports what the *webview* believes, which on KDE Plasma
+ * Wayland frequently disagrees with the actual desktop setting. The
+ * query remains the fallback for desktops with no portal.
+ */
 function resolveScheme(mode: ThemeMode): Theme {
-    if (mode === 'auto') return prefersDark() ? 'dark' : 'light';
-    return mode;
+    if (mode !== 'auto') return mode;
+    if (portalPreference) return portalPreference;
+    return prefersDark() ? 'dark' : 'light';
 }
 
 /**
@@ -112,9 +165,8 @@ export function applyMode(mode: ThemeMode): Theme {
  * flips. Only meaningful while the mode is `auto`; callers are
  * expected to check. Returns a disposer.
  *
- * This is the `prefers-color-scheme` approximation of Auto. The
- * design asks for the freedesktop appearance portal, which is a
- * separate piece of work in the Tauri host — see the redesign plan.
+ * This is the fallback for desktops with no appearance portal. Where
+ * a portal answers, its preference wins — see `setPortalPreference`.
  */
 export function watchSystemScheme(callback: (theme: Theme) => void): () => void {
     if (typeof window === 'undefined' || !window.matchMedia) return () => {};

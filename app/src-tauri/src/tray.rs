@@ -11,8 +11,11 @@
 //!
 //! Icon follows the system colour scheme. Both inks are embedded at
 //! compile time — black shapes for a light panel, white shapes for a
-//! dark one — and the tray swaps between them based on Tauri's
-//! `window.theme()` and its `ThemeChanged` event.
+//! dark one — and the tray picks between them from the freedesktop
+//! appearance portal, falling back to Tauri's `window.theme()` on
+//! desktops that don't answer. The portal is authoritative because
+//! `window.theme()` reports the webview's belief, which on KDE Plasma
+//! Wayland frequently disagrees with the desktop.
 //!
 //! We use [`ksni`] rather than Tauri's built-in `tray-icon` because
 //! the latter pulls in the abandoned `libappindicator-rs` crate
@@ -35,6 +38,7 @@ use tauri::image::Image;
 use tauri::{AppHandle, Listener, Manager, Runtime, Theme, WindowEvent};
 use tokio::sync::mpsc;
 
+use crate::appearance::{ColorScheme, EVENT_COLOR_SCHEME_CHANGED};
 use crate::bridge::{
     TrackerBridge, EVENT_DAEMON_DISCONNECTED, EVENT_DAEMON_RECONNECTED, EVENT_SESSION_ENDED,
     EVENT_SESSION_STARTED,
@@ -59,6 +63,11 @@ const TOOLTIP_ACTIVE_UNRESOLVED: &str = "ludex · session active";
 // belongs on: `icon_light.png` is the *white* silhouette, which is the
 // one that shows up against a dark panel. Naming the constants after
 // the ink rather than the theme keeps that from being read backwards.
+/// How long to wait for the appearance portal while seeding the icon.
+/// A local bus call is a couple of milliseconds; this only bounds the
+/// pathological case so a wedged portal can't delay the window.
+const PORTAL_SEED_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
 const ICON_PNG_WHITE: &[u8] = include_bytes!("../icons/icon_light.png");
 const ICON_PNG_BLACK: &[u8] = include_bytes!("../icons/icon.png");
 const ICON_PNG_ACTIVE_WHITE: &[u8] = include_bytes!("../icons/icon_active_light.png");
@@ -201,25 +210,41 @@ pub(crate) fn install<R: Runtime>(
         },
     };
 
-    // Initial theme: ask the main window. Tauri's Linux backend
-    // returns the webview's reported colour scheme, which follows
-    // the GTK / freedesktop portal setting — but on KDE Plasma
-    // Wayland it frequently reports Light or returns Err even on
-    // a dark system. When detection is inconclusive we default to
-    // dark: it matches the embedded bundle icon (the dark-shape
-    // variant) and matches what the majority of KDE panels look
-    // like. A later `ThemeChanged(Light)` event will flip us back
-    // to the light-shape variant if the user really is on a
-    // light desktop.
-    let initial_is_dark = match app
-        .get_webview_window(MAIN_WINDOW)
-        .and_then(|w| w.theme().ok())
-    {
-        Some(Theme::Light) => false,
-        // `Some(Theme::Dark)` → dark, `None`/`Err` → default dark
-        // (the Theme enum is #[non_exhaustive], so the wildcard
-        // below also covers any variant added upstream).
-        _ => true,
+    // Initial theme, resolved *before* the tray is built: the handle
+    // it would need to correct itself afterwards doesn't exist until
+    // the service task has spawned, so a later fix-up would fire into
+    // an empty slot and be dropped.
+    //
+    // The portal is authoritative. Asking it costs a couple of
+    // milliseconds on the session bus, bounded below so a wedged
+    // portal can't hold up the window.
+    let portal_scheme = tauri::async_runtime::block_on(async {
+        tokio::time::timeout(
+            PORTAL_SEED_TIMEOUT,
+            crate::appearance::current_color_scheme(),
+        )
+        .await
+        .ok()
+        .flatten()
+    });
+
+    let initial_is_dark = match portal_scheme {
+        Some(scheme) => scheme.prefers_dark(),
+        // No portal: fall back to the main window, which on KDE
+        // Plasma Wayland frequently reports Light or errors on a
+        // demonstrably dark system. Defaulting to dark when detection
+        // is inconclusive matches the embedded bundle icon and the
+        // usual Plasma panel.
+        None => match app
+            .get_webview_window(MAIN_WINDOW)
+            .and_then(|w| w.theme().ok())
+        {
+            Some(Theme::Light) => false,
+            // `Some(Theme::Dark)` → dark, `None`/`Err` → default dark
+            // (the Theme enum is #[non_exhaustive], so the wildcard
+            // also covers any variant added upstream).
+            _ => true,
+        },
     };
 
     let tray = LudexTray {
@@ -327,9 +352,18 @@ fn register_event_listeners<R: Runtime>(
     // On reconnect, reconcile rather than assume idle: a game may have
     // been running the whole time (or the daemon just re-detected one at
     // cold start) and its SessionStarted can land before we re-subscribe.
-    let tx_reconnected = tx;
+    let tx_reconnected = tx.clone();
     app.listen_any(EVENT_DAEMON_RECONNECTED, move |_event| {
         let _ = tx_reconnected.send(TrayStateUpdate::DaemonReconnected);
+    });
+    // The portal is authoritative for the desktop's colour scheme,
+    // unlike the webview's own report, so let it override whatever
+    // the seed above guessed.
+    let tx_scheme = tx;
+    app.listen_any(EVENT_COLOR_SCHEME_CHANGED, move |event| {
+        if let Some(scheme) = ColorScheme::from_wire(event.payload()) {
+            let _ = tx_scheme.send(TrayStateUpdate::ThemeChanged(scheme.prefers_dark()));
+        }
     });
 }
 
@@ -580,6 +614,31 @@ mod tests {
         register_event_listeners(app.handle(), tx);
         app.handle().emit(event, payload).unwrap();
         rx.try_recv().ok()
+    }
+
+    // The payload arrives JSON-encoded through Tauri's event system,
+    // so this also pins `ColorScheme::from_wire`'s quote handling.
+    #[test]
+    fn color_scheme_event_maps_to_theme_changed() {
+        assert_eq!(
+            update_for(EVENT_COLOR_SCHEME_CHANGED, "dark"),
+            Some(TrayStateUpdate::ThemeChanged(true)),
+        );
+        assert_eq!(
+            update_for(EVENT_COLOR_SCHEME_CHANGED, "light"),
+            Some(TrayStateUpdate::ThemeChanged(false)),
+        );
+        // The desktop declining to choose still needs an icon; dark
+        // matches the bundled default and the usual Plasma panel.
+        assert_eq!(
+            update_for(EVENT_COLOR_SCHEME_CHANGED, "no-preference"),
+            Some(TrayStateUpdate::ThemeChanged(true)),
+        );
+    }
+
+    #[test]
+    fn unparseable_color_scheme_payload_is_ignored() {
+        assert_eq!(update_for(EVENT_COLOR_SCHEME_CHANGED, "nonsense"), None);
     }
 
     #[test]

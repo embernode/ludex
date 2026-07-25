@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { ACCENTS, DEFAULT_ACCENT, nextMode, storedMode } from './theme';
+import {
+    ACCENTS,
+    DEFAULT_ACCENT,
+    nextMode,
+    preferenceFromPortal,
+    storedMode,
+} from './theme';
 
 describe('nextMode', () => {
     // The single cycling control replaces a tri-state segment, so the
@@ -53,5 +59,28 @@ describe('ACCENTS', () => {
         for (const { hex } of ACCENTS) {
             expect(hex).toMatch(/^#[0-9a-f]{6}$/);
         }
+    });
+});
+
+// The freedesktop appearance portal is authoritative for what the
+// desktop wants, unlike `prefers-color-scheme`, which on KDE Plasma
+// Wayland frequently disagrees with the actual setting.
+describe('preferenceFromPortal', () => {
+    it('maps the portal answers to a scheme', () => {
+        expect(preferenceFromPortal('dark')).toBe('dark');
+        expect(preferenceFromPortal('light')).toBe('light');
+    });
+
+    // "No preference" is the desktop declining to choose, which is a
+    // different thing from wanting dark — falling through to the media
+    // query is the honest response.
+    it('yields no preference for the portal saying so', () => {
+        expect(preferenceFromPortal('no-preference')).toBeNull();
+    });
+
+    it('yields no preference when no portal answered', () => {
+        expect(preferenceFromPortal('unavailable')).toBeNull();
+        expect(preferenceFromPortal('')).toBeNull();
+        expect(preferenceFromPortal('nonsense')).toBeNull();
     });
 });

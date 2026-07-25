@@ -8,6 +8,7 @@
         currentAccent,
         currentMode,
         MODE_NOTE,
+        portalIsDriving,
         setAccent,
     } from '$lib/themeState.svelte';
 
@@ -20,9 +21,13 @@
 
     const note = $derived.by(() => {
         const mode = currentMode();
-        return mode === 'auto'
-            ? `Following the desktop colour scheme — currently ${resolved}.`
-            : MODE_NOTE[mode];
+        if (mode !== 'auto') return MODE_NOTE[mode];
+        // Naming the mechanism matters here: without a portal this is
+        // the webview's own guess, which on this desktop is often
+        // wrong, and the user deserves to know which they are getting.
+        return portalIsDriving()
+            ? `Following the desktop colour scheme via the appearance portal — currently ${resolved}.`
+            : `Following the browser's colour-scheme hint — currently ${resolved}. No appearance portal answered.`;
     });
 </script>
 

@@ -3,14 +3,44 @@
     import { page } from '$app/state';
     import LiveSessionPill from '$lib/LiveSessionPill.svelte';
     import ThemeCycleButton from '$lib/ThemeCycleButton.svelte';
-    import { watchSystemScheme } from '$lib/theme';
-    import { refreshAuto } from '$lib/themeState.svelte';
+    import { getColorScheme, onColorSchemeChanged } from '$lib/api';
+    import { preferenceFromPortal, watchSystemScheme } from '$lib/theme';
+    import {
+        applyPortalScheme,
+        notePortalAnswered,
+        refreshAuto,
+    } from '$lib/themeState.svelte';
 
     let { children } = $props();
 
-    // While on `auto`, follow the desktop for as long as the window is
-    // open — not just at startup.
-    onMount(() => watchSystemScheme(refreshAuto));
+    onMount(() => {
+        // The appearance portal is authoritative for what the desktop
+        // wants; the media query below is the fallback for desktops
+        // that don't answer.
+        // "Driving" means the portal actually decided the scheme. It
+        // can answer `no-preference`, which is the desktop declining
+        // to choose — the media query decides then, and the Settings
+        // help line must not claim otherwise.
+        const adopt = (scheme: string) => {
+            notePortalAnswered(preferenceFromPortal(scheme) !== null);
+            applyPortalScheme(scheme);
+        };
+
+        getColorScheme()
+            .then(adopt)
+            .catch(() => notePortalAnswered(false));
+
+        const unlistenPortal = onColorSchemeChanged(adopt);
+
+        // While on `auto`, follow the desktop for as long as the window
+        // is open — not just at startup.
+        const unwatch = watchSystemScheme(refreshAuto);
+
+        return () => {
+            unwatch();
+            unlistenPortal.then((u) => u()).catch(() => {});
+        };
+    });
 
     // Mark a nav link active when the current route matches.
     // `startsWith` rather than `===` so nested routes (e.g.

@@ -23,11 +23,23 @@
                     if (mode !== 'light' && mode !== 'dark' && mode !== 'auto') {
                         mode = 'auto';
                     }
-                    var prefersDark =
-                        window.matchMedia &&
-                        window.matchMedia('(prefers-color-scheme: dark)').matches;
+                    // For 'auto', prefer the appearance portal's last
+                    // answer over the media query. The live answer only
+                    // arrives after the app mounts, and on a desktop
+                    // where the two disagree — which is why the portal
+                    // is consulted at all — seeding from the query
+                    // would paint the wrong scheme and then snap.
+                    var portal = localStorage.getItem('ludex-portal-scheme');
+                    var auto =
+                        portal === 'dark' || portal === 'light'
+                            ? portal
+                            : window.matchMedia &&
+                                window.matchMedia('(prefers-color-scheme: dark)')
+                                    .matches
+                              ? 'dark'
+                              : 'light';
                     document.documentElement.dataset.theme =
-                        mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode;
+                        mode === 'auto' ? auto : mode;
                     var accent = localStorage.getItem('ludex-accent');
                     if (accent && /^#[0-9a-fA-F]{6}$/.test(accent)) {
                         document.documentElement.style.setProperty('--raw', accent);

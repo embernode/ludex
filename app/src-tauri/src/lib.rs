@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use bridge::TrackerBridge;
 
+mod appearance;
 mod bridge;
 mod tray;
 
@@ -43,9 +44,21 @@ pub fn run() {
             // GetApplication(id) to resolve the active game's name.
             tray::install(app.handle(), &bridge)?;
 
+            // Watch the desktop's colour-scheme preference. Tauri's
+            // own detection is unreliable on this platform, so the
+            // portal is what "Auto" and the tray icon follow. Spawned
+            // after the tray so its startup broadcast can't outrun the
+            // tray's listener; the tray also reads the portal itself,
+            // so neither ordering nor that broadcast is load-bearing.
+            let appearance_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                appearance::run_appearance_watcher(appearance_handle).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            appearance::get_color_scheme,
             bridge::list_applications,
             bridge::get_application,
             bridge::list_recent_sessions,

@@ -10,6 +10,7 @@ import {
     applyAccent,
     applyMode,
     nextMode,
+    setPortalPreference,
     storedAccent,
     storedMode,
     type ThemeMode,
@@ -20,6 +21,7 @@ import {
 // already agrees with the bootstrap in `app.html`.
 let mode = $state<ThemeMode>(storedMode());
 let accent = $state<string>(storedAccent());
+let portalAnswered = $state<boolean>(false);
 
 export const MODE_LABEL: Record<ThemeMode, string> = {
     dark: 'Dark',
@@ -54,6 +56,24 @@ export function cycleMode(): void {
 /** Re-resolve `auto` after the desktop's preference changed. */
 export function refreshAuto(): void {
     if (mode === 'auto') applyMode(mode);
+}
+
+/**
+ * Adopt a colour-scheme answer from the appearance portal, repainting
+ * if the app is following the desktop.
+ */
+export function applyPortalScheme(scheme: string): void {
+    if (setPortalPreference(scheme)) refreshAuto();
+}
+
+/** Whether the portal, rather than the media query, is driving Auto. */
+export function portalIsDriving(): boolean {
+    return portalAnswered;
+}
+
+/** Record that a portal answer arrived, for the Settings help line. */
+export function notePortalAnswered(answered: boolean): void {
+    portalAnswered = answered;
 }
 
 export function setAccent(hex: string): void {
