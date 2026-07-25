@@ -9,11 +9,10 @@
 //! `ludex:session-started` / `ludex:session-ended` Tauri events
 //! that [`crate::bridge`] forwards.
 //!
-//! Icon follows the system colour scheme: a light icon (dark
-//! shapes, for light panels) and a dark icon (light shapes, for
-//! dark panels) are both embedded at compile time, and the tray
-//! swaps between them based on Tauri's `window.theme()` and its
-//! `ThemeChanged` event.
+//! Icon follows the system colour scheme. Both inks are embedded at
+//! compile time — black shapes for a light panel, white shapes for a
+//! dark one — and the tray swaps between them based on Tauri's
+//! `window.theme()` and its `ThemeChanged` event.
 //!
 //! We use [`ksni`] rather than Tauri's built-in `tray-icon` because
 //! the latter pulls in the abandoned `libappindicator-rs` crate
@@ -56,10 +55,14 @@ const TOOLTIP_ACTIVE_UNRESOLVED: &str = "ludex · session active";
 /// green to indicate an in-flight session — same overall logo
 /// silhouette, so the user reads "active" as a colour change
 /// rather than a different shape.
-const ICON_PNG_LIGHT: &[u8] = include_bytes!("../icons/icon_light.png");
-const ICON_PNG_DARK: &[u8] = include_bytes!("../icons/icon.png");
-const ICON_PNG_ACTIVE_LIGHT: &[u8] = include_bytes!("../icons/icon_active_light.png");
-const ICON_PNG_ACTIVE_DARK: &[u8] = include_bytes!("../icons/icon_active.png");
+// The file names describe the colour of the artwork, not the panel it
+// belongs on: `icon_light.png` is the *white* silhouette, which is the
+// one that shows up against a dark panel. Naming the constants after
+// the ink rather than the theme keeps that from being read backwards.
+const ICON_PNG_WHITE: &[u8] = include_bytes!("../icons/icon_light.png");
+const ICON_PNG_BLACK: &[u8] = include_bytes!("../icons/icon.png");
+const ICON_PNG_ACTIVE_WHITE: &[u8] = include_bytes!("../icons/icon_active_light.png");
+const ICON_PNG_ACTIVE_BLACK: &[u8] = include_bytes!("../icons/icon_active.png");
 
 struct ThemeVariant {
     /// No session in flight; the plain logo silhouette.
@@ -70,12 +73,10 @@ struct ThemeVariant {
 }
 
 struct ThemeIcons {
-    /// Dark shapes on a transparent background — reads on a light
-    /// system panel.
-    light: ThemeVariant,
-    /// Light shapes on a transparent background — reads on a dark
-    /// system panel.
-    dark: ThemeVariant,
+    /// Black shapes — the pair that reads against a light panel.
+    on_light: ThemeVariant,
+    /// White shapes — the pair that reads against a dark panel.
+    on_dark: ThemeVariant,
 }
 
 struct LudexTray<R: Runtime> {
@@ -101,9 +102,9 @@ impl<R: Runtime> Tray for LudexTray<R> {
 
     fn icon_pixmap(&self) -> Vec<Icon> {
         let variant = if self.is_dark {
-            &self.icons.dark
+            &self.icons.on_dark
         } else {
-            &self.icons.light
+            &self.icons.on_light
         };
         let icon = if self.is_active {
             &variant.active
@@ -190,13 +191,13 @@ pub(crate) fn install<R: Runtime>(
     bridge: &Arc<TrackerBridge>,
 ) -> anyhow::Result<()> {
     let icons = ThemeIcons {
-        light: ThemeVariant {
-            idle: decode_icon(ICON_PNG_LIGHT)?,
-            active: decode_icon(ICON_PNG_ACTIVE_LIGHT)?,
+        on_light: ThemeVariant {
+            idle: decode_icon(ICON_PNG_BLACK)?,
+            active: decode_icon(ICON_PNG_ACTIVE_BLACK)?,
         },
-        dark: ThemeVariant {
-            idle: decode_icon(ICON_PNG_DARK)?,
-            active: decode_icon(ICON_PNG_ACTIVE_DARK)?,
+        on_dark: ThemeVariant {
+            idle: decode_icon(ICON_PNG_WHITE)?,
+            active: decode_icon(ICON_PNG_ACTIVE_WHITE)?,
         },
     };
 
@@ -479,9 +480,9 @@ async fn apply_session<R: Runtime>(
 
 fn apply_window_icon<R: Runtime>(window: &tauri::WebviewWindow<R>, is_dark: bool) {
     let bytes = if is_dark {
-        ICON_PNG_DARK
+        ICON_PNG_WHITE
     } else {
-        ICON_PNG_LIGHT
+        ICON_PNG_BLACK
     };
     match Image::from_bytes(bytes) {
         Ok(img) => {
