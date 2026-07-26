@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+    formatDate,
+    formatDuration,
     formatHoursMinutes,
+    formatTime,
     outcomeLabel,
     relativeDayName,
     sharePercent,
@@ -39,6 +42,103 @@ describe('sharePercent', () => {
     it('clamps rather than overflowing the track', () => {
         expect(sharePercent(150, 100)).toBe(100);
         expect(sharePercent(-10, 100)).toBe(0);
+    });
+});
+
+// The date-only and time-only renderers exist so fields that need one
+// half of a timestamp still follow the user's format preference, rather
+// than hardcoding a locale default and ignoring the setting.
+describe('formatDate', () => {
+    // Built from local parts: the renderers work in local time, so a
+    // literal UTC string would land on the wrong day west of UTC.
+    const at = new Date(2026, 6, 24, 18, 12).toISOString();
+
+    it('renders the tabular formats without a time', () => {
+        expect(formatDate(at, 'iso')).toBe('2026-07-24');
+        expect(formatDate(at, 'dmy')).toBe('24.07.2026');
+    });
+
+    it('carries no clock in the locale-driven form', () => {
+        const out = formatDate(at, 'short');
+        expect(out).toContain('2026');
+        expect(out).not.toMatch(/\d{1,2}:\d{2}/);
+    });
+
+    // A date-only field under the relative preference should read
+    // relatively — that is the whole point of choosing it.
+    it('reads relatively when that is the preference', () => {
+        const daysAgo = new Date();
+        daysAgo.setDate(daysAgo.getDate() - 3);
+        expect(formatDate(daysAgo.toISOString(), 'relative')).toMatch(/ago|days?/i);
+    });
+
+    it('handles the daemon empty string and unparseable input', () => {
+        expect(formatDate('', 'iso')).toBe('—');
+        expect(formatDate('not a date', 'iso')).toBe('not a date');
+    });
+});
+
+describe('formatTime', () => {
+    const at = new Date(2026, 6, 24, 18, 12).toISOString();
+
+    it('gives a 24-hour clock for the tabular formats', () => {
+        expect(formatTime(at, 'iso')).toBe('18:12');
+        expect(formatTime(at, 'dmy')).toBe('18:12');
+    });
+
+    it('gives a clock for the locale-driven form', () => {
+        expect(formatTime(at, 'short')).toMatch(/\d{1,2}:\d{2}/);
+    });
+
+    // `relative` has no notion of a time of day, and a log row reading
+    // "2 hours ago – 1 hour ago" is useless. A clock column stays a
+    // clock whatever the preference says.
+    it('stays a clock under the relative preference', () => {
+        const out = formatTime(at, 'relative');
+        expect(out).toMatch(/\d{1,2}:\d{2}/);
+        expect(out).not.toMatch(/ago/i);
+    });
+
+    it('handles the daemon empty string and unparseable input', () => {
+        expect(formatTime('', 'iso')).toBe('—');
+        expect(formatTime('not a date', 'iso')).toBe('—');
+    });
+});
+
+// Every duration shown to the user except the live pill. Drops
+// seconds like formatHoursMinutes, but keeps a day unit because these
+// values legitimately span days — a game's total runtime, its longest
+// session — where an hours-only figure becomes unreadable.
+describe('formatDuration', () => {
+    const H = 3600;
+    const D = 86_400;
+
+    it('keeps days for values that span them', () => {
+        expect(formatDuration(3 * D + 5 * H)).toBe('3d 5h');
+        expect(formatDuration(3 * D)).toBe('3d');
+    });
+
+    it('gives padded hours and minutes below a day', () => {
+        expect(formatDuration(2 * H + 5 * 60)).toBe('2h 05m');
+        expect(formatDuration(2 * H)).toBe('2h 00m');
+    });
+
+    it('gives bare minutes below an hour', () => {
+        expect(formatDuration(45 * 60)).toBe('45m');
+    });
+
+    it('rounds the seconds away rather than truncating', () => {
+        expect(formatDuration(59 * 60 + 40)).toBe('1h 00m');
+        expect(formatDuration(40)).toBe('1m');
+        // Rounds up across the day boundary too, rather than showing
+        // 24h in a formatter that has a day unit.
+        expect(formatDuration(D - 20)).toBe('1d');
+    });
+
+    it('does not round a real duration away to nothing', () => {
+        expect(formatDuration(20)).toBe('<1m');
+        expect(formatDuration(0)).toBe('0m');
+        expect(formatDuration(-5)).toBe('0m');
     });
 });
 

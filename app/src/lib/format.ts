@@ -106,22 +106,89 @@ export function formatTimestamp(
     }
 }
 
+/**
+ * The date half of a timestamp, in the user's chosen format.
+ *
+ * Fields that carry a calendar date and no time of day — first
+ * detection, a log day heading — need this rather than
+ * `formatTimestamp`, whose trailing `18:12` is noise on a date. Both
+ * read the same single preference, so a date-only field still follows
+ * Settings instead of hardcoding a locale default.
+ *
+ * `relative` renders relatively, which is the point of choosing it.
+ * Callers that pair this with their own relative label should pass an
+ * absolute format instead, or the two will say the same thing twice.
+ */
+export function formatDate(
+    iso: string,
+    format: TimestampFormat = DEFAULT_TIMESTAMP_FORMAT,
+): string {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    switch (format) {
+        case 'iso':
+            return isoDate(d);
+        case 'dmy':
+            return dmyDate(d);
+        case 'relative':
+            return formatRelative(d);
+        case 'short':
+        default:
+            return d.toLocaleDateString(undefined, {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+            });
+    }
+}
+
+/**
+ * The time-of-day half of a timestamp, as a clock.
+ *
+ * Deliberately ignores `relative`: a column of clock times is what
+ * makes a log readable, and "2 hours ago – 1 hour ago" tells the
+ * reader nothing about when a session actually ran. The tabular
+ * formats give 24-hour; `short` and `relative` defer to the locale,
+ * which is where a 12-hour clock comes from.
+ *
+ * Returns an em dash for empty input, which the daemon uses to mean a
+ * session is still open.
+ */
+export function formatTime(
+    iso: string,
+    format: TimestampFormat = DEFAULT_TIMESTAMP_FORMAT,
+): string {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    if (format === 'iso' || format === 'dmy') {
+        return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    }
+    return d.toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+}
+
 function pad2(n: number): string {
     return String(n).padStart(2, '0');
 }
 
+function isoDate(d: Date): string {
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function dmyDate(d: Date): string {
+    return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()}`;
+}
+
 function formatIso(d: Date): string {
-    return (
-        `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
-        `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
-    );
+    return `${isoDate(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
 function formatDmy(d: Date): string {
-    return (
-        `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()} ` +
-        `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
-    );
+    return `${dmyDate(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
 // Thresholds, in milliseconds. Kept as module constants so the unit
@@ -203,6 +270,34 @@ const OUTCOMES: Record<string, string> = {
 export function outcomeLabel(exitReason: string | null | undefined): string {
     if (!exitReason) return 'Open';
     return OUTCOMES[exitReason] ?? exitReason.replace(/_/g, ' ');
+}
+
+/**
+ * A duration for display, seconds rounded away: `3d 5h` / `2h 05m` /
+ * `45m`.
+ *
+ * This is what every user-facing duration uses apart from the live
+ * session pill, which keeps seconds so a counter under a minute old
+ * doesn't look frozen. Seconds carry no useful precision in a figure
+ * being compared against others, and a column mixing `3h` with
+ * `2m 52s` cannot be scanned.
+ *
+ * Unlike [`formatHoursMinutes`] this keeps a **day** unit, because
+ * these values legitimately span days — a game's total runtime, its
+ * longest session — and `1247h 30m` is not readable. Minutes are
+ * dropped at day scale for the same reason.
+ */
+export function formatDuration(seconds: number): string {
+    const s = Math.max(0, seconds);
+    const totalMinutes = Math.round(s / 60);
+    if (totalMinutes === 0) return s > 0 ? '<1m' : '0m';
+    const d = Math.floor(totalMinutes / 1440);
+    const rem = totalMinutes % 1440;
+    const h = Math.floor(rem / 60);
+    const m = rem % 60;
+    if (d > 0) return h === 0 ? `${d}d` : `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${pad2(m)}m`;
+    return `${m}m`;
 }
 
 /**

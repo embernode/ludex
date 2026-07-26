@@ -12,7 +12,7 @@
         type ApplicationSummary,
     } from '$lib/api';
     import {
-        formatSeconds,
+        formatDuration,
         formatTimestamp,
         observeTimestampFormat,
         sharePercent,
@@ -208,7 +208,7 @@
                         <span class="gname">{app.product_name}</span>
                         <span class="right num dim">{app.run_count}</span>
                         <span class="right num strong">
-                            {formatSeconds(app.total_full_seconds)}
+                            {formatDuration(app.total_full_seconds)}
                         </span>
                         <span class="interactive">
                             <span class="bar">
@@ -220,7 +220,7 @@
                                 ></span>
                             </span>
                             <span class="mono num dim">
-                                {formatSeconds(app.total_interactive_seconds)}
+                                {formatDuration(app.total_interactive_seconds)}
                             </span>
                         </span>
                         <SourceLabel launcherType={app.launcher_type} />

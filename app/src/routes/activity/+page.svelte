@@ -25,8 +25,10 @@
     } from '$lib/api';
     import {
         currentTimestampFormat,
+        formatDate,
+        formatDuration,
         formatHoursMinutes,
-        formatSeconds,
+        formatTime,
         formatTimestamp,
         observeTimestampFormat,
         outcomeLabel,
@@ -129,16 +131,19 @@
         }));
     });
 
-    /** Local date for a day heading, carried beside the day's name.
-     *  Deliberately not a timestamp — a day group has no time of day. */
+    /**
+     * Calendar date for a day heading, carried beside the day's name.
+     * Deliberately not a timestamp — a day group has no time of day.
+     *
+     * Forced to an absolute format: `relativeDayName` already supplies
+     * the relative half, so honouring a `relative` preference here
+     * would print "Today" twice.
+     */
     function dayHeading(startedAt: string): string {
-        const d = new Date(startedAt);
-        if (Number.isNaN(d.getTime())) return '';
-        return d.toLocaleDateString(undefined, {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-        });
+        return formatDate(
+            startedAt,
+            tsFormat === 'relative' ? 'short' : tsFormat,
+        );
     }
 
     function laneLabel(dayStartMs: number): { day: string; dom: string } {
@@ -147,17 +152,6 @@
             day: DAY_LABELS[d.getDay()],
             dom: String(d.getDate()).padStart(2, '0'),
         };
-    }
-
-    /** Wall-clock time of day, or an em dash for an open session. */
-    function formatClock(iso: string): string {
-        if (!iso) return '—';
-        const d = new Date(iso);
-        if (Number.isNaN(d.getTime())) return '—';
-        return d.toLocaleTimeString(undefined, {
-            hour: '2-digit',
-            minute: '2-digit',
-        });
     }
 
     /** Merged-fragment count, carried under the game name rather than
@@ -361,7 +355,7 @@
                 <span class="cardtitle">Play history</span>
                 <span class="dim">
                     last 12 months ·
-                    <b>{formatSeconds(yearTotals.full)} full</b>
+                    <b>{formatDuration(yearTotals.full)} full</b>
                     · <b>{yearTotals.sessions} sessions</b>
                     · <b>{yearTotals.activeDays} active days</b>
                 </span>
@@ -414,12 +408,13 @@
                                 {/if}
                             </span>
                             <span class="mono num dim">
-                                {formatClock(s.started_at)} – {formatClock(
+                                {formatTime(s.started_at, tsFormat)} – {formatTime(
                                     s.ended_at,
+                                    tsFormat,
                                 )}
                             </span>
                             <span class="right num strong">
-                                {formatSeconds(s.full_runtime_seconds)}
+                                {formatDuration(s.full_runtime_seconds)}
                             </span>
                             <!-- This session's share of the day, not its
                                  interactive ratio. Per-session idle
@@ -491,10 +486,10 @@
                     <dt>Ended</dt>
                     <dd>{formatTimestamp(pendingDelete.ended_at, tsFormat)}</dd>
                     <dt>Full</dt>
-                    <dd>{formatSeconds(pendingDelete.full_runtime_seconds)}</dd>
+                    <dd>{formatDuration(pendingDelete.full_runtime_seconds)}</dd>
                     <dt>Interactive</dt>
                     <dd>
-                        {formatSeconds(pendingDelete.interactive_runtime_seconds)}
+                        {formatDuration(pendingDelete.interactive_runtime_seconds)}
                     </dd>
                 </dl>
                 {#if pendingDelete.fragment_ids.length > 1}

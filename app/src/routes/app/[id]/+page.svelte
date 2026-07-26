@@ -15,7 +15,8 @@
         type SessionSummary,
     } from '$lib/api';
     import {
-        formatSeconds,
+        formatDate,
+        formatDuration,
         formatTimestamp,
         observeTimestampFormat,
         sharePercent,
@@ -272,7 +273,7 @@
                 <div class="celllabel">RUNTIME</div>
                 <div class="bigline">
                     <span class="num big">
-                        {formatSeconds(app.total_full_seconds)}
+                        {formatDuration(app.total_full_seconds)}
                     </span>
                     <span class="unit">full</span>
                 </div>
@@ -286,11 +287,11 @@
                 </div>
                 <div class="subline">
                     <span class="num">
-                        {formatSeconds(app.total_interactive_seconds)} interactive
+                        {formatDuration(app.total_interactive_seconds)} interactive
                     </span>
                     {#if idleSeconds > 0}
                         <span class="dim">
-                            · {formatSeconds(idleSeconds)} idle subtracted
+                            · {formatDuration(idleSeconds)} idle subtracted
                         </span>
                     {/if}
                 </div>
@@ -302,13 +303,13 @@
             <div class="cell">
                 <div class="celllabel">FIRST SEEN</div>
                 <div class="num medium">
-                    {formatTimestamp(app.first_seen_at, tsFormat)}
+                    {formatDate(app.first_seen_at, tsFormat)}
                 </div>
             </div>
             <div class="cell">
                 <div class="celllabel">LONGEST</div>
                 <div class="num big">
-                    {formatSeconds(app.longest_full_seconds)}
+                    {formatDuration(app.longest_full_seconds)}
                 </div>
             </div>
         </div>
@@ -346,7 +347,7 @@
                             {formatTimestamp(s.ended_at, tsFormat)}
                         </span>
                         <span class="right num strong" role="cell">
-                            {formatSeconds(s.full_runtime_seconds)}
+                            {formatDuration(s.full_runtime_seconds)}
                         </span>
                         <span class="interactive" role="cell">
                             <span class="bar">
@@ -358,7 +359,7 @@
                                 ></span>
                             </span>
                             <span class="mono num dim">
-                                {formatSeconds(s.interactive_runtime_seconds)}
+                                {formatDuration(s.interactive_runtime_seconds)}
                             </span>
                         </span>
                         <span class="status" class:open={!s.exit_reason} role="cell">
@@ -403,10 +404,10 @@
                     <dt>Ended</dt>
                     <dd>{formatTimestamp(pendingDelete.ended_at, tsFormat)}</dd>
                     <dt>Full</dt>
-                    <dd>{formatSeconds(pendingDelete.full_runtime_seconds)}</dd>
+                    <dd>{formatDuration(pendingDelete.full_runtime_seconds)}</dd>
                     <dt>Interactive</dt>
                     <dd>
-                        {formatSeconds(
+                        {formatDuration(
                             pendingDelete.interactive_runtime_seconds,
                         )}
                     </dd>
