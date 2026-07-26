@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import type { UnlistenFn } from '@tauri-apps/api/event';
     import Chart from '$lib/Chart.svelte';
+    import ConfirmDialog from '$lib/ConfirmDialog.svelte';
     import {
         buildHeatmapOption,
         buildRecentBarOption,
@@ -10,6 +11,7 @@
     import { currentAccent } from '$lib/themeState.svelte';
     import { buildLanes } from '$lib/activityGrid';
     import {
+        deleteSession,
         listBlockedApplicationIds,
         listDailyPlaytime,
         listRecentSessions,
@@ -24,6 +26,7 @@
     import {
         currentTimestampFormat,
         formatSeconds,
+        formatTimestamp,
         interactiveShare,
         observeTimestampFormat,
         type TimestampFormat,
@@ -78,6 +81,10 @@
     const lanes = $derived(buildLanes(weekSessions, GRID_DAYS, now));
 
     const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    /** Accent percentages sampling the heatmap's colour ramp for its
+     *  less→more key. See the legend markup for why these five. */
+    const HEAT_STOPS = [0, 17, 34, 67, 100];
 
     /** Totals across the fetched year, shown on the consistency card. */
     const yearTotals = $derived.by(() => {
@@ -155,6 +162,46 @@
         return s.fragment_ids.length > 1
             ? `${base} · ${s.fragment_ids.length} merged`
             : base;
+    }
+
+    /**
+     * Whether a log row is safe to delete from here. Open sessions
+     * belong to the daemon and would lose in-flight runtime, so they
+     * offer no button — the same rule the game-detail list applies.
+     * Merged spans are fine: the daemon is handed the span's
+     * `fragment_ids` and drops exactly those rows in one transaction.
+     */
+    function canDelete(s: SessionSummary): boolean {
+        return Boolean(s.exit_reason);
+    }
+
+    /** Underlying `<dialog>`, owned by `ConfirmDialog` but bound back
+     *  here so it can be opened and closed imperatively. */
+    let deleteDialog = $state<HTMLDialogElement | null>(null);
+    /** Session queued for deletion while the dialog is open. */
+    let pendingDelete = $state<SessionSummary | null>(null);
+
+    function openDeleteDialog(s: SessionSummary) {
+        pendingDelete = s;
+        deleteDialog?.showModal();
+    }
+
+    async function performDelete() {
+        if (!pendingDelete) return;
+        try {
+            await deleteSession(pendingDelete.fragment_ids);
+            deleteDialog?.close();
+            pendingDelete = null;
+            // A full refresh, not a local splice: removing a session
+            // moves the day group's total, the charts and the clock
+            // grid, all of which are derived from separate fetches.
+            await refresh();
+        } catch (e) {
+            error = String(e);
+            // Re-thrown so the dialog clears its busy state and stays
+            // open, with the error banner visible above it.
+            throw e;
+        }
     }
 
     async function refresh() {
@@ -313,6 +360,23 @@
                     · <b>{yearTotals.sessions} sessions</b>
                     · <b>{yearTotals.activeDays} active days</b>
                 </span>
+                <div class="spacer"></div>
+                <!-- Samples the same ramp the heatmap paints with:
+                     `visualMap` interpolates lane → 34% accent → accent
+                     across the range, so these stops are that curve at
+                     0 / ¼ / ½ / ¾ / 1. Expressed as `color-mix` on
+                     `var(--ac)` rather than resolved values, so the key
+                     tracks the accent picker like the chart does. -->
+                <span class="heatlegend">
+                    less
+                    {#each HEAT_STOPS as pct (pct)}
+                        <span
+                            class="hcell"
+                            style="background:color-mix(in oklab, var(--ac) {pct}%, var(--lane))"
+                        ></span>
+                    {/each}
+                    more
+                </span>
             </div>
             <Chart
                 option={heatmapOption}
@@ -367,12 +431,70 @@
                             <span class="status" class:open={!s.exit_reason}>
                                 {statusLabel(s)}
                             </span>
+                            <span class="rowaction">
+                                {#if canDelete(s)}
+                                    <button
+                                        type="button"
+                                        class="delete"
+                                        title="Delete this session"
+                                        aria-label="Delete the {s.product_name} session starting {formatTimestamp(
+                                            s.started_at,
+                                            tsFormat,
+                                        )}"
+                                        onclick={() => openDeleteDialog(s)}
+                                    >
+                                        ✕
+                                    </button>
+                                {/if}
+                            </span>
                         </li>
                     {/each}
                 </ul>
             </div>
         {/each}
     {/if}
+
+    <ConfirmDialog
+        bind:dialog={deleteDialog}
+        title="Delete this session?"
+        confirmLabel="Delete session"
+        confirmBusyLabel="Deleting…"
+        danger
+        onconfirm={performDelete}
+    >
+        {#snippet body()}
+            {#if pendingDelete}
+                <dl class="confirm-facts">
+                    <dt>Game</dt>
+                    <dd>{pendingDelete.product_name}</dd>
+                    <dt>Started</dt>
+                    <dd>{formatTimestamp(pendingDelete.started_at, tsFormat)}</dd>
+                    <dt>Ended</dt>
+                    <dd>{formatTimestamp(pendingDelete.ended_at, tsFormat)}</dd>
+                    <dt>Full</dt>
+                    <dd>{formatSeconds(pendingDelete.full_runtime_seconds)}</dd>
+                    <dt>Interactive</dt>
+                    <dd>
+                        {formatSeconds(pendingDelete.interactive_runtime_seconds)}
+                    </dd>
+                </dl>
+                {#if pendingDelete.fragment_ids.length > 1}
+                    <p class="confirm-warning">
+                        This row is a merged span;
+                        <strong>
+                            all {pendingDelete.fragment_ids.length} underlying sessions
+                        </strong>
+                        will be removed.
+                    </p>
+                {/if}
+                <p class="confirm-warning">
+                    This cannot be undone. Aggregate stats for
+                    <strong>{pendingDelete.product_name}</strong> are recomputed
+                    from the surviving sessions.
+                </p>
+            {/if}
+        {/snippet}
+    </ConfirmDialog>
 </main>
 
 <style>
@@ -482,6 +604,20 @@
         background: var(--ac);
     }
 
+    .heatlegend {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        color: var(--fg3);
+    }
+
+    .hcell {
+        width: 9px;
+        height: 9px;
+        border-radius: 2px;
+    }
+
     .axisrow,
     .lanerow {
         display: grid;
@@ -583,7 +719,7 @@
     .logrow {
         display: grid;
         grid-template-columns:
-            minmax(160px, 1fr) 150px 78px 150px minmax(120px, 1fr);
+            minmax(160px, 1fr) 150px 78px 150px minmax(120px, 1fr) 26px;
         gap: 12px;
         align-items: center;
         padding: 9px 12px;
@@ -660,5 +796,57 @@
         color: var(--fg3);
         padding: 20px 12px;
         margin: 0;
+    }
+
+    .rowaction {
+        text-align: center;
+    }
+
+    .delete {
+        font: inherit;
+        font-size: 12px;
+        color: var(--fg3);
+        background: none;
+        border: 0;
+        padding: 2px 4px;
+        cursor: pointer;
+        border-radius: 4px;
+    }
+
+    .delete:focus-visible {
+        outline: 2px solid var(--ac);
+        outline-offset: -1px;
+    }
+
+    .delete:hover {
+        color: var(--warn);
+        background: none;
+    }
+
+    /* Body content rendered into the ConfirmDialog component's `body`
+       snippet. The component owns the frame / buttons / ::backdrop;
+       the parent supplies the content and its styling. */
+    .confirm-facts {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.3rem 1rem;
+        margin: 0 0 1rem;
+        font-size: 0.85rem;
+    }
+
+    .confirm-facts dt {
+        color: var(--fg3);
+    }
+
+    .confirm-facts dd {
+        margin: 0;
+        color: var(--fg2);
+    }
+
+    .confirm-warning {
+        font-size: 0.85rem;
+        color: var(--fg2);
+        margin: 0 0 0.5rem;
+        line-height: 1.5;
     }
 </style>

@@ -196,9 +196,41 @@ export function buildRecentBarOption(
         hours.push(hoursOf(byDate.get(date)?.full_runtime_seconds ?? 0));
     }
 
+    // Annotate the busiest day. Carried as a per-datum label on the
+    // bar itself rather than a `markPoint`, so it is anchored to the
+    // bar it describes and cannot drift out of the plot area.
+    //
+    // `>=` makes a tie resolve to the most recent day, which is the
+    // more useful one to point at. A run of zeroes has no peak worth
+    // naming, so `peakIdx` stays -1 and no datum gets a label.
+    let peakIdx = -1;
+    for (let i = 0; i < hours.length; i++) {
+        if (hours[i] > 0 && (peakIdx === -1 || hours[i] >= hours[peakIdx])) {
+            peakIdx = i;
+        }
+    }
+
+    const data: Array<number | { value: number; label: object }> = [...hours];
+    if (peakIdx !== -1) {
+        data[peakIdx] = {
+            value: hours[peakIdx],
+            label: {
+                show: true,
+                position: 'top',
+                distance: 5,
+                // Hours with one decimal, matching the y-axis unit.
+                formatter: `peak ${hours[peakIdx].toFixed(1)}h`,
+                color: p.axisLabel,
+                fontSize: 11,
+            },
+        };
+    }
+
     return {
         backgroundColor: 'transparent',
-        grid: { left: 44, right: 16, top: 16, bottom: 28 },
+        // The top gap carries the peak label, which sits above a bar
+        // that reaches the top of the plot area.
+        grid: { left: 44, right: 16, top: 30, bottom: 28 },
         tooltip: {
             trigger: 'axis',
             backgroundColor: p.tooltipBg,
@@ -241,7 +273,7 @@ export function buildRecentBarOption(
                 name: 'Full',
                 type: 'bar',
                 itemStyle: { color: p.series[0], borderRadius: [2, 2, 0, 0] },
-                data: hours,
+                data,
             },
         ],
     };
