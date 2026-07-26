@@ -25,10 +25,13 @@
     } from '$lib/api';
     import {
         currentTimestampFormat,
+        formatHoursMinutes,
         formatSeconds,
         formatTimestamp,
-        interactiveShare,
         observeTimestampFormat,
+        outcomeLabel,
+        relativeDayName,
+        sharePercent,
         type TimestampFormat,
     } from '$lib/format';
 
@@ -119,19 +122,19 @@
             // from. Re-parsing the key as an ISO instant would shift
             // the heading a day west of UTC, labelling every group
             // with the previous date.
+            name: relativeDayName(items[0].started_at),
             label: dayHeading(items[0].started_at),
             items,
             total: items.reduce((n, s) => n + s.full_runtime_seconds, 0),
         }));
     });
 
-    /** Weekday + local date, for a day heading. Deliberately not a
-     *  timestamp — a day group has no time of day. */
+    /** Local date for a day heading, carried beside the day's name.
+     *  Deliberately not a timestamp — a day group has no time of day. */
     function dayHeading(startedAt: string): string {
         const d = new Date(startedAt);
         if (Number.isNaN(d.getTime())) return '';
         return d.toLocaleDateString(undefined, {
-            weekday: 'long',
             year: 'numeric',
             month: '2-digit',
             day: '2-digit',
@@ -157,11 +160,13 @@
         });
     }
 
-    function statusLabel(s: SessionSummary): string {
-        const base = s.exit_reason ? s.exit_reason.replace(/_/g, ' ') : 'open';
+    /** Merged-fragment count, carried under the game name rather than
+     *  in the outcome column — it describes the row's composition,
+     *  not how the session ended. */
+    function mergedNote(s: SessionSummary): string {
         return s.fragment_ids.length > 1
-            ? `${base} · ${s.fragment_ids.length} merged`
-            : base;
+            ? `· ${s.fragment_ids.length} merged`
+            : '';
     }
 
     /**
@@ -259,7 +264,7 @@
     <div class="titlerow">
         <h1>Activity</h1>
         <span class="subcount">
-            {pane === 'charts' ? 'last 30 days' : `newest ${LOG_LIMIT} sessions`}
+            {pane === 'charts' ? 'last 30 days' : `last ${LOG_LIMIT} sessions`}
         </span>
         <div class="spacer"></div>
         <div class="seg">
@@ -332,7 +337,7 @@
                     </div>
                     <span class="right mono dim">
                         {lane.totalSeconds > 0
-                            ? formatSeconds(lane.totalSeconds)
+                            ? formatHoursMinutes(lane.totalSeconds)
                             : '—'}
                     </span>
                 </div>
@@ -390,16 +395,24 @@
         {#each logDays as day (day.date)}
             <div class="daygroup">
                 <div class="dayhead">
-                    <span class="daytitle">{day.label}</span>
+                    <span class="daytitle">{day.name}</span>
+                    <span class="daydate">{day.label}</span>
                     <div class="spacer"></div>
-                    <span class="num dim">{formatSeconds(day.total)}</span>
+                    <span class="num daytotal">
+                        {formatHoursMinutes(day.total)}
+                    </span>
                 </div>
                 <ul class="rows">
                     {#each day.items as s (s.id)}
                         <li class="logrow">
-                            <a class="gname" href="/app/{s.application_id}">
-                                {s.product_name}
-                            </a>
+                            <span class="namecell">
+                                <a class="gname" href="/app/{s.application_id}">
+                                    {s.product_name}
+                                </a>
+                                {#if mergedNote(s)}
+                                    <span class="merged">{mergedNote(s)}</span>
+                                {/if}
+                            </span>
                             <span class="mono num dim">
                                 {formatClock(s.started_at)} – {formatClock(
                                     s.ended_at,
@@ -408,28 +421,34 @@
                             <span class="right num strong">
                                 {formatSeconds(s.full_runtime_seconds)}
                             </span>
+                            <!-- This session's share of the day, not its
+                                 interactive ratio. Per-session idle
+                                 *intervals* aren't stored, so an
+                                 interactive bar here could only restate a
+                                 number the row no longer shows; against
+                                 the day's total it reads directly off the
+                                 group heading and the bars in a group sum
+                                 to the whole day. -->
                             <span
                                 class="interactive"
-                                title="{formatSeconds(
-                                    s.interactive_runtime_seconds,
-                                )} interactive"
+                                title="{Math.round(
+                                    sharePercent(
+                                        s.full_runtime_seconds,
+                                        day.total,
+                                    ),
+                                )}% of {day.name.toLowerCase()}"
                             >
                                 <span class="bar">
                                     <span
-                                        style="width:{interactiveShare(
-                                            s.interactive_runtime_seconds,
+                                        style="width:{sharePercent(
                                             s.full_runtime_seconds,
+                                            day.total,
                                         )}%"
                                     ></span>
                                 </span>
-                                <span class="mono num dim">
-                                    {formatSeconds(
-                                        s.interactive_runtime_seconds,
-                                    )}
-                                </span>
                             </span>
                             <span class="status" class:open={!s.exit_reason}>
-                                {statusLabel(s)}
+                                {outcomeLabel(s.exit_reason)}
                             </span>
                             <span class="rowaction">
                                 {#if canDelete(s)}
@@ -704,10 +723,24 @@
         margin-bottom: 2px;
     }
 
+    /* Two weights, as the design draws it: the day reads first and the
+       date qualifies it. One bold string carrying both scanned as a
+       wall of text down a page of groups. */
     .daytitle {
         font-size: 12.5px;
         font-weight: 600;
         color: var(--fg);
+    }
+
+    .daydate {
+        font-size: 11.5px;
+        color: var(--fg3);
+    }
+
+    .daytotal {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--fg2);
     }
 
     .rows {
@@ -719,14 +752,19 @@
     .logrow {
         display: grid;
         grid-template-columns:
-            minmax(160px, 1fr) 150px 78px 150px minmax(120px, 1fr) 26px;
+            minmax(160px, 1fr) 132px 78px 150px minmax(120px, 1fr) 30px;
         gap: 12px;
         align-items: center;
         padding: 9px 12px;
         border-bottom: 1px solid var(--hair);
     }
 
+    .namecell {
+        min-width: 0;
+    }
+
     .gname {
+        display: block;
         font-size: 13px;
         font-weight: 500;
         color: var(--fg);
@@ -734,6 +772,12 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+
+    .merged {
+        display: block;
+        font-size: 11px;
+        color: var(--fg3);
     }
 
     .gname:hover {

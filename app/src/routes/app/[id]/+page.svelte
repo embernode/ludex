@@ -17,8 +17,8 @@
     import {
         formatSeconds,
         formatTimestamp,
-        interactiveShare,
         observeTimestampFormat,
+        sharePercent,
         type TimestampFormat,
     } from '$lib/format';
     import MonogramTile from '$lib/MonogramTile.svelte';
@@ -278,7 +278,7 @@
                 </div>
                 <div class="bar">
                     <span
-                        style="width:{interactiveShare(
+                        style="width:{sharePercent(
                             app.total_interactive_seconds,
                             app.total_full_seconds,
                         )}%"
@@ -351,7 +351,7 @@
                         <span class="interactive" role="cell">
                             <span class="bar">
                                 <span
-                                    style="width:{interactiveShare(
+                                    style="width:{sharePercent(
                                         s.interactive_runtime_seconds,
                                         s.full_runtime_seconds,
                                     )}%"
@@ -665,6 +665,18 @@
         align-items: center;
         gap: 9px;
         min-width: 0;
+    }
+
+    /* Fixed column, so the bar beside it is the same length on every
+       row. The duration runs from `45m` to `45m 30s`, and with the bar
+       taking whatever space was left over, bar length encoded the
+       width of that text rather than the playtime it sits next to.
+       `ch` is exact here because the value is monospace; 7 covers the
+       longest form the formatter emits. */
+    .interactive .num {
+        flex: none;
+        width: 7ch;
+        text-align: right;
     }
 
     .status {

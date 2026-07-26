@@ -14,8 +14,8 @@
     import {
         formatSeconds,
         formatTimestamp,
-        interactiveShare,
         observeTimestampFormat,
+        sharePercent,
         type TimestampFormat,
     } from '$lib/format';
     import MonogramTile from '$lib/MonogramTile.svelte';
@@ -213,7 +213,7 @@
                         <span class="interactive">
                             <span class="bar">
                                 <span
-                                    style="width:{interactiveShare(
+                                    style="width:{sharePercent(
                                         app.total_interactive_seconds,
                                         app.total_full_seconds,
                                     )}%"

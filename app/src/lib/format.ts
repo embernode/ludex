@@ -145,14 +145,87 @@ function formatRelative(d: Date): string {
 }
 
 /**
- * Interactive runtime as a percentage of full runtime, for the share
- * bars in the library and on the app-detail page.
+ * One duration as a percentage of another, for the share bars.
  *
- * Clamped to `[0, 100]` and zero when there is no full runtime to
- * divide by, so a bar can never render wider than its track or
- * divide by zero on a session that recorded nothing.
+ * The whole differs by view: the library and the game-detail list
+ * divide interactive runtime by full runtime, while the activity log
+ * divides a session by its day's total, so each bar reads as that
+ * session's share of the day.
+ *
+ * Clamped to `[0, 100]` and zero when there is no whole to divide by,
+ * so a bar can never render wider than its track or divide by zero on
+ * a session that recorded nothing.
  */
-export function interactiveShare(interactive: number, full: number): number {
-    if (full <= 0) return 0;
-    return Math.max(0, Math.min(100, (interactive / full) * 100));
+export function sharePercent(part: number, whole: number): number {
+    if (whole <= 0) return 0;
+    return Math.max(0, Math.min(100, (part / whole) * 100));
+}
+
+/**
+ * Heading for a log day group: `Today`, `Yesterday`, or the weekday
+ * name for anything older.
+ *
+ * Compared on *local calendar days* rather than elapsed milliseconds,
+ * matching how the daemon buckets playtime. A 24-hour window would
+ * call a session "today" or not depending on the hour it started,
+ * which is not what a reader means by the word.
+ *
+ * Returns the empty string for a timestamp that will not parse, so a
+ * bad row heads its group with nothing rather than `Invalid Date`.
+ */
+export function relativeDayName(startedAt: string, now = new Date()): string {
+    const d = new Date(startedAt);
+    if (Number.isNaN(d.getTime())) return '';
+    const midnight = (v: Date) =>
+        new Date(v.getFullYear(), v.getMonth(), v.getDate()).getTime();
+    const days = Math.round((midnight(now) - midnight(d)) / 86_400_000);
+    if (days === 0) return 'Today';
+    if (days === 1) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: 'long' });
+}
+
+/** Prose for a stored `ExitReason`, keyed by its snake_case wire form. */
+const OUTCOMES: Record<string, string> = {
+    terminated: 'Ended normally',
+    foreground_changed: 'Switched away',
+    recovered: 'Recovered after crash',
+    sleep_split: 'Split by suspend',
+};
+
+/**
+ * How a session ended, as a sentence rather than an enum variant.
+ *
+ * An unknown reason falls back to its own text with the underscores
+ * opened out: the daemon can grow a variant before the GUI knows
+ * about it, and a blank cell would read as missing data rather than
+ * as a value this build cannot name.
+ */
+export function outcomeLabel(exitReason: string | null | undefined): string {
+    if (!exitReason) return 'Open';
+    return OUTCOMES[exitReason] ?? exitReason.replace(/_/g, ' ');
+}
+
+/**
+ * A day's playtime as hours and minutes, e.g. `4h 30m` / `5h 00m` /
+ * `45m`.
+ *
+ * Seconds are dropped because a day total does not carry meaningful
+ * precision at that scale, and a column mixing `4h 30m 12s` with
+ * `2h 5s` cannot be scanned. They are *rounded* rather than truncated,
+ * so `59m 40s` reads as the hour it nearly is.
+ *
+ * Minutes are zero-padded beside an hours figure so the column stays
+ * aligned. There is no day unit: a day's total can pass 24 hours when
+ * sessions overlap or simply stack up, and `1d 2h` would read as a
+ * date rather than as an amount of play.
+ */
+export function formatHoursMinutes(seconds: number): string {
+    const s = Math.max(0, seconds);
+    const totalMinutes = Math.round(s / 60);
+    // Real play that rounds to nothing would otherwise print `0m` and
+    // read as a day with none at all.
+    if (totalMinutes === 0) return s > 0 ? '<1m' : '0m';
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    return h === 0 ? `${m}m` : `${h}h ${String(m).padStart(2, '0')}m`;
 }

@@ -12,24 +12,8 @@ import { palette } from './chartPalette';
 import type { Theme } from './theme';
 import type { TimestampFormat } from './format';
 
-/**
- * Short date label for a chart axis tick. The line chart's x-axis
- * is a continuous run of YYYY-MM-DD strings; rendering each in
- * full would be a wall of digits. Pick the day-month order from
- * the user's timestamp-format preference (`dmy` flips to
- * European-style); year is dropped because a 30-day window doesn't
- * need it.
- */
-function formatAxisDate(iso: string, fmt: TimestampFormat): string {
-    if (fmt === 'dmy') {
-        // iso is YYYY-MM-DD; split is cheap and locale-safe.
-        const parts = iso.split('-');
-        if (parts.length === 3) return `${parts[2]}.${parts[1]}`;
-    }
-    return iso.slice(5); // MM-DD
-}
-
-/** Full-date label for chart tooltips. Carries the year. */
+/** Full-date label for chart tooltips and axis ticks. Carries the
+ *  year: the axis shows few enough ticks to afford it. */
 function formatTooltipDate(iso: string, fmt: TimestampFormat): string {
     if (fmt === 'dmy') {
         const parts = iso.split('-');
