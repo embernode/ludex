@@ -7,7 +7,7 @@
 
 <p align="center">A launcher-agnostic playtime tracker for Linux.</p>
 
-**Status: 0.4.0.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris- and Heroic-managed wine/Proton prefixes (Heroic-launched games are keyed by `HEROIC_APP_NAME` so the row stays stable across wine/Proton variant switches). The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. Arch packages are attached to each tagged [GitHub Release](https://github.com/embernode/ludex/releases); build from source on other distributions.
+**Status: 0.4.0.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris- and Heroic-managed wine/Proton prefixes (Heroic-launched games are keyed by `HEROIC_APP_NAME` so the row stays stable across wine/Proton variant switches). The GUI is three views — Library, Activity (a per-day session log and an ECharts pane of clock, daily-total and year-heatmap charts) and Settings (appearance, detection thresholds, grace windows, backups) — plus per-game detail with a ProtonDB link for Steam titles, and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. Arch packages are attached to each tagged [GitHub Release](https://github.com/embernode/ludex/releases); build from source on other distributions.
 
 ## What it does
 
@@ -26,10 +26,12 @@ The primary target is KDE Plasma 6 on Wayland. X11 support is on the roadmap (th
 
 | | |
 |---|---|
-| ![Games list](screenshots/main.png) | ![Recent sessions](screenshots/recent.png) |
-| **Games** — every tracked application, sortable by last played / name / total runtime. | **Recent sessions** — chronological feed of the latest plays. |
-| ![Dashboard](screenshots/dashboard.png) | ![Game detail](screenshots/game_details.png) |
-| **Dashboard** — daily playtime line, calendar heatmap, sessions-this-week bar (ECharts). | **Game detail** — per-game stats, ProtonDB link for Steam titles, full session history with merged-fragment annotations and per-row delete. |
+| ![Library](screenshots/library.png) | ![Activity — log](screenshots/activity_log.png) |
+| **Library** — every tracked game, filterable by name or publisher and sortable by last played / name / total runtime. The interactive bar sits beside its own figure, and the source column names the launcher each row was detected through. | **Activity — log** — sessions grouped by day, newest first, each day carrying its own total. A row shows the clock range it ran, how much of the day it accounted for, and how it ended. |
+| ![Activity — charts](screenshots/activity_charts.png) | ![Game detail](screenshots/game_details.png) |
+| **Activity — charts** — a week of play placed against the clock, daily totals over the last 30 days with the busiest day annotated, and a year-long calendar heatmap (ECharts). | **Game detail** — totals, session count, first seen and longest session, a ProtonDB link for Steam titles, and the full session history with merged-fragment annotations and per-row delete. |
+| ![Settings](screenshots/settings.png) | |
+| **Settings** — colour scheme and accent, detection thresholds, grace windows, backups, and a link through to every executable the detection gate has accepted. Changes apply immediately. | |
 
 ## Design principles
 
