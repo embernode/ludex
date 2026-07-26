@@ -186,7 +186,10 @@
                             {app.executable_path}
                         </div>
                     </div>
-                    <SourceLabel launcherType={app.launcher_type} />
+                    <SourceLabel
+                        launcherType={app.launcher_type}
+                        detectedVia={app.detected_via}
+                    />
                     <button
                         type="button"
                         class="btn"

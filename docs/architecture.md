@@ -127,7 +127,7 @@ SQLite, WAL mode, `PRAGMA foreign_keys=ON`, busy-timeout configured. Migrations 
 
 Table sketch (full DDL in `crates/ludex-core/migrations/`):
 
-- **`applications`** — one row per tracked game. Columns: `id`, `launcher_type`, `launcher_id`, `product_name`, `publisher`, `version`, `executable_path`, `launcher_exe_path`, `wineprefix_path`, `installed_flatpak_ref`, `graphics_platform`, `process_architecture`, `group_id`, icon BLOBs, aggregate statistics columns.
+- **`applications`** — one row per tracked game. Columns: `id`, `launcher_type`, `launcher_id`, `product_name`, `publisher`, `version`, `executable_path`, `launcher_exe_path`, `wineprefix_path`, `installed_flatpak_ref`, `graphics_platform`, `process_architecture`, `group_id`, `detected_via` (which enrichment source supplied `product_name`; nullable, and deliberately carries no CHECK so adding an enricher needs no table rebuild), icon BLOBs, aggregate statistics columns.
 - **`sessions`** — one row per play session. `application_id`, `started_at`, `ended_at` (nullable until close), `heartbeat_at`, `full_runtime_seconds`, `interactive_runtime_seconds`, `exit_reason` (`terminated | foreground_changed | recovered`; `sleep_split` is reserved in the CHECK constraint but not yet produced).
 - **`blocked_applications`** / **`forced_applications`** — user-maintained exe/launcher-id lists for the fallback path. The forced list is schema-ready but has no gate-layer consumer yet (see the GUI backlog in `roadmap.md`).
 - **`emulators`** + **`emulator_platforms`** + **`emulator_platform_filename_patterns`** — emulator ROM-tracking configuration. Schema-ready; the ROM-tracking consumer hasn't shipped.

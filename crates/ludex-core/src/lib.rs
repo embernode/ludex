@@ -36,4 +36,4 @@ pub use error::{Error, Result};
 pub use key::GameKey;
 pub use paths::{default_backup_dir, default_database_path};
 pub use session::{DailyPlaytime, RecentSession, RuntimeSnapshot, Session};
-pub use types::{ExitReason, GraphicsPlatform, LauncherType, ProcessArchitecture};
+pub use types::{DetectedVia, ExitReason, GraphicsPlatform, LauncherType, ProcessArchitecture};

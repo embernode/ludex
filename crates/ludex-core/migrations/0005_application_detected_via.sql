@@ -1,0 +1,15 @@
+-- Records which enrichment source supplied an application's current
+-- product_name, so the interface can show how a game was identified and
+-- not merely which launcher ran it.
+--
+-- Nullable with no backfill: existing rows carry no provenance and there
+-- is nothing to derive it from without re-running the enrichers against
+-- a live process. They render without a sub-label, which is also what a
+-- row gets when no source contributes its name.
+--
+-- Deliberately carries no CHECK constraint, unlike launcher_type and the
+-- other enumerated columns here. SQLite cannot alter a CHECK, so adding
+-- an enricher would require rebuilding this table on a live database for
+-- the sake of a caption. The writer is the only path that sets it and
+-- the reader tolerates values it does not recognise.
+ALTER TABLE applications ADD COLUMN detected_via TEXT;

@@ -699,6 +699,7 @@ fn application_summary_from(app: ludex_core::Application) -> ApplicationSummary 
         last_played_at: app.last_played_at.map(format_datetime).unwrap_or_default(),
         executable_path: app.executable_path.unwrap_or_default(),
         first_seen_at: format_datetime(app.first_seen_at),
+        detected_via: app.detected_via.unwrap_or_default(),
         longest_full_seconds: app.stat_longest_full,
     }
 }
@@ -863,6 +864,7 @@ mod tests {
             icon_48: None,
             icon_256: None,
             first_seen_at: datetime!(2022-12-28 06:20:00 UTC),
+            detected_via: Some("steam".into()),
             last_played_at: Some(datetime!(2026-07-25 20:42:00 UTC)),
             stat_run_count: 3,
             stat_total_full: 4620,

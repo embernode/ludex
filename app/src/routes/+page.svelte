@@ -223,7 +223,10 @@
                                 {formatDuration(app.total_interactive_seconds)}
                             </span>
                         </span>
-                        <SourceLabel launcherType={app.launcher_type} />
+                        <SourceLabel
+                            launcherType={app.launcher_type}
+                            detectedVia={app.detected_via}
+                        />
                         <span class="right num dim lastplayed">
                             {formatTimestamp(app.last_played_at, tsFormat)}
                         </span>

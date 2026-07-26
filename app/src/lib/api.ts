@@ -51,6 +51,13 @@ export interface ApplicationSummary {
     first_seen_at: string;
     /** Longest single session, in full-runtime seconds. */
     longest_full_seconds: number;
+    /**
+     * Which enrichment source supplied `product_name` — `steam`,
+     * `lutris`, `heroic`, `gog`, `desktop` or `pe` — or empty when
+     * none did, which is also the case for every row predating the
+     * field. Distinct from `launcher_type`.
+     */
+    detected_via: string;
 }
 
 /** A session row sourced from `net.ludex.Tracker1.ListRecentSessions`. */

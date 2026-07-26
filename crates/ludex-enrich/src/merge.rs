@@ -9,13 +9,25 @@
 //! provides only the name wins over the `.desktop` name without
 //! disturbing the non-name fields set by any intermediate enricher.
 
-use ludex_core::{Icons, IdentityUpdate};
+use ludex_core::{DetectedVia, Icons, IdentityUpdate};
 
 /// Apply `patch` on top of `acc`. No-op if `patch` is `None`.
-pub(crate) fn merge_into(acc: &mut IdentityUpdate, patch: Option<IdentityUpdate>) {
+///
+/// `source` names the enricher the patch came from, and is recorded as
+/// the accumulator's provenance **only when that patch supplies the
+/// product name**. Deriving it here rather than letting each source
+/// declare it ties the provenance to the same last-wins rule that
+/// decides the name, so the two cannot disagree: a source contributing
+/// only a publisher did not name the game and must not claim to have.
+pub(crate) fn merge_into(
+    acc: &mut IdentityUpdate,
+    source: DetectedVia,
+    patch: Option<IdentityUpdate>,
+) {
     let Some(patch) = patch else { return };
     if patch.product_name.is_some() {
         acc.product_name = patch.product_name;
+        acc.detected_via = Some(source);
     }
     if patch.publisher.is_some() {
         acc.publisher = patch.publisher;
@@ -107,6 +119,7 @@ mod tests {
         };
         merge_into(
             &mut acc,
+            DetectedVia::Steam,
             Some(IdentityUpdate {
                 product_name: Some("new".into()),
                 ..Default::default()
@@ -124,7 +137,7 @@ mod tests {
             ..Default::default()
         };
         let mut acc = original.clone();
-        merge_into(&mut acc, None);
+        merge_into(&mut acc, DetectedVia::Steam, None);
         assert_eq!(acc.product_name, original.product_name);
     }
 
@@ -139,6 +152,7 @@ mod tests {
         };
         merge_into(
             &mut acc,
+            DetectedVia::Steam,
             Some(IdentityUpdate {
                 icons: Icons {
                     icon_32: Some(b"medium".to_vec()),
@@ -149,5 +163,85 @@ mod tests {
         );
         assert_eq!(acc.icons.icon_16.as_deref(), Some(b"small".as_ref()));
         assert_eq!(acc.icons.icon_32.as_deref(), Some(b"medium".as_ref()));
+    }
+
+    // Provenance rides on the name, not on the patch merely applying:
+    // a source that contributes only a publisher did not name the game
+    // and must not claim to have.
+    #[test]
+    fn the_source_that_supplies_the_name_is_recorded() {
+        let mut acc = IdentityUpdate::default();
+        merge_into(
+            &mut acc,
+            DetectedVia::Desktop,
+            Some(IdentityUpdate {
+                product_name: Some("From desktop".into()),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(acc.detected_via, Some(DetectedVia::Desktop));
+    }
+
+    #[test]
+    fn a_source_contributing_no_name_claims_no_provenance() {
+        let mut acc = IdentityUpdate::default();
+        merge_into(
+            &mut acc,
+            DetectedVia::Pe,
+            Some(IdentityUpdate {
+                publisher: Some("Some Studio".into()),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(acc.detected_via, None);
+    }
+
+    // The cascade is last-wins per field, so the provenance has to move
+    // with the name every time it is overwritten.
+    #[test]
+    fn provenance_follows_the_name_when_a_later_source_overwrites_it() {
+        let mut acc = IdentityUpdate::default();
+        merge_into(
+            &mut acc,
+            DetectedVia::Desktop,
+            Some(IdentityUpdate {
+                product_name: Some("Wrong name".into()),
+                ..Default::default()
+            }),
+        );
+        merge_into(
+            &mut acc,
+            DetectedVia::Steam,
+            Some(IdentityUpdate {
+                product_name: Some("Right name".into()),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(acc.product_name.as_deref(), Some("Right name"));
+        assert_eq!(acc.detected_via, Some(DetectedVia::Steam));
+    }
+
+    // A later source that supplies everything *but* a name leaves the
+    // earlier namer's provenance standing, since its name still shows.
+    #[test]
+    fn provenance_survives_a_later_nameless_source() {
+        let mut acc = IdentityUpdate::default();
+        merge_into(
+            &mut acc,
+            DetectedVia::Lutris,
+            Some(IdentityUpdate {
+                product_name: Some("Named here".into()),
+                ..Default::default()
+            }),
+        );
+        merge_into(
+            &mut acc,
+            DetectedVia::Steam,
+            Some(IdentityUpdate {
+                publisher: Some("Later publisher".into()),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(acc.detected_via, Some(DetectedVia::Lutris));
     }
 }

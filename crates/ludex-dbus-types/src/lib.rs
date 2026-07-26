@@ -70,6 +70,13 @@ pub struct ApplicationSummary {
     pub first_seen_at: String,
     /// Longest single session in full-runtime seconds.
     pub longest_full_seconds: i64,
+    /// Which enrichment source supplied `product_name` (`"desktop"`,
+    /// `"pe"`, `"gog"`, `"heroic"`, `"lutris"`, `"steam"`), or empty
+    /// when none did or the row predates the field being recorded.
+    ///
+    /// Distinct from `launcher_type`, and usefully so: a Lutris game
+    /// named from a `.desktop` entry means the `pga.db` lookup missed.
+    pub detected_via: String,
 }
 
 /// One day's worth of aggregate runtime, shaped for dashboards.

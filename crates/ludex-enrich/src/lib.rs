@@ -23,7 +23,7 @@
 
 #![warn(missing_docs)]
 
-use ludex_core::{Application, Database, IdentityUpdate};
+use ludex_core::{Application, Database, DetectedVia, IdentityUpdate};
 use tracing::{debug, instrument, warn};
 
 pub mod context;
@@ -79,11 +79,35 @@ pub async fn run_cascade(
 /// by anything else.
 pub async fn build_patch(app: &Application, ctx: &EnrichmentContext) -> IdentityUpdate {
     let mut acc = IdentityUpdate::default();
-    merge::merge_into(&mut acc, sources::desktop::enrich(app, ctx).await);
-    merge::merge_into(&mut acc, sources::pe::enrich(app, ctx).await);
-    merge::merge_into(&mut acc, sources::gog::enrich(app, ctx).await);
-    merge::merge_into(&mut acc, sources::heroic::enrich(app, ctx).await);
-    merge::merge_into(&mut acc, sources::lutris::enrich(app, ctx).await);
-    merge::merge_into(&mut acc, sources::steam::enrich(app, ctx).await);
+    merge::merge_into(
+        &mut acc,
+        DetectedVia::Desktop,
+        sources::desktop::enrich(app, ctx).await,
+    );
+    merge::merge_into(
+        &mut acc,
+        DetectedVia::Pe,
+        sources::pe::enrich(app, ctx).await,
+    );
+    merge::merge_into(
+        &mut acc,
+        DetectedVia::Gog,
+        sources::gog::enrich(app, ctx).await,
+    );
+    merge::merge_into(
+        &mut acc,
+        DetectedVia::Heroic,
+        sources::heroic::enrich(app, ctx).await,
+    );
+    merge::merge_into(
+        &mut acc,
+        DetectedVia::Lutris,
+        sources::lutris::enrich(app, ctx).await,
+    );
+    merge::merge_into(
+        &mut acc,
+        DetectedVia::Steam,
+        sources::steam::enrich(app, ctx).await,
+    );
     acc
 }

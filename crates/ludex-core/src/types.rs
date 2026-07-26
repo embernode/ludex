@@ -151,6 +151,61 @@ pub enum ExitReason {
     SleepSplit,
 }
 
+/// Which enrichment source supplied an application's current
+/// `product_name`.
+///
+/// Recorded so the interface can say *how* a game was identified, not
+/// just which launcher ran it: a Lutris game named from a `.desktop`
+/// entry means the `pga.db` lookup missed, which is exactly what one
+/// wants to know when a title looks wrong.
+///
+/// Deliberately **not** constrained by a schema `CHECK`, unlike the
+/// other enums stored here. SQLite cannot alter a `CHECK`, so adding an
+/// enricher would otherwise mean a full table rebuild on a live
+/// database for what is a diagnostic caption.
+///
+/// This type is therefore the **write** vocabulary only. Reads go
+/// through [`Application::detected_via`](crate::Application), which is
+/// a plain `String` precisely so a value this build does not know
+/// cannot fail to decode — an unparseable enum there would abort the
+/// whole row read and take the entire library listing with it, which
+/// is far worse than an unfamiliar caption.
+///
+/// `None` on an application means no provenance was recorded — either
+/// no source contributed the name, or the row predates the field. Both
+/// read the same way on screen, so they are not distinguished.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+    AsRefStr,
+    Display,
+    EnumString,
+)]
+#[sqlx(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum DetectedVia {
+    /// A freedesktop `.desktop` entry.
+    Desktop,
+    /// PE `FileVersionInfo` from a Windows executable.
+    Pe,
+    /// A GOG `goggame-*.info` manifest.
+    Gog,
+    /// Heroic's runner store cache under `~/.config/heroic/store_cache`.
+    Heroic,
+    /// The Lutris `pga.db` library, including its curated entries.
+    Lutris,
+    /// A Steam `appmanifest_*.acf`.
+    Steam,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +263,18 @@ mod tests {
             ExitReason::ForegroundChanged,
             ExitReason::Recovered,
             ExitReason::SleepSplit,
+        ]);
+    }
+
+    #[test]
+    fn detected_via_roundtrip() {
+        assert_roundtrip(&[
+            DetectedVia::Desktop,
+            DetectedVia::Pe,
+            DetectedVia::Gog,
+            DetectedVia::Heroic,
+            DetectedVia::Lutris,
+            DetectedVia::Steam,
         ]);
     }
 

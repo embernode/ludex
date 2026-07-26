@@ -7,8 +7,8 @@ mod common;
 
 use common::sample_new_app;
 use ludex_core::{
-    Database, ExitReason, GameKey, GraphicsPlatform, IdentityUpdate, LauncherType, PlaybackDelta,
-    RuntimeSnapshot,
+    Database, DetectedVia, ExitReason, GameKey, GraphicsPlatform, IdentityUpdate, LauncherType,
+    PlaybackDelta, RuntimeSnapshot,
 };
 use time::{Duration, OffsetDateTime};
 
@@ -297,4 +297,89 @@ async fn list_sorts_most_recent_first_nulls_last() {
     let list = apps.list().await.unwrap();
     let ids: Vec<i64> = list.iter().map(|a| a.id).collect();
     assert_eq!(ids, vec![newer.id, older.id, unplayed.id]);
+}
+
+/// A newly-created row has no provenance until the enrichment cascade
+/// runs, and the round trip through the enum on write and a plain
+/// string on read has to survive.
+#[tokio::test]
+async fn identity_update_records_which_source_named_the_app() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let app = apps.create(sample_new_app()).await.unwrap();
+    assert_eq!(app.detected_via, None, "a fresh row has no provenance");
+
+    apps.update_identity(
+        app.id,
+        IdentityUpdate {
+            product_name: Some("Named By Lutris".into()),
+            detected_via: Some(DetectedVia::Lutris),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let after = apps.find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.product_name, "Named By Lutris");
+    assert_eq!(after.detected_via.as_deref(), Some("lutris"));
+}
+
+/// A value this build does not know must not abort the row read. The
+/// column carries no schema CHECK by design, so a newer daemon — or a
+/// restored backup — can legitimately leave a variant behind that this
+/// build has never heard of. Decoding it as an enum would fail the
+/// whole SELECT and take the entire library listing with it.
+#[tokio::test]
+async fn an_unknown_provenance_value_still_reads() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+    let app = apps.create(sample_new_app()).await.unwrap();
+
+    sqlx::query("UPDATE applications SET detected_via = ? WHERE id = ?")
+        .bind("some_future_enricher")
+        .bind(app.id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    let after = apps.find_by_id(app.id).await.unwrap().unwrap();
+    assert_eq!(after.detected_via.as_deref(), Some("some_future_enricher"));
+    assert_eq!(apps.list().await.unwrap().len(), 1, "listing must survive");
+}
+
+/// `merge_into` folds a duplicate's metadata into a surviving row, but
+/// `product_name` is an identity slot the destination keeps. Carrying
+/// the source's provenance across would leave the merged row claiming
+/// a source that never supplied the name it displays.
+#[tokio::test]
+async fn merge_into_does_not_import_the_sources_provenance() {
+    let db = Database::open_memory().await.unwrap();
+    let apps = db.applications();
+
+    let dst = apps.create(sample_new_app()).await.unwrap();
+
+    let mut src_new = sample_new_app();
+    src_new.launcher_id = "/tmp/alt.exe".into();
+    src_new.launcher_type = LauncherType::Native;
+    let src = apps.create(src_new).await.unwrap();
+    apps.update_identity(
+        src.id,
+        IdentityUpdate {
+            product_name: Some("Named By PE".into()),
+            detected_via: Some(DetectedVia::Pe),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    apps.merge_into(src.id, dst.id).await.unwrap();
+
+    let after = apps.find_by_id(dst.id).await.unwrap().unwrap();
+    assert_eq!(after.product_name, dst.product_name, "dst keeps its name");
+    assert_eq!(
+        after.detected_via, None,
+        "and so must not advertise the source's provenance"
+    );
 }

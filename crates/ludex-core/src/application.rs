@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use time::OffsetDateTime;
 
-use crate::types::{GraphicsPlatform, LauncherType, ProcessArchitecture};
+use crate::types::{DetectedVia, GraphicsPlatform, LauncherType, ProcessArchitecture};
 
 /// An application known to ludex.
 ///
@@ -45,6 +45,18 @@ pub struct Application {
 
     /// User-facing classification.
     pub group_id: Option<i64>,
+
+    /// Which enrichment source supplied [`Application::product_name`],
+    /// or `None` when no source did or the row predates the field.
+    ///
+    /// A plain `String` rather than [`DetectedVia`] deliberately: this
+    /// column carries no schema `CHECK`, so a value written by a newer
+    /// build (or restored from a backup) must not fail to decode. As an
+    /// enum it would abort the entire row read, taking the whole
+    /// library listing with it over a caption. Writers use the enum;
+    /// readers accept whatever is there and let the interface render an
+    /// unfamiliar value as itself.
+    pub detected_via: Option<String>,
 
     /// 16x16 icon.
     #[sqlx(default)]
@@ -152,6 +164,12 @@ pub struct IdentityUpdate {
     pub process_architecture: Option<ProcessArchitecture>,
     /// Replaces `group_id`.
     pub group_id: Option<i64>,
+    /// Which source supplied `product_name`.
+    ///
+    /// Set by the enrichment cascade's merge step rather than by a
+    /// source itself, so it always names whichever source's name
+    /// actually survived the last-wins merge.
+    pub detected_via: Option<DetectedVia>,
     /// Replaces any subset of the icon fields whose value is `Some`.
     pub icons: Icons,
 }

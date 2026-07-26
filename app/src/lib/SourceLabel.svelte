@@ -7,11 +7,7 @@
      * window source picked up because no launcher claimed them.
      *
      * Colours are the design's cool source palette and are
-     * scheme-independent. Note the sub-labels the design shows
-     * elsewhere (`Lutris · pga.db`, `Heroic · Epic`) are not
-     * reproducible — that provenance is known to the enricher but
-     * never persisted — so the bare launcher name is the honest
-     * rendering.
+     * scheme-independent.
      */
     const SOURCES: Record<string, { color: string; label: string }> = {
         steam: { color: '#6d94c4', label: 'Steam' },
@@ -20,28 +16,57 @@
         flatpak: { color: '#6f767c', label: 'Flatpak' },
         native: { color: '#6f767c', label: 'Fallback' },
     };
+
+    /**
+     * Which enrichment source named the game, keyed by the wire's
+     * `detected_via`. Shown as a sub-label under the launcher, because
+     * the two answer different questions and often disagree: a Lutris
+     * game named from a `.desktop` entry means the `pga.db` lookup
+     * missed, which is exactly what one wants to know when a title
+     * looks wrong.
+     *
+     * An unrecognised value renders as itself rather than vanishing, so
+     * a daemon that grows a source degrades on an older GUI instead of
+     * hiding the row's provenance.
+     */
+    const DETECTED_VIA: Record<string, string> = {
+        steam: 'appmanifest',
+        lutris: 'pga.db',
+        heroic: 'store cache',
+        gog: 'goggame.info',
+        desktop: '.desktop',
+        pe: 'PE header',
+    };
 </script>
 
 <script lang="ts">
     interface Props {
         launcherType: string;
+        /** Wire `detected_via`; empty when no source recorded one. */
+        detectedVia?: string;
     }
-    let { launcherType }: Props = $props();
+    let { launcherType, detectedVia = '' }: Props = $props();
 
     const source = $derived(
         SOURCES[launcherType] ?? { color: '#6f767c', label: launcherType },
     );
+    const via = $derived(detectedVia ? (DETECTED_VIA[detectedVia] ?? detectedVia) : '');
 </script>
 
 <span class="source">
     <span class="dot" style="background:{source.color}"></span>
-    <span class="label">{source.label}</span>
+    <span class="stack">
+        <span class="label">{source.label}</span>
+        {#if via}
+            <span class="via">{via}</span>
+        {/if}
+    </span>
 </span>
 
 <style>
     .source {
         display: flex;
-        align-items: center;
+        align-items: baseline;
         gap: 6px;
         min-width: 0;
     }
@@ -53,9 +78,27 @@
         flex: none;
     }
 
+    .stack {
+        min-width: 0;
+    }
+
     .label {
+        display: block;
         font-size: 11.5px;
         color: var(--fg2);
         white-space: nowrap;
+    }
+
+    /* Second line rather than an inline `Lutris · pga.db`: the row is
+       already tight, and stacking keeps the launcher scannable down
+       the column while the provenance stays available to anyone who
+       looks. */
+    .via {
+        display: block;
+        font-size: 10.5px;
+        color: var(--fg3);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 </style>

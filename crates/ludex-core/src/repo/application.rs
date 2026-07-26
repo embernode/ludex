@@ -9,7 +9,7 @@ use crate::types::{GraphicsPlatform, LauncherType, ProcessArchitecture};
 
 const SELECT_COLS: &str = "id, launcher_type, launcher_id, product_name, publisher, version, \
     executable_path, launcher_exe_path, wineprefix_path, installed_flatpak_ref, \
-    graphics_platform, process_architecture, group_id, \
+    graphics_platform, process_architecture, group_id, detected_via, \
     icon_16, icon_32, icon_48, icon_256, \
     first_seen_at, last_played_at, \
     stat_run_count, stat_total_full, stat_total_interactive, stat_longest_full";
@@ -191,6 +191,10 @@ impl<'a> ApplicationRepo<'a> {
         }
         if let Some(v) = update.group_id {
             separated.push("group_id = ").push_bind_unseparated(v);
+            fields += 1;
+        }
+        if let Some(v) = update.detected_via {
+            separated.push("detected_via = ").push_bind_unseparated(v);
             fields += 1;
         }
         if let Some(v) = update.icons.icon_16 {
@@ -400,6 +404,11 @@ async fn apply_metadata_fill(
     fill_nullable!("wineprefix_path", src.wineprefix_path.clone());
     fill_nullable!("installed_flatpak_ref", src.installed_flatpak_ref.clone());
     fill_nullable!("group_id", src.group_id);
+    // Deliberately NOT detected_via. `product_name` is an identity slot
+    // the destination keeps, so copying the source's provenance would
+    // have the merged row advertise a source that never supplied the
+    // name it is showing. A destination with no provenance of its own
+    // renders no sub-label, which is the honest answer.
     fill_nullable!("icon_16", src.icon_16.clone());
     fill_nullable!("icon_32", src.icon_32.clone());
     fill_nullable!("icon_48", src.icon_48.clone());
