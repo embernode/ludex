@@ -422,6 +422,18 @@
         min-width: 0;
     }
 
+    /* Fixed column, so the bar beside it is the same length on every
+       row. The duration runs from `6m` to `11h 26m`, and with the bar
+       taking whatever space was left over, bar length encoded the
+       width of that text rather than the share it is drawing. `ch` is
+       exact here because the value is monospace; 7 covers the longest
+       form the formatter emits. */
+    .interactive .num {
+        flex: none;
+        width: 7ch;
+        text-align: right;
+    }
+
     .bar {
         flex: 1;
         height: 5px;
