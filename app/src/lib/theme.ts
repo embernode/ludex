@@ -31,14 +31,17 @@ const ACCENT_KEY = 'ludex-accent';
 const PORTAL_KEY = 'ludex-portal-scheme';
 
 /**
- * Accent choices offered in Settings. The hexes come from the design's
- * own palette prop, so this list is authored rather than invented.
- * Note `slate` and `bone` are deliberately near-neutral.
+ * Accent choices offered in Settings. All but `graphite` come from the
+ * design's own palette prop, so the list is authored rather than
+ * invented; `graphite` was added afterwards as a darker companion to
+ * `slate`. Note `slate`, `graphite` and `bone` are deliberately
+ * near-neutral.
  */
 export const ACCENTS: readonly { hex: string; name: string }[] = [
     { hex: '#4fb96a', name: 'green' },
     { hex: '#5aa9c9', name: 'cyan' },
     { hex: '#8f9aa6', name: 'slate' },
+    { hex: '#5f6a76', name: 'graphite' },
     { hex: '#cdc9c2', name: 'bone' },
     { hex: '#c8ae72', name: 'sand' },
     { hex: '#a58fd8', name: 'lavender' },

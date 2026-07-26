@@ -43,16 +43,31 @@ describe('ACCENTS', () => {
         expect(ACCENTS.map((a) => a.hex)).toContain(DEFAULT_ACCENT);
     });
 
-    it('offers the six authored swatches in the design order', () => {
-        expect(ACCENTS).toHaveLength(6);
+    it('offers the authored swatches in the design order', () => {
+        expect(ACCENTS).toHaveLength(7);
         expect(ACCENTS.map((a) => a.name)).toEqual([
             'green',
             'cyan',
             'slate',
+            'graphite',
             'bone',
             'sand',
             'lavender',
         ]);
+    });
+
+    // Two near-neutral greys sit side by side, so they have to be
+    // distinguishable as swatches rather than reading as one colour
+    // rendered twice.
+    it('keeps graphite clearly darker than slate', () => {
+        const lum = (hex: string) => {
+            const v = (i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
+            return 0.2126 * v(0) + 0.7152 * v(1) + 0.0722 * v(2);
+        };
+        const slate = ACCENTS.find((a) => a.name === 'slate');
+        const graphite = ACCENTS.find((a) => a.name === 'graphite');
+        expect(slate && graphite).toBeTruthy();
+        expect(lum(slate!.hex) - lum(graphite!.hex)).toBeGreaterThan(25);
     });
 
     it('gives every swatch a six-digit hex', () => {
