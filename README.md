@@ -46,7 +46,7 @@ The primary target is KDE Plasma 6 on Wayland. X11 support is on the roadmap (th
 ## Architecture
 
 - Rust daemon (`ludex-daemon`): tokio for async, zbus for D-Bus, sqlx for SQLite, tracing for structured logs. Designed to run as a `systemctl --user` service.
-- Tauri 2 + SvelteKit + ECharts GUI (`ludex-gui`): apps list, recent sessions, per-app detail, dashboard, settings, system tray. Dark-mode toggle with OLED-friendly palette.
+- Tauri 2 + SvelteKit + ECharts GUI (`ludex-gui`): Library, Activity, Settings, per-game detail, system tray. Dark, light, or follow the desktop's colour scheme via the appearance portal, with a user-selectable accent.
 - CLI (`ludex`): operator tool — `doctor`, `apps list`, `sessions`, `backup {now,list,prune,restore}`, `merge`.
 - D-Bus IPC over `net.ludex.Tracker1` on the user session bus. Wire types in the dedicated `ludex-dbus-types` crate.
 
