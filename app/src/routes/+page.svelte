@@ -224,7 +224,7 @@
                             </span>
                         </span>
                         <SourceLabel launcherType={app.launcher_type} />
-                        <span class="right num dim">
+                        <span class="right num dim lastplayed">
                             {formatTimestamp(app.last_played_at, tsFormat)}
                         </span>
                     </a>
@@ -311,10 +311,23 @@
         outline-offset: 1px;
     }
 
+    /* The widest timestamp the `short` format produces is around 18
+       characters (`24 Jul 2026, 21:12`) against the tabular formats'
+       16, so it alone outgrew this column and wrapped to a second
+       line on some dates. Widened to fit it, and pinned to one line
+       as a backstop: a locale can always produce something longer
+       than a fixed pixel column, and a clipped tail reads better
+       than a row that silently doubles in height. */
+    .lastplayed {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
     .grid {
         display: grid;
         grid-template-columns:
-            34px minmax(180px, 1fr) 54px 92px 168px 140px 112px;
+            34px minmax(180px, 1fr) 54px 92px 168px 140px 132px;
         gap: 13px;
         align-items: center;
     }
