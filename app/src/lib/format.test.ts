@@ -4,6 +4,7 @@ import {
     formatDuration,
     formatHoursMinutes,
     formatTime,
+    formatTimeRange,
     outcomeLabel,
     relativeDayName,
     sharePercent,
@@ -102,6 +103,49 @@ describe('formatTime', () => {
     it('handles the daemon empty string and unparseable input', () => {
         expect(formatTime('', 'iso')).toBe('—');
         expect(formatTime('not a date', 'iso')).toBe('—');
+    });
+});
+
+// The session list shows one date and a clock range rather than two
+// full timestamps. That drops the end date, so a session running past
+// midnight has to say so or `23:30 – 01:15` reads as a 22-hour session
+// backwards.
+describe('formatTimeRange', () => {
+    const at = (d: number, h: number, m = 0) =>
+        new Date(2026, 6, d, h, m).toISOString();
+
+    it('gives a plain range within one day', () => {
+        expect(formatTimeRange(at(24, 20), at(24, 23), 'iso')).toBe(
+            '20:00 – 23:00',
+        );
+    });
+
+    it('marks how many days later the session ended', () => {
+        expect(formatTimeRange(at(24, 23, 30), at(25, 1, 15), 'iso')).toBe(
+            '23:30 – 01:15 +1 day',
+        );
+        expect(formatTimeRange(at(24, 22), at(26, 6), 'iso')).toBe(
+            '22:00 – 06:00 +2 days',
+        );
+    });
+
+    // Counts calendar days, not elapsed 24-hour blocks: 23:30 to 01:15
+    // is under two hours but lands on the next date.
+    it('counts the date boundary rather than elapsed hours', () => {
+        expect(formatTimeRange(at(24, 0, 5), at(24, 23, 55), 'iso')).toBe(
+            '00:05 – 23:55',
+        );
+    });
+
+    // An open session has no end at all; the daemon sends an empty
+    // string and there is no day offset to report.
+    it('leaves an open session without an end', () => {
+        expect(formatTimeRange(at(24, 20), '', 'iso')).toBe('20:00 – —');
+    });
+
+    it('gives an em dash when the start will not parse', () => {
+        expect(formatTimeRange('', at(24, 23), 'iso')).toBe('—');
+        expect(formatTimeRange('not a date', '', 'iso')).toBe('—');
     });
 });
 

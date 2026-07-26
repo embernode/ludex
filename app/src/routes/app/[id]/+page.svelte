@@ -17,6 +17,8 @@
     import {
         formatDate,
         formatDuration,
+        formatTimeRange,
+        outcomeLabel,
         formatTimestamp,
         observeTimestampFormat,
         sharePercent,
@@ -143,7 +145,7 @@
     );
 
     function statusLabel(s: SessionSummary): string {
-        const base = s.exit_reason ? s.exit_reason.replace(/_/g, ' ') : 'open';
+        const base = outcomeLabel(s.exit_reason);
         if (s.fragment_ids.length > 1) {
             return `${base} · ${s.fragment_ids.length} merged`;
         }
@@ -331,7 +333,7 @@
             <div class="tablewrap" role="table" aria-label="Sessions">
                 <div class="grid thead" role="row">
                     <span role="columnheader">DATE</span>
-                    <span role="columnheader">ENDED</span>
+                    <span role="columnheader">TIME</span>
                     <span class="right" role="columnheader">FULL</span>
                     <span role="columnheader">INTERACTIVE</span>
                     <span role="columnheader">OUTCOME</span>
@@ -341,10 +343,21 @@
                 {#each sessions as s (s.id)}
                     <li class="grid row" role="row">
                         <span class="num dim" role="cell">
-                            {formatTimestamp(s.started_at, tsFormat)}
+                            {formatDate(s.started_at, tsFormat)}
                         </span>
-                        <span class="mono num dim" role="cell">
-                            {formatTimestamp(s.ended_at, tsFormat)}
+                        <!-- The tooltip carries both timestamps in
+                             full, so the day marker never has to be
+                             the only way to learn when a session that
+                             crossed midnight actually ended. -->
+                        <span
+                            class="mono num dim"
+                            role="cell"
+                            title="{formatTimestamp(
+                                s.started_at,
+                                tsFormat,
+                            )} → {formatTimestamp(s.ended_at, tsFormat)}"
+                        >
+                            {formatTimeRange(s.started_at, s.ended_at, tsFormat)}
                         </span>
                         <span class="right num strong" role="cell">
                             {formatDuration(s.full_runtime_seconds)}
@@ -602,7 +615,7 @@
     .grid {
         display: grid;
         grid-template-columns:
-            150px 150px 88px 168px minmax(120px, 1fr) 30px;
+            132px 152px 88px 168px minmax(140px, 1fr) 30px;
         gap: 12px;
         align-items: center;
     }

@@ -171,6 +171,41 @@ export function formatTime(
     });
 }
 
+/**
+ * A session's clock range, e.g. `20:00 – 23:00`.
+ *
+ * The session list carries the date once in its own column, so the
+ * range only needs times — except that dropping the end date loses
+ * real information: a session from 23:30 to 01:15 the next morning
+ * would read as running backwards across 22 hours. Any end that falls
+ * on a later *calendar day* is therefore marked `+1 day`, `+2 days`.
+ * Spelled out rather than the airline-style `+1d`: that shorthand only
+ * reads as obvious once you have already met it.
+ *
+ * An open session has no end and gets an em dash, matching
+ * [`formatTime`]. An unparseable start makes the whole range
+ * meaningless, so that collapses to a single em dash.
+ */
+export function formatTimeRange(
+    startedAt: string,
+    endedAt: string,
+    format: TimestampFormat = DEFAULT_TIMESTAMP_FORMAT,
+): string {
+    const start = new Date(startedAt);
+    if (!startedAt || Number.isNaN(start.getTime())) return '—';
+    const range = `${formatTime(startedAt, format)} – ${formatTime(endedAt, format)}`;
+    const end = new Date(endedAt);
+    if (!endedAt || Number.isNaN(end.getTime())) return range;
+    // Calendar days apart, not elapsed hours: 23:30 → 01:15 is under
+    // two hours but lands on the next date, which is the thing the
+    // reader needs told.
+    const midnight = (d: Date) =>
+        new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const days = Math.round((midnight(end) - midnight(start)) / 86_400_000);
+    if (days <= 0) return range;
+    return `${range} +${days} ${days === 1 ? 'day' : 'days'}`;
+}
+
 function pad2(n: number): string {
     return String(n).padStart(2, '0');
 }
