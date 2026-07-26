@@ -7,7 +7,7 @@
 
 <p align="center">A launcher-agnostic playtime tracker for Linux.</p>
 
-**Status: 0.3.3.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris- and Heroic-managed wine/Proton prefixes (Heroic-launched games are keyed by `HEROIC_APP_NAME` so the row stays stable across wine/Proton variant switches). The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. No prebuilt binaries are published yet — they'll land on [GitHub Releases](https://github.com/embernode/ludex/releases) as tags are cut; build from source for now.
+**Status: 0.4.0.** Daemon, CLI, and Tauri GUI all build and run end-to-end. Steam-launched sessions are detected and recorded; the Wayland foreground-window fallback catches games launched outside any recognised launcher on KDE Plasma 6, including Lutris- and Heroic-managed wine/Proton prefixes (Heroic-launched games are keyed by `HEROIC_APP_NAME` so the row stays stable across wine/Proton variant switches). The GUI covers the apps list, recent sessions, per-application detail (with a ProtonDB link for Steam games), an ECharts dashboard, settings (detection thresholds, alt-tab grace, cutscene grace, backup configuration), and a system tray with close-to-tray. Adjacent same-application sessions split by a short alt-tab are merged at display time. Arch packages are attached to each tagged [GitHub Release](https://github.com/embernode/ludex/releases); build from source on other distributions.
 
 ## What it does
 
@@ -115,7 +115,7 @@ cd packaging
 makepkg -si        # builds from the working tree, installs via pacman
 ```
 
-Prebuilt `.pkg.tar.zst` artifacts will be published on [GitHub Releases](https://github.com/embernode/ludex/releases) as tags are cut; there's no AUR package. On other distributions, build from source — daemon, CLI, and GUI each drop into your local Cargo bin or a path of your choice.
+Prebuilt `.pkg.tar.zst` artifacts are attached to each tagged [GitHub Release](https://github.com/embernode/ludex/releases); there's no AUR package. On other distributions, build from source — daemon, CLI, and GUI each drop into your local Cargo bin or a path of your choice.
 
 **Daemon** — runs as a systemd user service. Full notes in [`packaging/README.md`](packaging/README.md):
 

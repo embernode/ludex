@@ -11,7 +11,7 @@
 pkgname=ludex
 pkgver=0.4.0
 pkgrel=1
-pkgdesc="Linux gameplay time tracker — daemon, CLI, and Tauri GUI"
+pkgdesc="Linux playtime tracker — daemon, CLI, and Tauri GUI"
 arch=('x86_64')
 url="https://github.com/embernode/ludex"
 license=('MIT' 'Apache')

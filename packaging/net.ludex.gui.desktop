@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=ludex
-GenericName=Gameplay Time Tracker
-Comment=Linux gameplay time tracker
+GenericName=Playtime Tracker
+Comment=Linux playtime tracker
 Exec=ludex-gui
 Icon=net.ludex.gui
 Terminal=false
