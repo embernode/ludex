@@ -470,7 +470,8 @@ impl Tracker {
     }
 
     /// Whether losing focus pauses the session. When `false`,
-    /// sessions only end on process exit (GTT-parity behaviour).
+    /// sessions only end on process exit, which suits players who
+    /// alt-tab constantly and want the clock to keep running.
     async fn get_pause_when_backgrounded(&self) -> zbus::fdo::Result<bool> {
         self.db
             .settings()
