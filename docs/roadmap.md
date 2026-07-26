@@ -66,7 +66,7 @@ Each milestone ends with: all crates compile, `cargo clippy --all-targets -- -D 
 - `clippy.toml` with `warn(clippy::pedantic, clippy::nursery)` and a curated allow-list for false-positives.
 - `.editorconfig`.
 - `.github/workflows/ci.yml`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all`, `cargo deny check` (license/advisory audit).
-- `ludex doctor` subcommand printing a capabilities table: Steam dir present / Lutris D-Bus name owned / Heroic config dir present / KWin version / Wayland or X11 / DRM fdinfo sample / logind reachable / `input` group membership.
+- `ludex doctor` subcommand printing a capabilities table: Steam dir present / Lutris D-Bus name owned / Heroic config dir present / KWin version / Wayland or X11 / DRM fdinfo sample / logind reachable.
 
 This milestone is intentionally a no-op for end users. Its purpose is to prove the toolchain, the CI lane, and the environment detection layer before any detection code is written.
 
@@ -126,11 +126,11 @@ Neither launcher exposes a usable lifecycle signal — Heroic 2.x removed `runni
 
 ### M5 — Idle detection and session lifecycle hardening
 
-- `logind.IdleHint` watcher over D-Bus; maintains the `interactive_runtime_seconds` accounting.
-- `PrepareForSleep` subscription; pauses / splits sessions across sleep/wake.
+- Idle watcher maintaining the `interactive_runtime_seconds` accounting — Wayland `ext-idle-notify-v1` (version-2 input-idle notifications) as the primary source, `logind.IdleHint` over D-Bus as the fallback.
+- Sleep/wake handled by anchoring `full_runtime_seconds` to `CLOCK_MONOTONIC`, which does not advance during suspend.
 - `pidfd_open` + `poll` for process-exit.
 - Cold-start recovery: close orphaned sessions at their last heartbeat.
-- Optional feature flag `evdev` (off by default) for per-input-event counts when the user is in the `input` group; documented with the rationale and threat model.
+- Per-input-event counting via `/dev/input/event*` is deliberately not offered: it would require `input` group membership, and compositor-mediated idle reporting covers the need without elevated permissions.
 
 ### M6 — GUI
 

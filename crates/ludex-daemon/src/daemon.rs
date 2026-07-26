@@ -16,7 +16,8 @@ use tracing_subscriber::EnvFilter;
 use crate::config::{BackupConfig, SharedConfig, TrackerConfig};
 use crate::dbus::{self, TrackerNotification};
 use crate::gate::{Gate, GateConfig};
-use crate::idle::{self, IdleTracker};
+use crate::idle::IdleTracker;
+use crate::idle_wayland;
 use crate::session_manager::{SessionManager, SharedBlocklist, SystemClock};
 use crate::sources::{KWinForegroundSource, SteamSource};
 use ludex_core::repo::{
@@ -129,14 +130,15 @@ pub async fn run() -> Result<()> {
         tokio::spawn(async move { dbus::run_notifier(conn, notif_rx, sd).await })
     };
 
-    // Idle tracker watches logind on the system bus. Spawn before any
-    // source so the baseline reflects the live state by the time the
-    // first session opens.
+    // Idle source: ext-idle-notify-v1 on the Wayland session, falling
+    // back to logind IdleHint where no usable Wayland session exists.
+    // Spawn before any game source so the baseline reflects the live
+    // state by the time the first session opens.
     let idle_handle = {
         let tracker = Arc::clone(&idle_tracker);
         let sd = shutdown_rx.clone();
         tokio::spawn(async move {
-            if let Err(e) = idle::run_watcher(tracker, sd).await {
+            if let Err(e) = idle_wayland::run_watcher(tracker, sd).await {
                 warn!(error = %e, "idle watcher exited with error");
             }
         })

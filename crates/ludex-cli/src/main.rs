@@ -27,8 +27,8 @@ enum Command {
     ///
     /// Verifies presence and reachability of the components ludex needs:
     /// session type (Wayland/X11), desktop, KWin D-Bus, logind D-Bus,
-    /// Steam/Heroic/Lutris state, DRM subsystem, `input` group membership,
-    /// and `pidfd` syscall support. Runs without contacting the daemon.
+    /// Steam/Heroic/Lutris state, DRM subsystem, and `pidfd` syscall
+    /// support. Runs without contacting the daemon.
     Doctor,
 
     /// List recent sessions recorded by the daemon.

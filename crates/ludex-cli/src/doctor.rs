@@ -21,8 +21,8 @@ enum Status {
     Ok(String),
     /// Works but may warrant attention.
     Warn(String),
-    /// Not present. Missing capabilities may be expected (e.g. Lutris not
-    /// installed) or intentional (e.g. `input` group is optional).
+    /// Not present. Missing capabilities may be expected (e.g. Lutris
+    /// not installed).
     Missing(String),
 }
 
@@ -67,7 +67,6 @@ pub(crate) async fn run() -> Result<()> {
 
     // Kernel capabilities.
     checks.push(check_drm());
-    checks.push(check_input_group());
     checks.push(check_pidfd());
 
     print_table(&checks);
@@ -261,52 +260,6 @@ fn check_drm() -> Check {
     };
     Check {
         name: "DRM subsystem",
-        status,
-    }
-}
-
-fn check_input_group() -> Check {
-    let status_text = match fs::read_to_string("/proc/self/status") {
-        Ok(s) => s,
-        Err(e) => {
-            return Check {
-                name: "input group",
-                status: Status::Warn(e.to_string()),
-            };
-        }
-    };
-    let groups_line = status_text
-        .lines()
-        .find(|l| l.starts_with("Groups:"))
-        .unwrap_or("");
-    let gids: Vec<u32> = groups_line
-        .trim_start_matches("Groups:")
-        .split_whitespace()
-        .filter_map(|s| s.parse().ok())
-        .collect();
-
-    let group_file = fs::read_to_string("/etc/group").unwrap_or_default();
-    let input_gid = group_file.lines().find_map(|line| {
-        let mut parts = line.splitn(4, ':');
-        let name = parts.next()?;
-        let _passwd = parts.next()?;
-        let gid: u32 = parts.next()?.parse().ok()?;
-        if name == "input" {
-            Some(gid)
-        } else {
-            None
-        }
-    });
-
-    let status = match input_gid {
-        None => Status::Warn("no 'input' group on this system".into()),
-        Some(gid) if gids.contains(&gid) => Status::Ok("member of 'input'".into()),
-        Some(_) => {
-            Status::Missing("not a member (optional; only required for the evdev feature)".into())
-        }
-    };
-    Check {
-        name: "input group",
         status,
     }
 }

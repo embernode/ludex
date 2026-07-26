@@ -140,10 +140,10 @@ There is no per-day rollup table: daily aggregates are computed live from `sessi
 
 - **Start**: `SessionManager.begin(application_id, started_at)` opens a row with `ended_at = NULL`.
 - **Heartbeat**: every 60 seconds the manager writes the current wall-clock time into `heartbeat_at` and flushes WAL. A daemon crash loses at most one minute of runtime.
-- **Idle subtraction**: the idle source subscribes to `org.freedesktop.login1.Session.PropertiesChanged` for `IdleHint`. When idle-in, runtime accumulation continues on `full_runtime_seconds` but pauses for `interactive_runtime_seconds`.
+- **Idle subtraction**: the primary idle source binds the Wayland `ext-idle-notify-v1` protocol at version 2 and uses `get_input_idle_notification`, which tracks real input and ignores the idle inhibitors games routinely set (the version-1 request honours them and would report no idle at all during play). It runs on a dedicated worker thread; sessions without a usable Wayland connection fall back to watching `org.freedesktop.login1.Session.IdleHint`. Idle intervals accumulate in a shared tracker, and each heartbeat recomputes `interactive_runtime_seconds` as `full_runtime_seconds` minus the billable idle observed since the session opened.
 - **Process-exit**: `pidfd_open(pid, 0)` + `poll()` on `POLLIN`. Kernel-level, zero-polling wait per-process.
 - **End**: on any of process-exit, launcher stop-event, or explicit foreground change, the session row is closed with `ended_at` and `exit_reason`.
-- **Sleep/wake**: suspend is detected by wall-vs-monotonic clock drift (≥ 5 s of drift per tick reads as a suspend — more reliable than `PrepareForSleep`, whose pre-suspend half can fire after the daemon is already frozen; see `sleep.rs`). Suspended seconds are subtracted from both runtime figures rather than splitting the session; the `sleep_split` exit reason is reserved for a future boundary-split implementation.
+- **Sleep/wake**: `full_runtime_seconds` is measured as a `CLOCK_MONOTONIC` delta from session start, and the monotonic clock does not advance during suspend — so suspended time never enters either runtime figure, and NTP wall-clock steps can't distort them. `started_at`/`ended_at` remain wall-clock timestamps. The `sleep_split` exit reason is reserved for a future boundary-split implementation.
 - **Cold-start recovery**: on daemon start, any session row with `ended_at IS NULL` whose `heartbeat_at` is older than the grace-period is closed at its last heartbeat with `exit_reason = 'recovered'`. No "8,000-hour Skyrim run" after a crash.
 
 ## IPC
@@ -196,7 +196,7 @@ No methods require privileges beyond session-bus access.
 
 `tracing` with `tracing-subscriber`. Every detection decision emits a span (`source=steam appid=... decision=accept reason=launcher-event`) so a misdetection can be replayed from logs without re-running the scenario. Default output is pretty to the journal; JSON output is available via `LUDEX_LOG=json`.
 
-A `ludex doctor` subcommand prints a capabilities snapshot: Steam directory present, Lutris D-Bus name owned, Heroic config dir present, KWin version, compositor (Wayland/X11), DRM fdinfo sample parsed correctly, logind reachable, `input` group membership (for the optional evdev path). This is the lowest-effort diagnostic every support ticket will start with.
+A `ludex doctor` subcommand prints a capabilities snapshot: Steam directory present, Lutris D-Bus name owned, Heroic config dir present, KWin version, compositor (Wayland/X11), DRM fdinfo sample parsed correctly, logind reachable. This is the lowest-effort diagnostic every support ticket will start with.
 
 ## Risks and constraints
 
@@ -204,4 +204,4 @@ A `ludex doctor` subcommand prints a capabilities snapshot: Steam directory pres
 - **KWin scripting API** is the most ergonomic foreground-window source on Wayland today; it requires installing a script at daemon start. The fallback is a `wayland-client` crate implementation of `org_kde_plasma_window_management_v2`.
 - **NVIDIA DRM fdinfo** exposes `drm-engine-*` from driver 550+. Per-process VRAM reporting stabilized in more recent releases. The GPU-usage check degrades gracefully when VRAM stats are missing (uses GPU time only).
 - **Tauri + WebKitGTK in sandboxed runtimes** is a known source of runtime-version-skew bugs. Native packaging (the in-repo Arch `PKGBUILD`, distributed via GitHub Releases) is the primary distribution path; sandboxed bundle formats are not roadmapped.
-- **Wayland prohibits global input monitoring.** Idle detection uses `logind.IdleHint`, which works without special permissions. Per-input-event counting via `/dev/input/event*` is feature-flagged off and requires `input` group membership; it is not enabled by default.
+- **Wayland prohibits global input monitoring** — but it sanctions compositor-mediated idle reporting, which is exactly what `ext-idle-notify-v1` provides; neither it nor the `logind.IdleHint` fallback needs any special permission. Per-input-event counting via `/dev/input/event*` would require `input` group membership and is deliberately not offered.

@@ -7,16 +7,16 @@
 //! subtracted from `full_runtime_seconds` to produce
 //! `interactive_runtime_seconds`.
 //!
-//! The signal source is `org.freedesktop.login1.Session.IdleHint`.
-//! The session / desktop reports this property true when the user
-//! hasn't interacted with input devices for the configured timeout
-//! (Plasma's defaults use the screen-off timeout; most systems are
-//! somewhere around 5–10 minutes). This is the coarse-but-correct
-//! signal for "did they step away" — and importantly, it requires no
-//! membership in the `input` group or any other elevated permission.
-//!
-//! A finer-grained per-input-event counter via `/dev/input/event*` is
-//! planned behind an explicit `evdev` feature flag in a later tranche.
+//! [`IdleTracker`] is source-agnostic shared state. The primary
+//! signal source is the Wayland `ext-idle-notify-v1` protocol (see
+//! [`crate::idle_wayland`]); this module's [`run_watcher`] is the
+//! fallback for sessions without a usable Wayland connection. It
+//! watches `org.freedesktop.login1.Session.IdleHint` — a signal that
+//! depends on the session controller actually calling `SetIdleHint`,
+//! which KWin on Wayland never does, hence the Wayland-native
+//! primary. Both sources require no membership in the `input` group
+//! or any other elevated permission, which is why a per-input-event
+//! counter via `/dev/input/event*` is deliberately not offered.
 
 use std::sync::Mutex;
 use std::time::Instant;
@@ -50,7 +50,8 @@ struct State {
 /// daemon started.
 ///
 /// Construct once at daemon startup, wrap in `Arc`, share with both
-/// the D-Bus watcher task and the session manager.
+/// the active idle source (the Wayland worker thread or this module's
+/// logind watcher task) and the session manager.
 #[derive(Debug, Default)]
 pub struct IdleTracker {
     state: Mutex<State>,

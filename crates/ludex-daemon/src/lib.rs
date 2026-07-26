@@ -13,6 +13,7 @@ pub mod dbus;
 pub mod event;
 pub mod gate;
 pub mod idle;
+pub mod idle_wayland;
 pub mod proc;
 pub mod session_manager;
 pub mod sources;

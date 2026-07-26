@@ -34,8 +34,9 @@ pub struct Session {
     /// Wall-clock seconds from session start to the most recent heartbeat
     /// (or to `ended_at` once closed).
     pub full_runtime_seconds: i64,
-    /// `full_runtime_seconds` minus idle intervals reported by
-    /// `logind.IdleHint`.
+    /// `full_runtime_seconds` minus billable idle intervals reported
+    /// by the daemon's idle source (Wayland `ext-idle-notify-v1`,
+    /// falling back to `logind.IdleHint`).
     pub interactive_runtime_seconds: i64,
 
     /// How the session ended. `None` only while the session is open.

@@ -27,6 +27,8 @@ time = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+wayland-client = { workspace = true }
+wayland-protocols = { workspace = true }
 zbus = { workspace = true }
 
 ludex-core = { path = "../ludex-core" }

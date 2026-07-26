@@ -73,6 +73,13 @@ freedesktop-desktop-entry = { version = "0.8", default-features = false }
 # Filesystem watching (inotify on Linux)
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
+# Wayland client for ext-idle-notify-v1 (pure Rust, no libwayland link).
+# wayland-protocols 0.32.6 is the floor that vendors ext-idle-notify-v1
+# at interface version 2 (`get_input_idle_notification`); the `staging`
+# feature is required for the ext namespace to exist at all.
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32.6", default-features = false, features = ["staging", "client"] }
+
 # Stream combinators used by zbus property streams
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 

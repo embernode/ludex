@@ -61,9 +61,9 @@ so you can pipe it into other tools.
 
 Prints a capability table for the current environment: XDG session type,
 desktop, reachability of the KWin + logind D-Bus services, presence of the
-Steam / Heroic data directories, DRM subsystem detection, `input` group
-membership, and `pidfd` syscall support. Reads nothing from the daemon
-and writes nothing — safe to run at any time.
+Steam / Heroic data directories, DRM subsystem detection, and `pidfd`
+syscall support. Reads nothing from the daemon and writes nothing — safe
+to run at any time.
 
 Good for a quick "is this machine able to host ludex" check, and included
 in any bug report.
