@@ -8,6 +8,7 @@
         onDaemonDisconnected,
         onDaemonReconnected,
     } from '$lib/api';
+    import SettingsCard from './SettingsCard.svelte';
 
     interface Props {
         onerror?: (message: string) => void;
@@ -77,17 +78,23 @@
     });
 </script>
 
-<div class="strip">
-    <!-- Fixed brand green, deliberately not `var(--ac)`: this is a
-         health indicator, and picking the lavender accent must not
-         turn "daemon running" lavender. -->
-    <span
-        class="dot"
-        class:down={connected === false}
-        class:unknown={connected === null}
-    ></span>
-    <span class="text">
-        <span class="state">
+<SettingsCard>
+    <!-- Two tiers, because the strip carries two unlike things: one
+         live indicator and a set of static build facts. Weighting them
+         identically buried the only part that ever changes. -->
+    <div class="live">
+        <!-- Fixed brand green, deliberately not `var(--ac)`: this is a
+             health indicator, and picking the lavender accent must not
+             turn "daemon running" lavender. -->
+        <span
+            class="dot"
+            class:down={connected === false}
+            class:unknown={connected === null}
+        ></span>
+        <!-- Announced on change: this is the one string on the page
+             that mutates on its own, from a daemon event rather than
+             from anything the user just did. -->
+        <span class="state" aria-live="polite">
             {#if connected === null}
                 checking daemon
             {:else if connected}
@@ -96,28 +103,42 @@
                 daemon unreachable
             {/if}
         </span>
-        · no telemetry · no network egress · data in
-        <code>$XDG_DATA_HOME/ludex/</code>
-        · MIT / Apache-2.0
+        <button type="button" class="ghlink" onclick={openRepo}>github ↗</button>
+    </div>
+
+    <!-- Label/value pairs rather than one long sentence. Each pair is
+         an atomic flex item, so the row folds at any width without a
+         line ever beginning with a stranded separator — which is what
+         the middots baked into the old markup could not avoid. -->
+    <dl class="facts">
         {#if appVersion}
-            · v{appVersion}
+            <div class="fact">
+                <dt>version</dt>
+                <dd>{appVersion}</dd>
+            </div>
         {/if}
-    </span>
-    <span class="spacer"></span>
-    <button type="button" class="ghlink" onclick={openRepo}>github ↗</button>
-</div>
+        <div class="fact">
+            <dt>licence</dt>
+            <dd>MIT / Apache-2.0</dd>
+        </div>
+        <div class="fact">
+            <dt>data</dt>
+            <dd><code>$XDG_DATA_HOME/ludex/</code></dd>
+        </div>
+        <div class="fact">
+            <dt>privacy</dt>
+            <dd>no telemetry, no network egress</dd>
+        </div>
+    </dl>
+</SettingsCard>
 
 <style>
-    .strip {
+    .live {
         display: flex;
         align-items: center;
-        gap: 9px;
-        padding: 9px 12px;
-        background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: 7px;
-        margin-top: 18px;
-        flex-wrap: wrap;
+        gap: 8px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
     }
 
     .dot {
@@ -136,26 +157,44 @@
         background: var(--fg3);
     }
 
-    .text {
-        font-family: 'JetBrains Mono', ui-monospace, monospace;
-        font-size: 11.5px;
-        color: var(--fg2);
-    }
-
     .state {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        font-size: 12px;
         color: var(--fg);
     }
 
-    .text code {
+    .facts {
+        display: flex;
+        flex-wrap: wrap;
+        column-gap: 20px;
+        row-gap: 6px;
+        margin: 0;
+        padding: 11px 16px 12px;
+    }
+
+    .fact {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        font-size: 11.5px;
+    }
+
+    .fact dt {
+        color: var(--fg3);
+    }
+
+    .fact dd {
+        margin: 0;
+        color: var(--fg2);
+    }
+
+    .fact code {
         font-family: inherit;
         font-size: inherit;
         background: none;
         padding: 0;
         color: inherit;
-    }
-
-    .spacer {
-        flex: 1;
     }
 
     .ghlink {
@@ -169,6 +208,10 @@
         padding: 0;
         cursor: pointer;
         flex: none;
+        /* Takes the slack an empty spacer element used to hold. The
+           tier does not wrap, so there is always a row to sit at the
+           end of. */
+        margin-left: auto;
     }
 
     .ghlink:hover {
