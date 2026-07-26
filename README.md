@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/logo_256_light.png#gh-dark-mode-only" alt="ludex" width="128">
-  <img src="assets/logo_256_dark.png#gh-light-mode-only" alt="ludex" width="128">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo_256_light.png">
+    <img src="assets/logo_256_dark.png" alt="ludex" width="128">
+  </picture>
 </p>
 
 <h1 align="center">ludex</h1>
