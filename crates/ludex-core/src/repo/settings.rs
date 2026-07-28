@@ -69,11 +69,16 @@ pub const DEFAULT_PAUSE_WHEN_BACKGROUNDED: bool = true;
 /// forgiven, the tail is subtracted as before.
 pub const IDLE_GRACE_SECONDS: &str = "idle_grace_seconds";
 
-/// Default for [`IDLE_GRACE_SECONDS`]: five minutes. Covers the
-/// typical cutscene length without over-forgiving genuine AFK.
-/// Players with very long cutscenes (Metal Gear, Final Fantasy,
-/// Naughty Dog titles) can crank this higher from Settings.
-pub const DEFAULT_IDLE_GRACE_SECONDS: u64 = 5 * 60;
+/// Default for [`IDLE_GRACE_SECONDS`]: three minutes. Because the
+/// grace is forgiven per interval rather than per session, it is
+/// uncapped across a session — a five-minute default forgave up to
+/// five minutes for *every* input-free stretch, which in practice
+/// meant only one continuous AFK longer than five minutes ever
+/// billed at all. Three minutes still covers a typical cutscene
+/// while leaving genuine AFK visible. Players with very long
+/// cutscenes (Metal Gear, Final Fantasy, Naughty Dog titles) can
+/// crank this higher from Settings.
+pub const DEFAULT_IDLE_GRACE_SECONDS: u64 = 3 * 60;
 
 /// Typed access to the `settings` table.
 pub struct SettingsRepo<'a> {
