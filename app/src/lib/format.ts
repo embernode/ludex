@@ -2,17 +2,22 @@
 // unit-testable without the Tauri runtime.
 
 /**
- * Render a runtime in seconds as a compact string. Examples:
- * `0s`, `47s`, `12m`, `1h 23m`, `2d 3h`.
+ * Render a live session's age as a compact string. Examples:
+ * `<1m`, `12m`, `1h 23m`, `2d 3h`.
+ *
+ * Seconds are dropped: the pill sits in the top bar, where a figure
+ * that changes every second is motion the reader has to ignore, and
+ * the minute is the smallest unit the rest of the app renders.
+ *
+ * Unlike `formatDuration`, which rounds to the nearest minute because
+ * it renders finished spans, this truncates — a running clock that
+ * reads `10m` at nine and a half minutes is showing a time that has
+ * not happened yet.
  */
-export function formatSeconds(seconds: number): string {
+export function formatElapsed(seconds: number): string {
     const s = Math.max(0, Math.floor(seconds));
-    if (s < 60) return `${s}s`;
-    if (s < 3_600) {
-        const m = Math.floor(s / 60);
-        const rem = s % 60;
-        return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
-    }
+    if (s < 60) return '<1m';
+    if (s < 3_600) return `${Math.floor(s / 60)}m`;
     if (s < 86_400) {
         const h = Math.floor(s / 3_600);
         const m = Math.floor((s % 3_600) / 60);

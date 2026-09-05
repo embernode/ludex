@@ -9,7 +9,7 @@
         onSessionStarted,
         type SessionSummary,
     } from '$lib/api';
-    import { formatSeconds } from '$lib/format';
+    import { formatElapsed } from '$lib/format';
 
     /** Matches the daemon's heartbeat cadence for open sessions. */
     const HEARTBEAT_MS = 60_000;
@@ -47,17 +47,34 @@
      */
     const elapsed = $derived.by(() => {
         if (!session) return '';
-        return formatSeconds(
+        return formatElapsed(
             session.full_runtime_seconds + Math.max(0, (now - fetchedAt) / 1000),
         );
     });
 
+    /**
+     * The label carries no seconds, so the clock sleeps until the
+     * displayed minute actually rolls over instead of waking every
+     * second to re-render the same string. Both figures are snapshot
+     * outside the timer: the effect re-runs whenever a refresh moves
+     * them, which reschedules against the new anchor.
+     */
     $effect(() => {
         if (!session) return;
-        const tick = setInterval(() => (now = Date.now()), 1000);
+        const seed = session.full_runtime_seconds;
+        const anchor = fetchedAt;
+        let tick: ReturnType<typeof setTimeout>;
+        const scheduleRollover = () => {
+            const shown = Math.max(0, seed * 1000 + (Date.now() - anchor));
+            tick = setTimeout(() => {
+                now = Date.now();
+                scheduleRollover();
+            }, 60_000 - (shown % 60_000));
+        };
+        scheduleRollover();
         const resync = setInterval(refresh, HEARTBEAT_MS);
         return () => {
-            clearInterval(tick);
+            clearTimeout(tick);
             clearInterval(resync);
         };
     });

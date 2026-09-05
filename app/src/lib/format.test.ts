@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     formatDate,
     formatDuration,
+    formatElapsed,
     formatHoursMinutes,
     formatTime,
     formatTimeRange,
@@ -273,5 +274,43 @@ describe('outcomeLabel', () => {
     // while the GUI catches up.
     it('falls back to the raw reason it does not know', () => {
         expect(outcomeLabel('some_new_reason')).toBe('some new reason');
+    });
+});
+
+// The live pill's clock. Unlike the stored-duration renderers it
+// truncates rather than rounds: a stopwatch that reads 10m before ten
+// minutes have passed is telling the user the wrong time.
+describe('formatElapsed', () => {
+    const H = 3600;
+    const D = 86400;
+
+    it('carries no seconds', () => {
+        expect(formatElapsed(9 * 60 + 37)).toBe('9m');
+        expect(formatElapsed(12 * 60)).toBe('12m');
+    });
+
+    it('truncates rather than rounding up', () => {
+        expect(formatElapsed(9 * 60 + 59)).toBe('9m');
+        expect(formatElapsed(H - 1)).toBe('59m');
+    });
+
+    // A session younger than a minute still has to say something, and
+    // `0m` would read as a stalled clock.
+    it('marks a session too young to show a minute', () => {
+        expect(formatElapsed(0)).toBe('<1m');
+        expect(formatElapsed(47)).toBe('<1m');
+    });
+
+    it('drops to coarser units as the session grows', () => {
+        expect(formatElapsed(H + 23 * 60)).toBe('1h 23m');
+        expect(formatElapsed(2 * H)).toBe('2h');
+        expect(formatElapsed(2 * D + 3 * H)).toBe('2d 3h');
+        expect(formatElapsed(2 * D)).toBe('2d');
+    });
+
+    // The pill adds a locally-measured delta to the daemon's figure;
+    // a clock skew backwards must not print a negative age.
+    it('never goes negative', () => {
+        expect(formatElapsed(-5)).toBe('<1m');
     });
 });
